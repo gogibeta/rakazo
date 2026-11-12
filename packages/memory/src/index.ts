@@ -14,6 +14,7 @@ import type {
 import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
 import type { PrismaClient } from "@rakazo/db";
 import { Prisma, withTransactionRetry } from "@rakazo/db";
+import { scoreDocumentFused, tokenize } from "./ranking.js";
 import { stem } from "./stem.js";
 
 /** Memory is the Space's: every member's runs read and write the same documents. */
@@ -72,15 +73,16 @@ export class MarkdownMemoryStore implements MemoryStore {
     // Ranking happens here, not in SQL: memory content is sealed at rest, so
     // the database only ever holds ciphertext and no index over it can match
     // words. The typed client returns this scope's documents decrypted (the
-    // same set read() loads), and they are scored in process — stemmed term
-    // frequency, length-normalised, fused with the literal substring match
-    // the store has always done so exact phrases and identifiers still hit
-    // even when stemming or tokenising would miss them.
+    // same set read() loads), and they are scored in process (ranking.ts):
+    // the whole-document score — stemmed term frequency, length-normalised,
+    // with the literal substring match the store has always done so exact
+    // phrases and identifiers still hit — fused with a best-chunk score
+    // that adds typo tolerance and a small curated synonym list.
     const documents = await this.prisma.memoryDocument.findMany({ where });
     const terms = [...new Set(tokenize(query).map(stem))];
     const scored: Array<MemorySearchResult & { updatedAt: Date }> = [];
     for (const doc of documents) {
-      const score = scoreDocument(doc, terms, query.toLowerCase());
+      const score = scoreDocumentFused(doc, terms, query.toLowerCase());
       if (score !== undefined)
         scored.push({
           path: doc.path,
@@ -195,54 +197,6 @@ export class MarkdownMemoryStore implements MemoryStore {
     if (!last) throw new Error("No memory files to import");
     return last;
   }
-}
-
-/**
- * Words of a text, with the same normalisation the content blind index uses
- * (NFKC, lowercased, runs of letters and digits): "notes/q3-report.pdf"
- * tokenises into words, and a hyphenated identifier into its parts.
- */
-function tokenize(text: string): string[] {
-  return (
-    text
-      .normalize("NFKC")
-      .toLowerCase()
-      .match(/[\p{L}\p{N}]+/gu) ?? []
-  );
-}
-
-/**
- * Relevance of one document to a search, or undefined when it does not match.
- * A document matches when every query term appears among its stemmed words
- * (content or path) — or when the query appears verbatim, so an exact phrase
- * or identifier hits even if tokenising splits it differently on each side.
- * The score is the matched terms' frequency, dampened by document length,
- * plus a flat bonus for a verbatim hit: in the content first, then the path.
- */
-function scoreDocument(
-  doc: { path: string; content: string },
-  terms: string[],
-  queryLower: string,
-): number | undefined {
-  const contentHit = doc.content.toLowerCase().includes(queryLower);
-  const pathHit = doc.path.toLowerCase().includes(queryLower);
-  if (!terms.length) return contentHit ? 1 : pathHit ? 0.5 : undefined;
-  const frequencies = new Map<string, number>();
-  const contentWords = tokenize(doc.content).map(stem);
-  for (const word of contentWords) frequencies.set(word, (frequencies.get(word) ?? 0) + 1);
-  for (const word of tokenize(doc.path).map(stem))
-    frequencies.set(word, (frequencies.get(word) ?? 0) + 1);
-  let frequency = 0;
-  for (const term of terms) {
-    const count = frequencies.get(term) ?? 0;
-    if (count === 0 && !contentHit && !pathHit) return undefined;
-    frequency += count;
-  }
-  return (
-    frequency / Math.sqrt(Math.max(1, contentWords.length)) +
-    (contentHit ? 1 : 0) +
-    (pathHit ? 0.5 : 0)
-  );
 }
 
 function snippet(content: string, q: string): string {
