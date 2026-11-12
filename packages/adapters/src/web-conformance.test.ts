@@ -1,11 +1,13 @@
 import type { AdapterContext, WebProvider } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
+import { CombinedWebProvider } from "./combined-web.js";
 import { FakeWebProvider } from "./fake-web.js";
 import { KeenableWebProvider } from "./keenable-web.js";
 import { keenableMcpFixture } from "./keenable-web.test-support.js";
 import { KeylessHttpWebProvider, parseDuckDuckGoResults } from "./keyless-http-web.js";
 import { ParallelWebProvider } from "./parallel-web.js";
 import { parallelMcpFixture } from "./parallel-web.test-support.js";
+import { TinyFishWebProvider } from "./tinyfish-web.js";
 
 const ctx: AdapterContext = {
   operationId: "1",
@@ -43,6 +45,49 @@ describe("web provider conformance", () => {
   });
   it("holds for Keenable through the real MCP transport (offline)", async () => {
     await assertWebConformance(new KeenableWebProvider(keenableMcpFixture().network));
+  });
+  it("holds for TinyFish with an injected transport (offline)", async () => {
+    const fetchMock: typeof fetch = async (_input, init) => {
+      const payload =
+        init?.method === "POST"
+          ? {
+              results: [
+                {
+                  url: "https://example.test/page",
+                  final_url: "https://example.test/page",
+                  title: "Hit",
+                  text: "Rendered body text for conformance.",
+                },
+              ],
+              errors: [],
+            }
+          : {
+              results: [{ url: "https://example.test/page", title: "Hit", snippet: "Snippet" }],
+            };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    await assertWebConformance(
+      new TinyFishWebProvider({
+        apiKey: "test-key",
+        fetch: fetchMock,
+        resolveHostname: publicResolver,
+      }),
+    );
+  });
+  it("holds for the combined provider (offline)", async () => {
+    const primary = new FakeWebProvider();
+    primary.searchHits = [{ title: "Hit", url: "https://example.test/page", snippet: "…" }];
+    primary.fetchResult = {
+      url: "https://example.test/page",
+      title: "Hit",
+      text: "body",
+      truncated: false,
+    };
+    const fallback = new FakeWebProvider();
+    await assertWebConformance(new CombinedWebProvider({ primary, fallback }));
   });
   it("holds for fake (offline)", async () => {
     const fake = new FakeWebProvider();

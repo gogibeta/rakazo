@@ -27,6 +27,16 @@ servers. Anonymous access is rate limited per IP address; set `KEENABLE_API_KEY`
 worker to send a key and lift those limits. Errors, per-bot disabled tools and the way back to
 the default work as described for Parallel.
 
+To combine [TinyFish](https://docs.tinyfish.ai) with the keyless default, set
+`WEB_PROVIDER=tinyfish-ddg` and restart both the API and worker. Search then merges TinyFish's
+live, browser-rendered results with the DuckDuckGo results (TinyFish first, duplicates removed),
+and page reads prefer TinyFish's rendered extraction, falling back to local Readability when it
+fails. This needs a TinyFish API key: create one free at
+[agent.tinyfish.ai](https://agent.tinyfish.ai) and set `TINYFISH_API_KEY` on the API and worker.
+Without the key the combined provider behaves exactly like the keyless default, so it is safe to
+select before the key exists. This option sends search queries and requested page URLs to
+TinyFish, which retrieves pages on its servers.
+
 ## Self-hosted memory
 
 Supermemory and Honcho can run on your own network. In **Settings → Memory**, choose **Local**
