@@ -32,7 +32,7 @@ function makeDeps(options: { admin?: boolean } = {}) {
     },
     deploymentSettings: {
       findUnique: vi.fn(async () => state.settings),
-      upsert: vi.fn(async ({ update }: { update: { serviceCredentialsCipher: string | null } }) => {
+      upsert: vi.fn(async ({ update }: { update: Record<string, string | null> }) => {
         state.settings = { serviceCredentialsCipher: null, ...state.settings, ...update };
         return state.settings;
       }),
