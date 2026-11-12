@@ -83,48 +83,50 @@ export async function collectDiagnostics(
     return base;
   }
   const userId = scope?.userId;
-  const [bots, assignments, unassigned, runs, attempts, computerRuns, migrations] =
-    await Promise.all([
-      prisma.bot.findMany({
-        where: userId ? { userId } : undefined,
-        select: { id: true, spaceId: true, userId: true, archivedAt: true },
-      }),
-      prisma.botMcpServer.findMany({
-        where: userId ? { userId } : undefined,
-        select: { botId: true, spaceId: true, userId: true, server: { select: serverFields } },
-        orderBy: { createdAt: "asc" },
-      }),
-      // Servers on no bot are an operator concern; a user-scoped report skips them.
-      userId
-        ? Promise.resolve([])
-        : prisma.mcpServer.findMany({ where: { assignments: { none: {} } }, select: serverFields }),
-      prisma.run.findMany({
-        where: userId ? { bot: { userId } } : undefined,
-        select: {
-          id: true,
-          botId: true,
-          status: true,
-          trigger: true,
-          createdAt: true,
-          error: true,
-        },
-        orderBy: { createdAt: "desc" },
-        take: RECENT_RUNS,
-      }),
-      prisma.attempt.findMany({
-        where: userId ? { run: { bot: { userId } } } : undefined,
-        select: { runId: true, status: true, error: true, startedAt: true, finishedAt: true },
-        orderBy: { startedAt: "desc" },
-        take: RECENT_ATTEMPTS,
-      }),
-      prisma.computerRun.findMany({
-        where: userId ? { userId } : undefined,
-        select: { kind: true, endReason: true, startedAt: true, endedAt: true },
-        orderBy: { startedAt: "desc" },
-        take: RECENT_COMPUTER_RUNS,
-      }),
-      appliedMigrations(prisma),
-    ]);
+  const [bots, assignments, runs, attempts, computerRuns, migrations] = await Promise.all([
+    prisma.bot.findMany({
+      where: userId ? { userId } : undefined,
+      select: { id: true, spaceId: true, userId: true, archivedAt: true },
+    }),
+    prisma.botMcpServer.findMany({
+      where: userId ? { userId } : undefined,
+      select: { botId: true, spaceId: true, userId: true, server: { select: serverFields } },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.run.findMany({
+      where: userId ? { bot: { userId } } : undefined,
+      select: {
+        id: true,
+        botId: true,
+        status: true,
+        trigger: true,
+        createdAt: true,
+        error: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: RECENT_RUNS,
+    }),
+    prisma.attempt.findMany({
+      where: userId ? { run: { bot: { userId } } } : undefined,
+      select: { runId: true, status: true, error: true, startedAt: true, finishedAt: true },
+      orderBy: { startedAt: "desc" },
+      take: RECENT_ATTEMPTS,
+    }),
+    prisma.computerRun.findMany({
+      where: userId ? { userId } : undefined,
+      select: { kind: true, endReason: true, startedAt: true, endedAt: true },
+      orderBy: { startedAt: "desc" },
+      take: RECENT_COMPUTER_RUNS,
+    }),
+    appliedMigrations(prisma),
+  ]);
+  // Servers on no bot are an operator concern; a user-scoped report skips them.
+  const unassigned = userId
+    ? []
+    : await prisma.mcpServer.findMany({
+        where: { assignments: { none: {} } },
+        select: serverFields,
+      });
   const flatten = <T extends { availableIn: { spaceId: string }[] }>(server: T) => ({
     ...server,
     availableIn: server.availableIn.map((space) => space.spaceId),
