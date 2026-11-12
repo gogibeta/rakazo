@@ -27,6 +27,7 @@ describe("built-in skills", () => {
   it("ships the coding skills", () => {
     expect(BUILTIN_AGENT_SKILLS.map((s) => s.name)).toContain("Code Change");
     expect(BUILTIN_AGENT_SKILLS.map((s) => s.name)).toContain("Debug");
+    expect(BUILTIN_AGENT_SKILLS.map((s) => s.name)).toContain("Retrospective");
   });
 });
 
