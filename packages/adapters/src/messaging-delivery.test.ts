@@ -150,6 +150,10 @@ function createDeps(overrides: {
   /** Source messages the drain re-reads by id (ask rows check theirs live). */
   sourceMessages?: Record<string, unknown>;
   appOrigin?: string;
+  /** The identity owner's bots, for /bot picker rows. */
+  bots?: Array<{ id: string; name: string }>;
+  /** The /model picker's model source, when wired. */
+  modelChoices?: MessagingDeliveryDeps["modelChoices"];
   /** The routine a routine-triggered run belongs to; null once deleted. */
   routine?: Record<string, unknown> | null;
 }) {
@@ -172,6 +176,7 @@ function createDeps(overrides: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({
         userId: `owner-of-${where.id}`,
       })),
+      findMany: vi.fn(async () => overrides.bots ?? []),
     },
     run: {
       findUnique: vi.fn(async () => overrides.run ?? messagingRun),
@@ -325,6 +330,7 @@ function createDeps(overrides: {
     jobs: { enqueue: vi.fn(async () => undefined) },
     artifacts: { get: vi.fn(async (storageKey: string) => new TextEncoder().encode(storageKey)) },
     appOrigin: overrides.appOrigin,
+    modelChoices: overrides.modelChoices,
     sendToThread,
     openDirectThread,
     editMessage,
@@ -2695,6 +2701,94 @@ describe("deliverMessagingOutbound ask and takeover messages", () => {
       context,
     );
     expect(deps.rows.map((row) => row.idempotencyKey)).toEqual(["msg:m-comp"]);
+  });
+});
+
+describe("deliverMessagingOutbound command pickers", () => {
+  const pickerRow = (key: string, body: string) => ({
+    id: `out-${key}`,
+    idempotencyKey: key,
+    kind: "dm",
+    identityId: "mi-1",
+    body,
+    status: "pending",
+    attempts: 0,
+    nextAttemptAt: null,
+    providerHandle: null,
+    createdAt: new Date(),
+  });
+
+  it("sends a /bot picker with one button per bot, the current one primary", async () => {
+    const deps = createDeps({
+      run: null,
+      outboundRows: [
+        pickerRow(
+          "picker:bot:mi-1:h-1",
+          "Which bot should this chat talk to? Tap one, or send /bot <name>.",
+        ),
+      ],
+      bots: [
+        { id: "bot-1", name: "Chief" },
+        { id: "bot-2", name: "Research" },
+      ],
+    });
+    await deliverMessagingOutbound(deps, {}, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Which bot should this chat talk to? Tap one, or send /bot <name>.",
+        actions: [
+          { id: "bot", label: "Chief", value: "bot-1", style: "primary" },
+          { id: "bot", label: "Research", value: "bot-2" },
+        ],
+      },
+      context,
+    );
+    expect(deps.rows[0]).toMatchObject({ status: "sent", providerHandle: "handle-out-1" });
+  });
+
+  it("sends a /model picker with the connected models as indexed buttons", async () => {
+    const deps = createDeps({
+      run: null,
+      outboundRows: [
+        pickerRow(
+          "picker:model:mi-1:h-2",
+          "Chief currently uses the deployment default. Which model should it use?",
+        ),
+      ],
+      modelChoices: async () => [
+        { provider: "anthropic", id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+        { provider: "openai", id: "gpt-5.2", label: "GPT-5.2" },
+      ],
+    });
+    await deliverMessagingOutbound(deps, {}, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Chief currently uses the deployment default. Which model should it use?",
+        actions: [
+          { id: "model", label: "Claude Sonnet 5", value: "0" },
+          { id: "model", label: "GPT-5.2", value: "1" },
+        ],
+      },
+      context,
+    );
+  });
+
+  it("sends a picker as plain text when there is nothing to choose", async () => {
+    const deps = createDeps({
+      run: null,
+      outboundRows: [pickerRow("picker:bot:mi-1:h-3", "Which bot should this chat talk to?")],
+      bots: [{ id: "bot-1", name: "Chief" }],
+    });
+    await deliverMessagingOutbound(deps, {}, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      { threadId: "sendblue:dm-1", body: "Which bot should this chat talk to?" },
+      context,
+    );
   });
 });
 

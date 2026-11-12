@@ -357,6 +357,7 @@ export function messagingPlatformsFromEnv(
       },
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
+      ...telegramCommandHooks(env.telegramBotToken),
       isPermanentSendError: isTelegramBlocked,
     });
   }
@@ -386,6 +387,7 @@ export function messagingPlatformsFromEnv(
       },
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
+      ...telegramCommandHooks(bot.botToken),
       isPermanentSendError: isTelegramBlocked,
     });
   }
@@ -682,6 +684,92 @@ function telegramGroupHooks(adapter: { readonly botUserId?: string }) {
     acceptsGroup: (raw: unknown) => asRecord(asRecord(raw)?.chat)?.type !== "channel",
     normalizeThreadId: telegramGroupThreadId,
     departures: (raw: unknown) => telegramDepartures(raw, adapter),
+  };
+}
+
+/**
+ * The command-side hooks every Telegram mount carries: forum topic
+ * creation and the command menu. The installed Chat SDK adapter exposes
+ * neither, so both ride the one raw Bot API side channel kept in this
+ * section — a single POST per call with the mount's own token, failures
+ * read as "not available" rather than errors.
+ */
+function telegramCommandHooks(botToken: string) {
+  return {
+    createTopic: telegramTopicCreator(botToken),
+    registerCommands: telegramCommandRegistrar(botToken),
+  };
+}
+
+/** One raw Bot API call; the decoded `result` on success, null on any failure. */
+async function telegramBotApiCall(
+  botToken: string,
+  method: string,
+  payload: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch,
+): Promise<unknown> {
+  try {
+    const response = await fetchImpl(`https://api.telegram.org/bot${botToken}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return null;
+    const body = asRecord(await response.json().catch(() => null));
+    return body?.ok === true ? body.result : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `createForumTopic` for the group a thread id names. The new topic's
+ * thread id keeps the mount's own encoding (`telegram:<chat>:<topic>`),
+ * so sends and inbound normalization treat it like any topic the group
+ * made itself. Business conversations and non-group threads have no
+ * topics; a group without forum mode refuses, and both read as null.
+ */
+export function telegramTopicCreator(
+  botToken: string,
+  fetchImpl: typeof fetch = fetch,
+): (threadId: string, name: string) => Promise<string | null> {
+  return async (threadId, name) => {
+    const parts = threadId.split(":");
+    if (parts[0] !== "telegram" || (parts.length !== 2 && parts.length !== 3)) return null;
+    const chatId = parts[1]!;
+    if (!/^-?\d+$/.test(chatId)) return null;
+    const result = asRecord(
+      await telegramBotApiCall(
+        botToken,
+        "createForumTopic",
+        { chat_id: chatId, name: name.slice(0, 128) },
+        fetchImpl,
+      ),
+    );
+    const topicId = result?.message_thread_id;
+    if (typeof topicId !== "number" && typeof topicId !== "string") return null;
+    return `telegram:${chatId}:${topicId}`;
+  };
+}
+
+/** `setMyCommands` for this mount's bot; the menu is a convenience, so failures are silent. */
+export function telegramCommandRegistrar(
+  botToken: string,
+  fetchImpl: typeof fetch = fetch,
+): (commands: ReadonlyArray<{ name: string; description: string }>) => Promise<void> {
+  return async (commands) => {
+    await telegramBotApiCall(
+      botToken,
+      "setMyCommands",
+      {
+        commands: commands.map((command) => ({
+          command: command.name,
+          description: command.description,
+        })),
+      },
+      fetchImpl,
+    );
   };
 }
 

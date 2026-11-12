@@ -17,6 +17,8 @@ import {
   photonProjectsFromEnv,
   splitOutboundBody,
   telegramBotsFromEnv,
+  telegramCommandRegistrar,
+  telegramTopicCreator,
 } from "./messaging-platforms.js";
 
 // Fake credentials: adapters are constructed offline, never called.
@@ -821,5 +823,60 @@ describe("enrichSlackTeamRoom", () => {
     };
     expect(enrichSlackTeamRoom(raw, { ...base, mentionsBot: true }).kind).toBe("mention");
     expect(enrichSlackTeamRoom(raw, base).kind).toBe("ambient");
+  });
+});
+
+describe("telegramTopicCreator", () => {
+  const okFetch = (result: unknown) =>
+    vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, result }),
+    })) as unknown as typeof fetch;
+
+  it("creates a forum topic and returns the topic thread id in the mount's encoding", async () => {
+    const fetchImpl = okFetch({ message_thread_id: 77, name: "New chat · Chief" });
+    const createTopic = telegramTopicCreator("tg-token", fetchImpl);
+    await expect(createTopic("telegram:-1001234567890", "New chat · Chief")).resolves.toBe(
+      "telegram:-1001234567890:77",
+    );
+    const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(url).toBe("https://api.telegram.org/bottg-token/createForumTopic");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      chat_id: "-1001234567890",
+      name: "New chat · Chief",
+    });
+  });
+
+  it("reads a refusal (not a forum, topics off) as no topic", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: false, description: "Bad Request: the chat is not a forum" }),
+    })) as unknown as typeof fetch;
+    const createTopic = telegramTopicCreator("tg-token", fetchImpl);
+    await expect(createTopic("telegram:-1001234567890", "New chat")).resolves.toBeNull();
+  });
+
+  it("never calls the API for threads that cannot hold topics", async () => {
+    const fetchImpl = okFetch({ message_thread_id: 1 });
+    const createTopic = telegramTopicCreator("tg-token", fetchImpl);
+    await expect(createTopic("telegram:biz:9:42", "New chat")).resolves.toBeNull();
+    await expect(createTopic("slack:C123", "New chat")).resolves.toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("telegramCommandRegistrar", () => {
+  it("registers the command menu through setMyCommands", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ ok: true, result: true }),
+    })) as unknown as typeof fetch;
+    const register = telegramCommandRegistrar("tg-token", fetchImpl);
+    await register([{ name: "bot", description: "Switch the bot this chat talks to" }]);
+    const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(url).toBe("https://api.telegram.org/bottg-token/setMyCommands");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      commands: [{ command: "bot", description: "Switch the bot this chat talks to" }],
+    });
   });
 });

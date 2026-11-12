@@ -601,6 +601,23 @@ export interface MessagingSurface {
   /** Resolve (or create) the 1:1 thread for a provider address. */
   openDirectThread(provider: string, address: string, context: AdapterContext): Promise<string>;
   /**
+   * Open a named sub-conversation (a forum topic) inside a group thread
+   * and return the new thread's id. Absent — or resolving null — when the
+   * platform cannot: no topic support, topics turned off for the group,
+   * or the platform refused. Callers degrade to the conversation they
+   * already have.
+   */
+  createTopic?(
+    request: { provider: string; threadId: string; name: string },
+    context: AdapterContext,
+  ): Promise<{ threadId: string } | null>;
+  /**
+   * Register the chat command menu with every mounted platform that keeps
+   * one. Best-effort by contract: a platform that cannot register is
+   * skipped, never an error the caller must handle.
+   */
+  registerCommands?(commands: ReadonlyArray<{ name: string; description: string }>): Promise<void>;
+  /**
    * Best-effort receipt for inbound message `handle`. Never gates delivery;
    * no-ops on platforms without a receipt.
    */

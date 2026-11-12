@@ -132,6 +132,16 @@ export interface MessagingPlatform {
    * which is still the group's own conversation.
    */
   normalizeThreadId?: (threadId: string, raw: unknown) => string;
+  /**
+   * Open a named sub-conversation (forum topic) inside a group thread,
+   * in adapter-native thread ids on both sides. Null when this group
+   * cannot take one (not a forum, topics off, platform refused).
+   */
+  createTopic?: (threadId: string, name: string) => Promise<string | null>;
+  /** Register the chat command menu with the platform. Best-effort. */
+  registerCommands?: (
+    commands: ReadonlyArray<{ name: string; description: string }>,
+  ) => Promise<void>;
   /** User-facing transport carried by the raw message when it differs from the provider. */
   transport?: (raw: unknown) => string | null;
   /**
@@ -356,6 +366,41 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     } catch (error) {
       throw sendError(platform, error);
     }
+  }
+
+  /**
+   * Open a topic through the mounted platform's own hook, translating
+   * thread ids at the boundary like every other call. Null when the
+   * provider is unknown here or its platform has no topic support.
+   */
+  async createTopic(
+    request: { provider: string; threadId: string; name: string },
+    _context: AdapterContext,
+  ): Promise<{ threadId: string } | null> {
+    const mounted = this.byProvider.get(request.provider);
+    if (!mounted?.platform.createTopic) return null;
+    const created = await mounted.platform.createTopic(
+      toAdapterThreadId(mounted, request.threadId),
+      request.name,
+    );
+    return created ? { threadId: toProviderThreadId(mounted, created) } : null;
+  }
+
+  /** Register the command menu on every mounted platform that keeps one. */
+  async registerCommands(
+    commands: ReadonlyArray<{ name: string; description: string }>,
+  ): Promise<void> {
+    await Promise.all(
+      [...this.byProvider.values()].map(async ({ platform }) => {
+        try {
+          await platform.registerCommands?.(commands);
+        } catch (error) {
+          getLogger().error("messaging command menu registration failed", error, {
+            provider: platform.provider,
+          });
+        }
+      }),
+    );
   }
 
   async acknowledge(threadId: string, handle: string, context: AdapterContext): Promise<void> {

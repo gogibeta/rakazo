@@ -8,16 +8,22 @@ import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import { insertOutboundRows } from "@rakazo/adapters";
 import type { MessageBlock } from "@rakazo/contracts";
 import { ATTACHMENT_MAX_COUNT, isAttachmentAudioMimeType } from "@rakazo/contracts";
-import type { MessagingCommand } from "@rakazo/core";
+import type { MessagingCommand, MessagingSlashCommand } from "@rakazo/core";
 import {
   displayName,
   isApprovalAskBlock,
   isSecretAskBlock,
   MESSAGING_ASK_ACTION_ID,
+  MESSAGING_BOT_PICKER_ACTION_ID,
+  MESSAGING_COMMANDS_HELP,
+  MESSAGING_MODEL_PICKER_ACTION_ID,
   messageBlockForArtifact,
   normalizeVoiceTranscript,
   parseMessagingAskActionValue,
+  parseMessagingBotPickerValue,
   parseMessagingCommand,
+  parseMessagingModelPickerValue,
+  parseMessagingSlashCommand,
   promptTextForAttachments,
   resolveAskChoice,
   sanitizeMessagingLabel,
@@ -34,6 +40,8 @@ import {
   accountDeactivated,
   createThreadMessage,
   crossSpaceCommunicationAllowed,
+  insertMessagingSteeringMessage,
+  isUniqueViolation,
   normalizeMessagingLinkCode,
   redeemMessagingLinkCode,
   SpaceDeletionInProgressError,
@@ -56,9 +64,42 @@ import {
   messagingWakeIdempotencyKey,
 } from "./webhook-inbound.js";
 
+/** One model the /model command can offer: a configured connection's catalog entry. */
+export interface MessagingModelChoice {
+  provider: string;
+  id: string;
+  label: string;
+}
+
+/**
+ * The /model command's seam onto the same catalog and bot-update path
+ * the app's model picker uses, narrowed to what a chat command needs.
+ */
+export interface MessagingInboundModels {
+  /** The models the person's configured connections can run, in picker order. */
+  choices(scope: { userId: string; spaceId: string }): Promise<MessagingModelChoice[]>;
+  /** Resolve a typed name or id against those models; null when nothing matches. */
+  resolve(
+    scope: { userId: string; spaceId: string },
+    query: string,
+    preferredProvider: string | null,
+  ): Promise<{ provider: string; model: string } | null>;
+  /** Validate and persist a bot's model, exactly as the app's picker saves it. */
+  apply(
+    scope: { userId: string; spaceId: string },
+    bot: {
+      id: string;
+      modelProvider: string | null;
+      modelId: string | null;
+      thinkingLevel: string | null;
+    },
+    choice: { provider: string; model: string },
+  ): Promise<{ ok: true } | { ok: false; error: string }>;
+}
+
 export interface MessagingInboundDeps {
   prisma: PrismaClient;
-  events: Pick<ThreadEvents, "sendUserMessage" | "notify" | "answerRunInput">;
+  events: Pick<ThreadEvents, "sendUserMessage" | "notify" | "answerRunInput" | "clearThread">;
   jobs: Pick<JobPublisher, "enqueue">;
   /**
    * The deployment's public web origin, when known. Notices that must send
@@ -90,6 +131,32 @@ export interface MessagingInboundDeps {
     mimeType: string;
     signal: AbortSignal;
   }) => Promise<string | null>;
+  /**
+   * Model listing and switching for /model, wired in the composition
+   * root to the app model picker's own catalog and update path. Absent,
+   * /model answers that switching is unavailable on this line.
+   */
+  models?: MessagingInboundModels;
+  /**
+   * Opens a forum topic in a group conversation and returns its thread
+   * id, for /new in group chats. Absent — or null — when the platform
+   * cannot (no topics, topics off, not a forum group).
+   */
+  createTopic?: (provider: string, threadId: string, name: string) => Promise<string | null>;
+  /**
+   * The best-effort follow-through after /new clears a conversation —
+   * cancel the cleared runs' jobs and purge conversation-derived memory —
+   * mirroring what the app's Clear conversation does once the clear
+   * commits. The clear itself never waits on it.
+   */
+  afterThreadClear?: (input: {
+    spaceId: string;
+    userId: string;
+    threadId: string;
+    botId: string;
+    cancelledRunIds: string[];
+    historyCompactionGeneration: number;
+  }) => Promise<void>;
 }
 
 /** A stored inbound attachment, with spoken words when audio was transcribed. */
@@ -418,6 +485,14 @@ async function handleDirectEvent(
       },
       deps.signupPolicy,
     );
+  }
+
+  // Slash commands (/bot, /new, /queue, /steer, /model, /help) act on the
+  // sender's own line and never reach the bot as messages. Only a linked
+  // sender has any, and a message carrying media stays a message.
+  if (existing && attachments.length === 0 && !event.mediaUrl) {
+    const slash = parseMessagingSlashCommand(event.content);
+    if (slash && (await applyDirectSlashCommand(deps, existing, ids, event, slash))) return;
   }
 
   // A bare number or an option's own words answers the bot's pending choice
@@ -965,6 +1040,638 @@ async function enqueueDeliverJob(deps: MessagingInboundDeps): Promise<void> {
   });
 }
 
+/** A command's short answer into the conversation it was sent in, keyed so a redelivery lands once. */
+type CommandReplier = (key: string, body: string) => Promise<void>;
+
+function dmReplier(deps: MessagingInboundDeps, identity: { id: string }): CommandReplier {
+  return async (key, body) => {
+    const { count } = await deps.prisma.messagingOutbound.createMany({
+      data: [{ idempotencyKey: key, kind: "dm", identityId: identity.id, body }],
+      skipDuplicates: true,
+    });
+    if (count > 0) await enqueueDeliverJob(deps);
+  };
+}
+
+function channelReplier(deps: MessagingInboundDeps, threadId: string): CommandReplier {
+  return async (key, body) => {
+    await insertOutboundRows(deps.prisma, { identityId: null, threadId }, [
+      { idempotencyKey: key, kind: "group", threadId, body },
+    ]);
+    await enqueueDeliverJob(deps);
+  };
+}
+
+/** The person's own bots in the identity's Space, oldest first — the /bot command's universe. */
+async function botsForIdentity(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+): Promise<Array<{ id: string; name: string }>> {
+  return deps.prisma.bot.findMany({
+    where: { userId: identity.userId, spaceId: identity.spaceId, archivedAt: null },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true },
+  });
+}
+
+type BotSwitchOutcome =
+  | { status: "switched"; bot: { id: string; name: string } }
+  | { status: "already"; bot: { id: string; name: string } }
+  | { status: "linked-elsewhere" }
+  | { status: "not-found" };
+
+/**
+ * The /bot switch: the same write the app's chat-app settings make
+ * (identities.setBot) with the same checks — the bot must be the person's
+ * own, live, and in the identity's Space, and botId's uniqueness is the
+ * database's, so a bot linked to another of their lines refuses here
+ * exactly as it refuses there.
+ */
+async function switchIdentityBot(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  botId: string,
+): Promise<BotSwitchOutcome> {
+  const bot = await deps.prisma.bot.findFirst({
+    where: { id: botId, userId: identity.userId, spaceId: identity.spaceId, archivedAt: null },
+    select: { id: true, name: true, spaceId: true },
+  });
+  if (!bot) return { status: "not-found" };
+  if (identity.botId === bot.id) return { status: "already", bot };
+  try {
+    await deps.prisma.messagingIdentity.update({
+      where: { id: identity.id },
+      data: { botId: bot.id, spaceId: bot.spaceId },
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) return { status: "linked-elsewhere" };
+    throw error;
+  }
+  return { status: "switched", bot };
+}
+
+function botSwitchText(outcome: BotSwitchOutcome, argument?: string): string {
+  switch (outcome.status) {
+    case "switched":
+      return `This chat now talks to ${outcome.bot.name}.`;
+    case "already":
+      return `This chat already talks to ${outcome.bot.name}.`;
+    case "linked-elsewhere":
+      return "That bot is already linked to a chat app.";
+    case "not-found":
+      return argument
+        ? `No bot named "${argument}" here. Send /bot to see your bots.`
+        : "That bot isn't available anymore. Send /bot for a fresh list.";
+  }
+}
+
+/** A typed bot name: an exact (case-insensitive) match, else one unambiguous prefix. */
+async function resolveNamedBot(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  argument: string,
+): Promise<
+  | { status: "one"; bot: { id: string; name: string } }
+  | { status: "ambiguous"; bots: Array<{ id: string; name: string }> }
+  | { status: "none" }
+> {
+  const bots = await botsForIdentity(deps, identity);
+  const wanted = argument.toLowerCase();
+  const exact = bots.filter((bot) => bot.name.toLowerCase() === wanted);
+  if (exact.length === 1) return { status: "one", bot: exact[0]! };
+  if (exact.length > 1) return { status: "ambiguous", bots: exact };
+  const prefix = bots.filter((bot) => bot.name.toLowerCase().startsWith(wanted));
+  if (prefix.length === 1) return { status: "one", bot: prefix[0]! };
+  if (prefix.length > 1) return { status: "ambiguous", bots: prefix };
+  return { status: "none" };
+}
+
+async function applyBotCommand(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  argument: string | null,
+  reply: CommandReplier,
+  keyBase: string,
+  withPicker: boolean,
+): Promise<void> {
+  if (!argument) {
+    const bots = await botsForIdentity(deps, identity);
+    const current = bots.find((bot) => bot.id === identity.botId);
+    if (bots.length <= 1) {
+      await reply(
+        `command:bot:${keyBase}`,
+        current
+          ? `This chat talks to ${current.name} — your only bot in this space.`
+          : "You have no bots in this space yet.",
+      );
+      return;
+    }
+    if (withPicker) {
+      await reply(
+        `picker:bot:${identity.id}:${keyBase}`,
+        "Which bot should this chat talk to? Tap one, or send /bot <name>.",
+      );
+    } else {
+      await reply(
+        `command:bot:${keyBase}`,
+        `Bots in this space: ${bots.map((bot) => bot.name).join(", ")}. Send /bot <name> to switch this chat.`,
+      );
+    }
+    return;
+  }
+  const resolved = await resolveNamedBot(deps, identity, argument);
+  if (resolved.status === "none") {
+    await reply(`command:bot:${keyBase}`, botSwitchText({ status: "not-found" }, argument));
+    return;
+  }
+  if (resolved.status === "ambiguous") {
+    if (withPicker) {
+      await reply(
+        `picker:bot:${identity.id}:${keyBase}`,
+        `More than one bot matches "${argument}". Tap the one you mean, or send its full name.`,
+      );
+    } else {
+      await reply(
+        `command:bot:${keyBase}`,
+        `More than one bot matches "${argument}": ${resolved.bots.map((bot) => bot.name).join(", ")}. Send the full name to switch.`,
+      );
+    }
+    return;
+  }
+  const outcome = await switchIdentityBot(deps, identity, resolved.bot.id);
+  await reply(`command:bot:${keyBase}`, botSwitchText(outcome, argument));
+}
+
+/** A bot's model-relevant state, as the app's model picker reads it. */
+async function botModelState(deps: MessagingInboundDeps, botId: string) {
+  return deps.prisma.bot.findFirst({
+    where: { id: botId },
+    select: { id: true, name: true, modelProvider: true, modelId: true, thinkingLevel: true },
+  });
+}
+
+type BotModelState = NonNullable<Awaited<ReturnType<typeof botModelState>>>;
+
+/** How many models a plain-text /model answer lists; the picker and the app show the rest. */
+const MODEL_LIST_LIMIT = 12;
+
+function currentModelLabel(choices: MessagingModelChoice[], bot: BotModelState): string | null {
+  if (!bot.modelId) return null;
+  return (
+    choices.find((choice) => choice.provider === bot.modelProvider && choice.id === bot.modelId)
+      ?.label ?? `${bot.modelProvider}/${bot.modelId}`
+  );
+}
+
+/** Persist a chosen model through the command's model seam and say so, or say why not. */
+async function applyModelChoice(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  bot: BotModelState,
+  choice: { provider: string; model: string },
+  label: string,
+  reply: CommandReplier,
+  keyBase: string,
+): Promise<void> {
+  if (!deps.models) return;
+  const result = await deps.models.apply(
+    { userId: identity.userId, spaceId: identity.spaceId },
+    bot,
+    choice,
+  );
+  if (!result.ok) {
+    await reply(`command:model:${keyBase}`, `Couldn't switch the model: ${result.error}`);
+    return;
+  }
+  await reply(`command:model:${keyBase}`, `Model set to ${label}.`);
+}
+
+async function applyModelCommand(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  argument: string | null,
+  reply: CommandReplier,
+  keyBase: string,
+  withPicker: boolean,
+): Promise<void> {
+  if (!deps.models) {
+    await reply(`command:model:${keyBase}`, "Model switching isn't available on this line.");
+    return;
+  }
+  const scope = { userId: identity.userId, spaceId: identity.spaceId };
+  const bot = await botModelState(deps, identity.botId);
+  if (!bot) {
+    await reply(`command:model:${keyBase}`, "This chat has no bot to switch.");
+    return;
+  }
+  if (!argument) {
+    const choices = await deps.models.choices(scope);
+    const current = currentModelLabel(choices, bot);
+    if (choices.length === 0) {
+      await reply(
+        `command:model:${keyBase}`,
+        `${bot.name} uses ${current ?? "the deployment default model"}. No models are connected yet — add one in Settings → Models.`,
+      );
+      return;
+    }
+    if (withPicker) {
+      await reply(
+        `picker:model:${identity.id}:${keyBase}`,
+        `${bot.name} currently uses ${current ?? "the deployment default"}. Which model should it use? Tap one, or send /model <id>.`,
+      );
+    } else {
+      const listed = choices
+        .slice(0, MODEL_LIST_LIMIT)
+        .map((choice) => `${choice.label} (${choice.provider}/${choice.id})`)
+        .join(", ");
+      await reply(
+        `command:model:${keyBase}`,
+        `${bot.name} currently uses ${current ?? "the deployment default"}.\nModels: ${listed}.\nSend /model <id> to switch.`,
+      );
+    }
+    return;
+  }
+  const resolved = await deps.models.resolve(scope, argument, bot.modelProvider);
+  if (!resolved) {
+    await reply(
+      `command:model:${keyBase}`,
+      `I couldn't find a connected model called "${argument}". Send /model to see the list.`,
+    );
+    return;
+  }
+  const choices = await deps.models.choices(scope);
+  const label =
+    choices.find((choice) => choice.provider === resolved.provider && choice.id === resolved.model)
+      ?.label ?? `${resolved.provider}/${resolved.model}`;
+  await applyModelChoice(deps, identity, bot, resolved, label, reply, keyBase);
+}
+
+/**
+ * /queue and /steer: the text joins the thread through the executor's own
+ * steering store — addressed to the run holding the thread, or held for
+ * the follow-up that run's finish starts. With nothing running, the
+ * command's text simply goes as the message it would have been.
+ */
+async function applyQueueSteerCommand(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  input: {
+    threadId: string;
+    mode: "queue" | "steer";
+    text: string;
+    reply: CommandReplier;
+    keyBase: string;
+    clientNonce: string;
+    sendAsMessage: (text: string) => Promise<void>;
+  },
+): Promise<void> {
+  if (!input.text) {
+    await input.reply(
+      `command:${input.mode}:${input.keyBase}`,
+      input.mode === "queue"
+        ? "Send /queue <message> — it goes right after the current run finishes."
+        : "Send /steer <message> — it reaches the run in progress.",
+    );
+    return;
+  }
+  const inserted = await insertMessagingSteeringMessage(deps.prisma, {
+    spaceId: identity.spaceId,
+    threadId: input.threadId,
+    botId: identity.botId,
+    userId: identity.userId,
+    authorUserId: identity.userId,
+    blocks: [{ kind: "text", text: input.text }],
+    clientNonce: input.clientNonce,
+    mode: input.mode,
+  });
+  if (inserted.eventSeq != null) {
+    await deps.events.notify(input.threadId, inserted.eventSeq).catch(() => undefined);
+  }
+  switch (inserted.outcome) {
+    case "steered":
+      await input.reply(
+        `command:steer:${input.keyBase}`,
+        "Steering noted — it joins the current run.",
+      );
+      return;
+    case "queued":
+      await input.reply(
+        `command:queue:${input.keyBase}`,
+        "Queued — it goes right after the current run finishes.",
+      );
+      return;
+    case "duplicate":
+      // A redelivery: the first copy already wrote and answered.
+      return;
+    case "no-active-run":
+      await input.sendAsMessage(input.text);
+      return;
+  }
+}
+
+/** /new in a DM: the app's own Clear conversation, then its best-effort follow-through. */
+async function applyNewConversationCommand(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  threadId: string,
+  reply: CommandReplier,
+  keyBase: string,
+): Promise<void> {
+  const cleared = await deps.events.clearThread({
+    spaceId: identity.spaceId,
+    threadId,
+    botId: identity.botId,
+  });
+  if (deps.afterThreadClear) {
+    await deps
+      .afterThreadClear({
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        threadId,
+        botId: identity.botId,
+        cancelledRunIds: cleared.cancelledRunIds,
+        historyCompactionGeneration: cleared.historyCompactionGeneration,
+      })
+      .catch((error) => {
+        getLogger().error("messaging /new follow-through failed", error);
+      });
+  }
+  const bot = await deps.prisma.bot.findUnique({
+    where: { id: identity.botId },
+    select: { name: true },
+  });
+  await reply(
+    `command:new:${keyBase}`,
+    `Started a fresh conversation with ${bot?.name ?? "your bot"}.`,
+  );
+}
+
+/**
+ * /new in a group: the fresh conversation gets its own forum topic where
+ * the platform has topics — the topic is a channel of its own, bound by
+ * its channel row like any topic the group made itself. Everywhere else
+ * the group keeps one shared conversation, and the command says so.
+ */
+async function applyNewTopicCommand(
+  deps: MessagingInboundDeps,
+  input: {
+    event: MessagingInboundMessage;
+    channel: { id: string; threadId: string };
+    identity: IdentityRow;
+    reply: CommandReplier;
+    keyBase: string;
+  },
+): Promise<void> {
+  const { event, channel, identity, reply, keyBase } = input;
+  if (!deps.createTopic) {
+    await reply(
+      `command:new:${keyBase}`,
+      "Separate threads aren't available in this chat — topics only exist in Telegram groups with Topics turned on.",
+    );
+    return;
+  }
+  const bot = await deps.prisma.bot.findUnique({
+    where: { id: identity.botId },
+    select: { name: true },
+  });
+  const topicName = `New chat · ${bot?.name ?? "your bot"}`;
+  const created = await deps
+    .createTopic(event.provider, event.threadId, topicName)
+    .catch((error) => {
+      getLogger().error("messaging /new topic creation failed", error);
+      return null;
+    });
+  if (!created) {
+    await reply(
+      `command:new:${keyBase}`,
+      "I couldn't open a topic here. Topics need a Telegram group with Topics turned on, with me as an admin.",
+    );
+    return;
+  }
+  await deps.prisma.messagingChannel.upsert({
+    where: { threadId: created },
+    create: { provider: event.provider, threadId: created, name: topicName },
+    update: {},
+  });
+  await channelReplier(deps, created)(
+    `command:new:${channel.id}:${event.handle}:topic`,
+    "Fresh conversation started here. This topic is its own thread — messages here stay here.",
+  );
+  await reply(
+    `command:new:${keyBase}`,
+    `Started a fresh conversation in a new topic: "${topicName}".`,
+  );
+}
+
+/** Slash commands in the owner's DM. Always handled: a command is never a message. */
+async function applyDirectSlashCommand(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  ids: ProvisionedMessagingIdentity,
+  event: MessagingInboundMessage,
+  slash: MessagingSlashCommand,
+): Promise<boolean> {
+  const reply = dmReplier(deps, identity);
+  switch (slash.name) {
+    case "help":
+      await reply(`command:help:${event.handle}`, MESSAGING_COMMANDS_HELP);
+      return true;
+    case "bot":
+      await applyBotCommand(deps, identity, slash.argument, reply, event.handle, true);
+      return true;
+    case "model":
+      await applyModelCommand(deps, identity, slash.argument, reply, event.handle, true);
+      return true;
+    case "new":
+      await applyNewConversationCommand(deps, identity, ids.threadId, reply, event.handle);
+      return true;
+    case "queue":
+    case "steer":
+      await applyQueueSteerCommand(deps, identity, {
+        threadId: ids.threadId,
+        mode: slash.name,
+        text: slash.text,
+        reply,
+        keyBase: event.handle,
+        clientNonce: `messaging:${event.provider}:${event.handle}`,
+        sendAsMessage: async (text) => {
+          const sent = await deps.events.sendUserMessage({
+            spaceId: ids.spaceId,
+            threadId: ids.threadId,
+            botId: ids.botId,
+            userId: ids.userId,
+            authorUserId: ids.userId,
+            blocks: [{ kind: "text" as const, text }],
+            prompt: text,
+            trigger: "messaging",
+            clientNonce: `messaging:${event.provider}:${event.handle}`,
+          });
+          if (sent.runId) {
+            await deps.jobs.enqueue(runContinueJob(sent.runId)).catch((error) => {
+              getLogger().error("messaging command fallback enqueue error", error);
+            });
+          }
+        },
+      });
+      return true;
+  }
+}
+
+/**
+ * Slash commands in a linked group, for the sender's own line only.
+ * Pickers degrade to text here (the group's outbox rows carry no
+ * buttons); everything else behaves as in a DM.
+ */
+async function applyChannelSlashCommand(
+  deps: MessagingInboundDeps,
+  input: {
+    event: MessagingInboundMessage;
+    channel: { id: string; threadId: string; name: string | null };
+    identity: IdentityRow;
+    fromLabel: string;
+    slash: MessagingSlashCommand;
+  },
+): Promise<boolean> {
+  const { event, channel, identity, fromLabel, slash } = input;
+  const reply = channelReplier(deps, channel.threadId);
+  const keyBase = `${channel.id}:${event.handle}`;
+  switch (slash.name) {
+    case "help":
+      await reply(`command:help:${keyBase}`, MESSAGING_COMMANDS_HELP);
+      return true;
+    case "bot":
+      await applyBotCommand(deps, identity, slash.argument, reply, keyBase, false);
+      return true;
+    case "model":
+      await applyModelCommand(deps, identity, slash.argument, reply, keyBase, false);
+      return true;
+    case "new":
+      await applyNewTopicCommand(deps, { event, channel, identity, reply, keyBase });
+      return true;
+    case "queue":
+    case "steer": {
+      const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+      if (!thread) return true;
+      await applyQueueSteerCommand(deps, identity, {
+        threadId: thread.id,
+        mode: slash.name,
+        text: slash.text,
+        reply,
+        keyBase,
+        clientNonce: `messaging:${event.provider}:${event.handle}`,
+        sendAsMessage: async (text) => {
+          const target = {
+            spaceId: identity.spaceId,
+            userId: identity.userId,
+            botId: identity.botId,
+            threadId: thread.id,
+          };
+          // Message-trigger routines own the delivery when configured,
+          // exactly as they do for a plain group message to this bot.
+          if (await wakeMessageRoutines(deps, target, event)) return;
+          const block: MessageBlock = {
+            kind: "channel_message",
+            provider: event.provider,
+            ...(event.transport ? { transport: event.transport } : {}),
+            channelId: channel.id,
+            fromAddress: event.from,
+            fromLabel,
+            text,
+            hop: 0,
+          };
+          const sent = await deps.events.sendUserMessage({
+            ...target,
+            blocks: [block],
+            prompt: `[Group "${channel.name ?? "group"}", ${fromLabel}]: ${text}`,
+            trigger: "messaging",
+            clientNonce: `messaging:${event.provider}:${event.handle}`,
+          });
+          if (sent.runId) {
+            await deps.jobs.enqueue(runContinueJob(sent.runId)).catch((error) => {
+              getLogger().error("messaging command fallback enqueue error", error);
+            });
+          }
+        },
+      });
+      return true;
+    }
+  }
+}
+
+/**
+ * Answers a tap on a /bot or /model picker card. Returns true when the
+ * tap was one of ours — fully handled here, applied or not — and false
+ * when it belongs to the normal message path. Like an ask tap, a picker
+ * tap resolves against the tapper's own identity: the card may sit in a
+ * conversation anyone can read, but the switch it performs is always
+ * the tapper's own.
+ */
+export async function answerMessagingPickerAction(
+  deps: MessagingInboundDeps,
+  event: MessagingInboundAction,
+): Promise<boolean> {
+  if (
+    event.actionId !== MESSAGING_BOT_PICKER_ACTION_ID &&
+    event.actionId !== MESSAGING_MODEL_PICKER_ACTION_ID
+  )
+    return false;
+  try {
+    await resolvePickerTap(deps, event);
+  } catch (error) {
+    if (!(error instanceof SpaceDeletionInProgressError)) throw error;
+    getLogger().info("messaging picker tap dropped", { reason: "space being deleted" });
+  }
+  return true;
+}
+
+async function resolvePickerTap(
+  deps: MessagingInboundDeps,
+  event: MessagingInboundAction,
+): Promise<void> {
+  const identity = await deps.prisma.messagingIdentity.findUnique({
+    where: { provider_address: { provider: event.provider, address: event.from } },
+  });
+  // An unlinked address has nothing to switch, and a tap never provisions.
+  if (!identity) return;
+  if (event.installationSpaceId && identity.spaceId !== event.installationSpaceId) return;
+  if (await accountDeactivated(deps.prisma, identity.userId)) return;
+  await deps.prisma.messagingIdentity.update({
+    where: { id: identity.id },
+    data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
+  });
+  const reply = dmReplier(deps, identity);
+  if (event.actionId === MESSAGING_BOT_PICKER_ACTION_ID) {
+    const botId = parseMessagingBotPickerValue(event.value);
+    if (!botId) return;
+    const outcome = await switchIdentityBot(deps, identity, botId);
+    await reply(`command:bot:${event.handle}`, botSwitchText(outcome));
+    return;
+  }
+  const index = parseMessagingModelPickerValue(event.value);
+  if (index === null || !deps.models) return;
+  const scope = { userId: identity.userId, spaceId: identity.spaceId };
+  const choices = await deps.models.choices(scope);
+  const choice = choices[index];
+  if (!choice) {
+    await reply(
+      `command:model:${event.handle}`,
+      "That model list has changed — send /model for a fresh list.",
+    );
+    return;
+  }
+  const bot = await botModelState(deps, identity.botId);
+  if (!bot) return;
+  await applyModelChoice(
+    deps,
+    identity,
+    bot,
+    { provider: choice.provider, model: choice.id },
+    choice.label,
+    reply,
+    event.handle,
+  );
+}
+
 async function handleChannelEvent(
   deps: MessagingInboundDeps,
   event: MessagingInboundMessage,
@@ -1154,6 +1861,24 @@ async function handleChannelEvent(
   const fromLabel = senderIdentity
     ? await ownerFirstName(deps.prisma, senderIdentity.userId, event.from)
     : event.from;
+
+  // A slash command from an approved member acts on their own line and is
+  // never fanned out to the other members' bots as conversation. Anyone
+  // else's command-shaped text is just a group message.
+  if (senderIdentity && !event.attachments?.length && !event.mediaUrl) {
+    const slash = parseMessagingSlashCommand(event.content);
+    if (
+      slash &&
+      (await applyChannelSlashCommand(deps, {
+        event,
+        channel,
+        identity: senderIdentity,
+        fromLabel,
+        slash,
+      }))
+    )
+      return;
+  }
 
   const approved = await deps.prisma.messagingChannelMember.findMany({
     where: { channelId: channel.id, status: "approved", identityId: { not: null } },

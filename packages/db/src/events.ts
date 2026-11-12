@@ -573,6 +573,125 @@ export async function sendUserMessage(
   };
 }
 
+export type MessagingSteeringOutcome = "steered" | "queued" | "no-active-run" | "duplicate";
+
+/**
+ * A chat `/steer` or `/queue` command, written through the same steering
+ * store sendUserMessage feeds: the person's message lands in the thread,
+ * addressed to the run holding it (steer) or held pending for the
+ * follow-up run the executor starts when that run finishes (queue). The
+ * busy-run choice mirrors sendUserMessage's — a run this sender can steer
+ * first, then any conversational run — so a command and a plain message
+ * sent in the same moment agree about what is running. With nothing
+ * holding the thread nothing is written and the caller falls back to a
+ * normal send. A redelivered command (same client nonce) writes nothing
+ * twice.
+ */
+export async function insertMessagingSteeringMessage(
+  prisma: PrismaClient,
+  input: {
+    spaceId: string;
+    threadId: string;
+    botId: string;
+    userId: string;
+    authorUserId?: string;
+    blocks: MessageBlock[];
+    clientNonce?: string;
+    mode: "steer" | "queue";
+  },
+): Promise<{ outcome: MessagingSteeringOutcome; eventSeq: number | null }> {
+  const replay = async (): Promise<{ outcome: "duplicate"; eventSeq: null } | null> => {
+    if (!input.clientNonce) return null;
+    const message = await prisma.message.findUnique({
+      where: {
+        threadId_clientNonce: { threadId: input.threadId, clientNonce: input.clientNonce },
+      },
+      select: { id: true },
+    });
+    return message ? { outcome: "duplicate", eventSeq: null } : null;
+  };
+  const existing = await replay();
+  if (existing) return existing;
+  const committed = await withTransactionRetry(() =>
+    prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      if (!(await spaceTakesWork(tx, input.spaceId)))
+        return { outcome: "no-active-run" as const, eventSeq: null };
+      const activeRuns = await tx.run.findMany({
+        where: {
+          threadId: input.threadId,
+          botId: input.botId,
+          status: { in: [...QUEUE_HOLDING_RUN_STATUSES] },
+        },
+        select: {
+          id: true,
+          trigger: true,
+          status: true,
+          userId: true,
+          sourceMessage: { select: { blocks: true } },
+        },
+      });
+      const steersRun = (run: (typeof activeRuns)[number]) =>
+        run.userId === input.userId &&
+        messageSteersRun(
+          "messaging",
+          run.trigger,
+          undefined,
+          messagingChannelId(run.sourceMessage?.blocks as MessageBlock[] | undefined),
+        );
+      const holdingRuns = activeRuns.filter(
+        (run) => !messageBypassesTakeoverWait(run, steersRun(run)),
+      );
+      const busy =
+        holdingRuns.find(steersRun) ??
+        holdingRuns.find((run) => isConversationalRun(run.trigger)) ??
+        holdingRuns[0] ??
+        null;
+      if (!busy) return { outcome: "no-active-run" as const, eventSeq: null };
+      const message = await createThreadMessageInTransaction(tx, {
+        threadId: input.threadId,
+        role: "user",
+        blocks: input.blocks,
+        authorUserId: input.authorUserId,
+        clientNonce: input.clientNonce,
+      });
+      const author = await loadMessageAuthor(tx, input.authorUserId);
+      await tx.steeringMessage.create({
+        data: {
+          messageId: message.id,
+          botId: input.botId,
+          userId: input.userId,
+          runId: input.mode === "steer" ? busy.id : null,
+          originTrigger: "messaging",
+        },
+      });
+      await tx.message.update({ where: { id: message.id }, data: { runId: busy.id } });
+      const event = await appendEventInTransaction(tx, {
+        spaceId: input.spaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        type: "thread.message.created",
+        runId: busy.id,
+        payload: {
+          messageId: message.id,
+          role: "user",
+          blocks: input.blocks,
+          author,
+          callId: callIdFromClientNonce(message.clientNonce),
+        },
+      });
+      return {
+        outcome: input.mode === "steer" ? ("steered" as const) : ("queued" as const),
+        eventSeq: event.seq,
+      };
+    }, THREAD_LOCK_TRANSACTION_OPTIONS),
+  ).catch(async (error: unknown) => {
+    const winner = await replay();
+    if (winner) return winner;
+    throw error;
+  });
+  return committed;
+}
+
 export async function appendEvent(
   prisma: PrismaClient,
   input: AppendEventInput,
