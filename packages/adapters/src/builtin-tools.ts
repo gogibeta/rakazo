@@ -822,6 +822,40 @@ export const builtinAgentTools: ConnectorTool[] = [
     readOnly: true,
   },
   {
+    name: "decide",
+    description:
+      "Ask the deployment's decision model to choose between labelled options for one or more questions about a state, with a confidence for each answer. Use for triage, routing and review judgements where a calibrated choice helps. Only offered when a decision model is configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        state: {
+          description: "The text the questions are about, or a JSON object describing it.",
+        },
+        questions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Short unique name for the question." },
+              question: { type: "string", description: "What to decide." },
+              options: {
+                type: "array",
+                minItems: 2,
+                description:
+                  "The options to choose between: labels, or { label, description } pairs explaining each label.",
+              },
+            },
+            required: ["name", "question", "options"],
+          },
+        },
+      },
+      required: ["state", "questions"],
+    },
+    readOnly: false,
+  },
+  {
     name: "service_search",
     description:
       "Find a paid data service by the job it does: map places, search results, work emails, people and company profiles, social posts, SEO and backlink data. Returns service ids, prices in USD per call, and params. Then call one with service_call.",

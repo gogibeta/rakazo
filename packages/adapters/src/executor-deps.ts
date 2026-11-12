@@ -20,6 +20,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { PrismaClient, RunLease, ThreadEvents } from "@rakazo/db";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
+import type { ConfiguredDecision } from "./configured-decision.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
@@ -70,6 +71,8 @@ export interface ExecutorDeps {
   web?: WebProvider;
   mediaGeneration?: MediaGenerationProvider;
   paidServices?: PaidServiceProvider;
+  /** The deployment's decision provider for the `decide` tool. Defaults from env keys when omitted. */
+  decisions?: ConfiguredDecision;
   /** Page browser (DOM refs) on the bot computer. Defaults to the sandbox live browser when supported. */
   browser?: BrowserProvider;
   secretHttp?: RemoteTransportDependencies;

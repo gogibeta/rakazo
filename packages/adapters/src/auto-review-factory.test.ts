@@ -2,6 +2,7 @@ import type { AutoReviewProvider } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import { LlmAutoReviewProvider } from "./auto-review.js";
 import { createAutoReviewProvider } from "./auto-review-factory.js";
+import { DrexAutoReviewProvider } from "./drex-auto-review.js";
 import { JevAutoReviewProvider } from "./jev-auto-review.js";
 import { ScriptedAutoReviewProvider } from "./scripted-auto-review.js";
 
@@ -27,6 +28,9 @@ describe("createAutoReviewProvider", () => {
     expect(createAutoReviewProvider("jev", { apiKey: "ts-key" })).toBeInstanceOf(
       JevAutoReviewProvider,
     );
+    expect(createAutoReviewProvider("drex", { apiKey: "nace-key" })).toBeInstanceOf(
+      DrexAutoReviewProvider,
+    );
     expect(
       createAutoReviewProvider("llm", {
         llm: {
@@ -47,6 +51,7 @@ describe("createAutoReviewProvider", () => {
     expect(createAutoReviewProvider("scripted")).toBeInstanceOf(ScriptedAutoReviewProvider);
     expect(() => createAutoReviewProvider("unknown")).toThrow(/unknown auto-review provider/i);
     expect(() => createAutoReviewProvider("jev", { env: {} })).toThrow(/TYPESAFE_API_KEY/);
+    expect(() => createAutoReviewProvider("drex", { env: {} })).toThrow(/NACE_API_KEY/);
     expect(() => createAutoReviewProvider("llm")).toThrow(/runtime checker/i);
   });
 
@@ -61,6 +66,11 @@ describe("createAutoReviewProvider", () => {
         env: { RAKAZO_AUTO_REVIEW_PROVIDER: "jev", TYPESAFE_API_KEY: "ts-key" },
       }),
     ).toBeInstanceOf(JevAutoReviewProvider);
+    expect(
+      createAutoReviewProvider(undefined, {
+        env: { RAKAZO_AUTO_REVIEW_PROVIDER: "drex", NACE_API_KEY: "nace-key" },
+      }),
+    ).toBeInstanceOf(DrexAutoReviewProvider);
     expect(
       createAutoReviewProvider("scripted", {
         env: { RAKAZO_AUTO_REVIEW_PROVIDER: "jev", TYPESAFE_API_KEY: "ts-key" },

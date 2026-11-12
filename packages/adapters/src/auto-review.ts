@@ -14,6 +14,7 @@ import type { AutoReviewJudgeDecision } from "@rakazo/core";
 import { escapePromptData, redactSecrets } from "@rakazo/core";
 import { z } from "zod";
 import { formatCurrentTimeInstruction } from "./current-time.js";
+import { DEFAULT_DREX_MODEL } from "./decision-models.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import { parseModelJson } from "./model-json.js";
 import { secretValuesToRedact } from "./model-secret.js";
@@ -47,9 +48,10 @@ export type AutoReviewChecker = {
 
 export type AutoReviewJudgeResult = AutoReviewResult;
 
-export type AutoReviewProviderKind = "llm" | "jev" | "scripted";
+export type AutoReviewProviderKind = "llm" | "jev" | "drex" | "scripted";
 
 export const JEV_AUTO_REVIEW_PROVIDER = "jev";
+export const DREX_AUTO_REVIEW_PROVIDER = "drex";
 export const SCRIPTED_AUTO_REVIEW_PROVIDER = "scripted";
 export const DEFAULT_JEV_MODEL = "jev-latest";
 export const DEFAULT_AUTO_REVIEW_MIN_CONFIDENCE = 0.5;
@@ -68,6 +70,12 @@ export function typesafeApiKey(env: NodeJS.ProcessEnv = process.env): string | u
   return value || undefined;
 }
 
+/** Nace Drex key. Optional; Drex speaks the same decision protocol as Jev. */
+export function naceApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const value = env.NACE_API_KEY?.trim();
+  return value || undefined;
+}
+
 export function autoReviewMinConfidence(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.RAKAZO_AUTO_REVIEW_MIN_CONFIDENCE?.trim();
   if (!raw) return DEFAULT_AUTO_REVIEW_MIN_CONFIDENCE;
@@ -76,14 +84,15 @@ export function autoReviewMinConfidence(env: NodeJS.ProcessEnv = process.env): n
   return value;
 }
 
-function isVerifierKind(value: string | undefined): value is "jev" | "scripted" {
+function isVerifierKind(value: string | undefined): value is "jev" | "drex" | "scripted" {
   const normalized = value?.trim().toLowerCase();
-  return normalized === "jev" || normalized === "scripted";
+  return normalized === "jev" || normalized === "drex" || normalized === "scripted";
 }
 
 /**
- * `RAKAZO_AUTO_REVIEW_PROVIDER=jev` selects TypeSafe Jev when a key is present;
- * otherwise the existing LLM checker. `scripted` is the offline test adapter.
+ * `RAKAZO_AUTO_REVIEW_PROVIDER=jev` selects TypeSafe Jev when a key is present, and
+ * `drex` selects Nace Drex the same way; otherwise the existing LLM checker.
+ * `scripted` is the offline test adapter.
  * Any other value remains the LLM provider id (openrouter, anthropic, …).
  */
 export function resolveAutoReviewProviderKind(
@@ -91,6 +100,7 @@ export function resolveAutoReviewProviderKind(
 ): AutoReviewProviderKind {
   const requested = env.RAKAZO_AUTO_REVIEW_PROVIDER?.trim().toLowerCase();
   if (requested === "jev") return typesafeApiKey(env) ? "jev" : "llm";
+  if (requested === "drex") return naceApiKey(env) ? "drex" : "llm";
   if (requested === "scripted" && env.AGENT_RUNTIME === "scripted") return "scripted";
   return "llm";
 }
@@ -107,6 +117,12 @@ export function resolveAutoReviewChecker(
     return {
       provider: JEV_AUTO_REVIEW_PROVIDER,
       model: env.RAKAZO_AUTO_REVIEW_MODEL?.trim() || DEFAULT_JEV_MODEL,
+    };
+  }
+  if (kind === "drex") {
+    return {
+      provider: DREX_AUTO_REVIEW_PROVIDER,
+      model: env.RAKAZO_AUTO_REVIEW_MODEL?.trim() || DEFAULT_DREX_MODEL,
     };
   }
   if (kind === "scripted") {
@@ -141,6 +157,7 @@ export function isAutoReviewCheckerConfigured(input: {
   const checker = resolveAutoReviewChecker(env);
   if (!checker) return false;
   if (checker.provider === JEV_AUTO_REVIEW_PROVIDER) return Boolean(typesafeApiKey(env));
+  if (checker.provider === DREX_AUTO_REVIEW_PROVIDER) return Boolean(naceApiKey(env));
   if (checker.provider === SCRIPTED_AUTO_REVIEW_PROVIDER) return true;
   if (checker.provider === LOCAL_PROVIDER_ID) return localModelIds(env).length > 0;
 

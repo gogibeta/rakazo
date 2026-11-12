@@ -27,6 +27,16 @@ servers. Anonymous access is rate limited per IP address; set `KEENABLE_API_KEY`
 worker to send a key and lift those limits. Errors, per-bot disabled tools and the way back to
 the default work as described for Parallel.
 
+## Decision model
+
+Bots can call a calibrated decision model through the `decide` tool, and Auto Review can use
+one as its checker. [Nace Drex](https://console.nace.ai) speaks the same decision protocol as
+TypeSafe Jev: set `NACE_API_KEY` on the API and worker and restart both. Bots then gain the
+`decide` tool, and setting `RAKAZO_AUTO_REVIEW_PROVIDER=drex` makes Auto Review use Drex
+instead of the LLM checker. Without the key nothing changes: the tool is not offered and
+Auto Review keeps its previous checker. The tool sends the state and questions it is given
+to Nace, so do not use it for content that must stay on your own network.
+
 To combine [TinyFish](https://docs.tinyfish.ai) with the keyless default, set
 `WEB_PROVIDER=tinyfish-ddg` and restart both the API and worker. Search then merges TinyFish's
 live, browser-rendered results with the DuckDuckGo results (TinyFish first, duplicates removed),
