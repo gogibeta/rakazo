@@ -91,14 +91,14 @@ describe("wallets routes", () => {
     const store = walletStore();
     const api = routes(store.prisma, store.secrets);
 
-    const added = await api.add({ context, input: { name: "burner", secret: KEY } });
+    const added = await api.add!({ context, input: { name: "burner", secret: KEY } });
     expect(added).toMatchObject({ name: "burner", chain: "evm", address: ADDRESS });
     // The secret went to the seal, keyed by the row's id — nowhere else.
     expect(store.puts).toEqual([{ plaintext: KEY, recordId: "w1" }]);
     expect(store.rows()[0]).toMatchObject({ secretCipher: "v2:sealed-value", address: ADDRESS });
 
-    const listed = await api.list({ context });
-    const used = await api.uses({ context, input: { walletId: "w1" } });
+    const listed = await api.list!({ context });
+    const used = await api.uses!({ context, input: { walletId: "w1" } });
     for (const response of [added, listed, used]) {
       const seen = JSON.stringify(response);
       expect(seen).not.toContain(KEY);
@@ -114,7 +114,7 @@ describe("wallets routes", () => {
   it("derives the same address from a seed phrase and seals the phrase, not the key", async () => {
     const store = walletStore();
     const api = routes(store.prisma, store.secrets);
-    const added = await api.add({ context, input: { name: "phrase", secret: ` ${PHRASE} ` } });
+    const added = await api.add!({ context, input: { name: "phrase", secret: ` ${PHRASE} ` } });
     expect(added).toMatchObject({ address: ADDRESS });
     expect(store.puts).toEqual([{ plaintext: PHRASE, recordId: "w1" }]);
     expect(JSON.stringify(added)).not.toContain("junk");
@@ -124,10 +124,10 @@ describe("wallets routes", () => {
     const store = walletStore();
     const api = routes(store.prisma, store.secrets);
     await expect(
-      api.add({ context, input: { name: "bad", secret: "not a key or a phrase" } }),
+      api.add!({ context, input: { name: "bad", secret: "not a key or a phrase" } }),
     ).rejects.toThrow(/could not be read/);
-    await api.add({ context, input: { name: "burner", secret: KEY } });
-    await expect(api.add({ context, input: { name: "burner", secret: KEY } })).rejects.toThrow(
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await expect(api.add!({ context, input: { name: "burner", secret: KEY } })).rejects.toThrow(
       /already exists/,
     );
     expect(store.rows()).toHaveLength(1);
@@ -137,7 +137,7 @@ describe("wallets routes", () => {
     const store = walletStore();
     store.secrets.put.mockRejectedValueOnce(new Error("seal failed"));
     const api = routes(store.prisma, store.secrets);
-    await expect(api.add({ context, input: { name: "burner", secret: KEY } })).rejects.toThrow(
+    await expect(api.add!({ context, input: { name: "burner", secret: KEY } })).rejects.toThrow(
       "seal failed",
     );
     expect(store.rows()).toEqual([]);
