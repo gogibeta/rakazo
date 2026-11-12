@@ -106,9 +106,11 @@ export function formatCompactedSummary(summary: string, historyCompactedUpToSeq:
 export function historyWindowSize(options: {
   semanticMemoryEnabled: boolean;
   compacted: boolean;
-  recallSucceeded: boolean;
 }): number {
-  return options.semanticMemoryEnabled && options.compacted && options.recallSucceeded
+  // Configuration only, never the outcome of this run's recall: a window that changes
+  // when a recall happens to fail also changes the history handed to the model, which
+  // breaks the provider's cached prefix for the whole thread.
+  return options.semanticMemoryEnabled && options.compacted
     ? HISTORY_WINDOW_SIZE
     : LEGACY_HISTORY_WINDOW_SIZE;
 }
