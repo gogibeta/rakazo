@@ -51,6 +51,8 @@ import {
   InMemoryRealtimeFanout,
   installedMessaging,
   isMessagingSurfaceEnabled,
+  loadServiceCredentials,
+  mergeServiceCredentialsIntoMessagingEnv,
   messagingPlatformsFromEnv,
   ObjectAgentHomeStore,
   PiAgentRuntime,
@@ -303,6 +305,10 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   if (secrets.describe().capabilities.degraded)
     logger.warn("Secret storage degraded; encrypted credentials remain available");
   prisma = withSecretPersistence(prisma, secrets);
+  // Service keys the deployment owner saved in Settings; the matching env vars win.
+  const serviceCredentials = await loadServiceCredentials(prisma, secrets);
+  runtimeEnv.tinyfishApiKey = serviceCredentials.tinyfishApiKey;
+  runtimeEnv.naceApiKey = serviceCredentials.naceApiKey;
   installSecurityEventStore(prisma);
   installAuditEventStore(prisma);
   const unreadableMasterKeys = await verifyContentKeys(prisma);
@@ -393,9 +399,10 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   const artifacts = createArtifactStore(env.dataDir, prisma);
   const memory = new MarkdownMemoryStore(prisma);
   // This process registers the inbound sink, so it must hold Telegram's getUpdates connection.
-  const messagingPlatforms = messagingPlatformsFromEnv(env, { pollInboundMessages: true }).filter(
-    (platform) => platform.provider !== "slack" || !env.slackClientId,
-  );
+  const messagingPlatforms = messagingPlatformsFromEnv(
+    mergeServiceCredentialsIntoMessagingEnv(env, serviceCredentials),
+    { pollInboundMessages: true },
+  ).filter((platform) => platform.provider !== "slack" || !env.slackClientId);
   const legacyMessaging =
     messagingOverride ??
     (isMessagingSurfaceEnabled(messagingPlatforms, {

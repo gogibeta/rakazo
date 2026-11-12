@@ -16,6 +16,7 @@ import type { ComposioProvider } from "./composio-connector.js";
 import { ComposioConnector, isComposioEnabled } from "./composio-connector.js";
 import { createIdleComputerSweeper } from "./computer-idle.js";
 import { reconcileComputerUpdates } from "./computer-update.js";
+import { createConfiguredDecision } from "./configured-decision.js";
 import { createConnectorStack } from "./connector-registry.js";
 import { deploymentModelUsageLookup, resolveDeploymentModel } from "./deployment-model.js";
 import { createRunExecutor } from "./executor.js";
@@ -62,6 +63,9 @@ export interface RunRuntimeEnv extends PipedreamEnvironmentValues {
   maxUploadSizeBytes: number;
   /** Only names a bot's address to it; the API receives the mail. */
   inboundEmailDomain: string | undefined;
+  /** Service keys saved in Settings, resolved by the composition root; the env vars win. */
+  tinyfishApiKey?: string | undefined;
+  naceApiKey?: string | undefined;
 }
 
 /** The worker's reading of the run runtime settings, values and defaults as the worker has them. */
@@ -172,7 +176,8 @@ type SetByRunRuntime =
   | "inboundEmailDomain"
   | "maxUploadSizeBytes"
   | "messaging"
-  | "web";
+  | "web"
+  | "decisions";
 
 /** The run executor and the background job handlers that drive it. */
 export function createRunRuntime(
@@ -198,6 +203,8 @@ export function createRunRuntime(
       env.cursorApiKey ?? "",
       process.env.TYPESAFE_API_KEY ?? "",
       process.env.NACE_API_KEY ?? "",
+      env.tinyfishApiKey ?? "",
+      env.naceApiKey ?? "",
     ].filter(Boolean),
     mcpAllowPrivateEndpoint: env.mcpAllowPrivateEndpoint,
     deploymentModelKey: env.deploymentModelKey,
@@ -209,7 +216,8 @@ export function createRunRuntime(
     phoneCallCooldownMinutes: env.phoneCallCooldownMinutes,
     inboundEmailDomain: env.inboundEmailDomain,
     messaging: messaging ? createMessagingContextLoader(deps.prisma) : undefined,
-    web: createWebProvider(),
+    web: createWebProvider(undefined, { tinyfishApiKey: env.tinyfishApiKey }),
+    decisions: createConfiguredDecision(process.env, { naceApiKey: env.naceApiKey }),
   });
   const jobHandlers = createBackgroundJobHandlers({
     executor,

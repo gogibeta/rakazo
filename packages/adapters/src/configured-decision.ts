@@ -9,25 +9,37 @@ export type ConfiguredDecision = {
   model: string;
 };
 
+/** Decision-service keys saved in Settings, used for whichever the environment leaves unset. */
+export interface StoredDecisionKeys {
+  naceApiKey?: string;
+  typesafeApiKey?: string;
+}
+
 /**
  * The deployment's decision endpoint for the `decide` tool, when a key is
- * configured: Nace Drex when NACE_API_KEY is set, otherwise TypeSafe Jev.
- * Both speak the same decision protocol.
+ * configured: Nace Drex when a Nace key is set, otherwise TypeSafe Jev.
+ * Both speak the same decision protocol. A key from the environment wins
+ * over the same service's key saved in Settings.
  */
 export function createConfiguredDecision(
   env: NodeJS.ProcessEnv = process.env,
+  stored: StoredDecisionKeys = {},
 ): ConfiguredDecision | undefined {
-  const nace = naceApiKey(env);
+  const nace = naceApiKey(env) ?? savedKey(stored.naceApiKey);
   if (nace)
     return {
       provider: new HttpDecisionProvider("nace", { apiKey: nace }),
       model: DEFAULT_DREX_MODEL,
     };
-  const typesafe = typesafeApiKey(env);
+  const typesafe = typesafeApiKey(env) ?? savedKey(stored.typesafeApiKey);
   if (typesafe)
     return {
       provider: new HttpDecisionProvider("typesafe", { apiKey: typesafe }),
       model: DEFAULT_JEV_MODEL,
     };
   return undefined;
+}
+
+function savedKey(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
 }
