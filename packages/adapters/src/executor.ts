@@ -881,10 +881,8 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         ]);
         const semanticMemoryEnabled = Boolean(semanticMemory) && !nonOwnerChatRun;
         let recalledMemory = "";
-        let recallSucceeded = false;
         if (recalled) {
           if (recalled.ok && recalled.value.length > 0) {
-            recallSucceeded = true;
             recalledMemory = formatRecalledMemory(recalled.value);
           } else if (!recalled.ok) {
             getLogger().error("semantic memory recall failed", recalled.error);
@@ -895,7 +893,6 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
             -historyWindowSize({
               semanticMemoryEnabled: semanticMemoryEnabled && !thread.historyCompactionSummary,
               compacted: thread.historyCompactedUpToSeq != null,
-              recallSucceeded,
             }),
           );
         }
@@ -1632,6 +1629,12 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
           // Per-turn, not in the system prompt: the timestamp changes every call and would break the cacheable prefix.
           formatCurrentTimeInstruction(deps.now?.() ?? new Date(), userTimeZone),
+          // Recalled memory is also per-turn: it is recomputed against each new message,
+          // so at the head of history it would change the first history message on every
+          // turn and break the cacheable prefix behind it. It rides here instead, beside
+          // the timestamp; only the compacted summary, which changes on compaction alone,
+          // stays at the head of history.
+          recalledMemory ? redactSecrets(recalledMemory, runSecrets) : undefined,
           lateRoutineNote,
           sharedSpaceNote,
         ]
@@ -1645,12 +1648,6 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
               formatCompactedSummary(compactedHistory.summary, thread.historyCompactedUpToSeq!),
               runSecrets,
             ),
-          });
-        }
-        if (recalledMemory) {
-          historicalContext.push({
-            role: "user",
-            content: redactSecrets(recalledMemory, runSecrets),
           });
         }
         const modelImageBudget =
@@ -1815,6 +1812,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                   ? redactSecrets(ticketContext, runSecrets)
                   : undefined,
                 hasHistoricalContext: historicalContext.length > 0,
+                hasRecalledMemory: Boolean(recalledMemory),
                 // A background helper is not offered the history tools, so it gets no guidance on them.
                 historyRetrievalEnabled:
                   contextStrategy !== "current" &&
