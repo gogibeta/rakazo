@@ -92,9 +92,11 @@ function findOutboundRow(rows: Array<Record<string, unknown>>, where: OutboundRo
   return ordered.find((row) => matchesWhere(row, where)) ?? null;
 }
 
-function createFakeSurface(sendError?: Error) {
+function createFakeSurface(sendError?: Error, options?: { edits?: boolean; editError?: Error }) {
   const sendToThread = vi.fn(async () => ({ handle: "handle-out-1" }));
   if (sendError) sendToThread.mockRejectedValue(sendError);
+  const editMessage = vi.fn(async () => undefined);
+  if (options?.editError) editMessage.mockRejectedValue(options.editError);
   const openDirectThread = vi.fn(
     async (_provider: string, address: string) => `sendblue:opened:${address}`,
   );
@@ -109,16 +111,23 @@ function createFakeSurface(sendError?: Error) {
       { provider: "sendblue", capabilities: { direct: true, groups: true, receipt: "typing" } },
       {
         provider: "telegram",
-        capabilities: { direct: true, groups: false, receipt: null, files: true },
+        capabilities: {
+          direct: true,
+          groups: false,
+          receipt: null,
+          files: true,
+          ...(options?.edits ? { edits: true } : {}),
+        },
       },
     ],
     handleWebhook: () => null,
     onInbound: () => undefined,
     sendToThread,
     openDirectThread,
+    editMessage,
     acknowledge: vi.fn(async () => undefined),
   };
-  return { messaging, sendToThread, openDirectThread };
+  return { messaging, sendToThread, openDirectThread, editMessage };
 }
 
 /** A message_user update or another interim message a running run posted. */
@@ -133,6 +142,8 @@ function createDeps(overrides: {
   outboundRows?: unknown[];
   existingOutbox?: unknown;
   sendError?: Error;
+  edits?: boolean;
+  editError?: Error;
   connectionStatus?: string | null;
   blockedBot?: string;
   artifacts?: Array<Record<string, unknown>>;
@@ -141,7 +152,10 @@ function createDeps(overrides: {
   appOrigin?: string;
 }) {
   const rows = [...(overrides.outboundRows ?? [])] as Array<Record<string, unknown>>;
-  const { messaging, sendToThread, openDirectThread } = createFakeSurface(overrides.sendError);
+  const { messaging, sendToThread, openDirectThread, editMessage } = createFakeSurface(
+    overrides.sendError,
+    { edits: overrides.edits, editError: overrides.editError },
+  );
   // Stateful identity row so a cached dmThreadId is visible to later reads.
   const identityRow =
     overrides.identity === null ? null : { ...identity, ...(overrides.identity ?? {}) };
@@ -304,6 +318,7 @@ function createDeps(overrides: {
     appOrigin: overrides.appOrigin,
     sendToThread,
     openDirectThread,
+    editMessage,
     rows,
   };
 }
@@ -2554,5 +2569,235 @@ describe("deliverMessagingOutbound ask and takeover messages", () => {
       context,
     );
     expect(deps.rows.map((row) => row.idempotencyKey)).toEqual(["msg:m-comp"]);
+  });
+});
+
+describe("run activity messages", () => {
+  const telegramIdentity = { provider: "telegram", dmThreadId: "telegram:dm-1" };
+  const startedAt = new Date(Date.now() - 125_000);
+
+  function activityRun(extra: Record<string, unknown> = {}) {
+    return {
+      ...messagingRun,
+      status: "running",
+      startedAt,
+      createdAt: startedAt,
+      completedAt: null,
+      ...extra,
+    };
+  }
+
+  function stepsMessage(id: string, labels: string[]) {
+    return {
+      id,
+      blocks: [{ kind: "steps", steps: labels.map((label) => ({ label, count: 1 })) }],
+    };
+  }
+
+  it("posts one activity message, coalesces a burst into one edit, and finalizes it", async () => {
+    const run = activityRun();
+    const messages: unknown[] = [
+      stepsMessage("m-steps-1", ["Researching the topic"]),
+      {
+        id: "m-progress-1",
+        blocks: [{ kind: "progress", text: "Reading the search results", activity: true }],
+      },
+    ];
+    const deps = createDeps({
+      run,
+      identity: telegramIdentity,
+      messages,
+      edits: true,
+    });
+
+    // The run starts producing steps: one activity message is posted.
+    await mirrorMessagingProgress(deps, "run-1");
+    await deliverMessagingOutbound(deps, {}, context);
+    expect(deps.sendToThread).toHaveBeenCalledTimes(1);
+    expect(deps.sendToThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "telegram:dm-1",
+        body: expect.stringContaining("Researching the topic"),
+      }),
+      context,
+    );
+    const activity = deps.rows.find((row) => row.idempotencyKey === "activity:run-1");
+    expect(activity).toMatchObject({ kind: "activity", status: "sent" });
+    expect(activity?.providerHandle).toBe("handle-out-1");
+    expect(String(activity?.body)).toContain("Reading the search results");
+    expect(String(activity?.body)).toMatch(/Working for 2m 0\d+s/);
+
+    // A burst of new steps inside the edit interval queues nothing: no edit
+    // reaches the platform yet, and the row keeps the body already shown.
+    messages.push(stepsMessage("m-steps-2", ["Drafting the answer"]));
+    await mirrorMessagingProgress(deps, "run-1");
+    await deliverMessagingOutbound(deps, {}, context);
+    expect(deps.editMessage).not.toHaveBeenCalled();
+    expect(deps.sendToThread).toHaveBeenCalledTimes(1);
+    expect(String(activity?.body)).not.toContain("Drafting the answer");
+
+    // Once the interval has passed, the next mirror produces exactly one
+    // edit carrying the latest body.
+    if (activity) activity.updatedAt = new Date(Date.now() - 10_000);
+    await mirrorMessagingProgress(deps, "run-1");
+    await deliverMessagingOutbound(deps, {}, context);
+    expect(deps.editMessage).toHaveBeenCalledTimes(1);
+    expect(deps.editMessage).toHaveBeenCalledWith(
+      "telegram:dm-1",
+      "handle-out-1",
+      expect.objectContaining({ body: expect.stringContaining("Drafting the answer") }),
+      context,
+    );
+    expect(deps.sendToThread).toHaveBeenCalledTimes(1);
+
+    // The end-of-run mirror finalizes the activity message and the reply
+    // (its step lines as text, then the answer) still delivers as before.
+    Object.assign(run, {
+      status: "completed",
+      completedAt: new Date(startedAt.getTime() + 180_000),
+    });
+    messages.push({ id: "m-final", blocks: [{ kind: "text", text: "Here is the answer" }] });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.editMessage).toHaveBeenCalledTimes(2);
+    expect(deps.editMessage).toHaveBeenLastCalledWith(
+      "telegram:dm-1",
+      "handle-out-1",
+      expect.objectContaining({ body: expect.stringContaining("Finished in 3m 00s") }),
+      context,
+    );
+    expect(deps.sendToThread).toHaveBeenCalledTimes(4);
+    expect(deps.sendToThread).toHaveBeenLastCalledWith(
+      expect.objectContaining({ threadId: "telegram:dm-1", body: "Here is the answer" }),
+      context,
+    );
+    expect(activity?.status).toBe("sent");
+  });
+
+  it("swallows a failed edit and still delivers the reply", async () => {
+    const deps = createDeps({
+      run: activityRun({
+        status: "completed",
+        completedAt: new Date(startedAt.getTime() + 60_000),
+      }),
+      identity: telegramIdentity,
+      messages: [
+        stepsMessage("m-steps-1", ["Researching the topic"]),
+        { id: "m-final", blocks: [{ kind: "text", text: "Here is the answer" }] },
+      ],
+      edits: true,
+      editError: new Error("message can't be edited"),
+      outboundRows: [
+        {
+          id: "out-activity",
+          idempotencyKey: "activity:run-1",
+          kind: "activity",
+          identityId: "mi-1",
+          threadId: null,
+          body: "Researching the topic",
+          status: "sent",
+          attempts: 0,
+          nextAttemptAt: null,
+          providerHandle: "handle-activity-1",
+          sourceMessageId: null,
+          createdAt: new Date(startedAt.getTime() + 1_000),
+          updatedAt: new Date(startedAt.getTime() + 1_000),
+        },
+      ],
+    });
+    await expect(
+      deliverMessagingOutbound(deps, { runId: "run-1" }, context),
+    ).resolves.toBeUndefined();
+    expect(deps.editMessage).toHaveBeenCalledTimes(1);
+    expect(deps.sendToThread).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Here is the answer" }),
+      context,
+    );
+    const activity = deps.rows.find((row) => row.idempotencyKey === "activity:run-1");
+    expect(activity?.status).toBe("sent");
+    expect(deps.jobs.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("drops a failed first post and never retries the activity message", async () => {
+    const deps = createDeps({
+      run: activityRun(),
+      identity: telegramIdentity,
+      messages: [
+        stepsMessage("m-steps-1", ["Researching the topic"]),
+        { id: "m-final", blocks: [{ kind: "text", text: "Here is the answer" }] },
+      ],
+      edits: true,
+      sendError: new Error("provider down"),
+    });
+    await mirrorMessagingProgress(deps, "run-1");
+    await deliverMessagingOutbound(deps, {}, context);
+    const activity = deps.rows.find((row) => row.idempotencyKey === "activity:run-1");
+    expect(activity?.status).toBe("failed");
+
+    // The run still finishes and its reply delivers; activity stays dead.
+    deps.sendToThread.mockReset();
+    deps.sendToThread.mockResolvedValue({ handle: "handle-out-2" });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.sendToThread).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Here is the answer" }),
+      context,
+    );
+    expect(deps.editMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing until the final delivery on a platform without edits", async () => {
+    const messages: unknown[] = [stepsMessage("m-steps-1", ["Researching the topic"])];
+    const deps = createDeps({
+      run: activityRun(),
+      identity: telegramIdentity,
+      messages,
+    });
+    await mirrorMessagingProgress(deps, "run-1");
+    await deliverMessagingOutbound(deps, {}, context);
+    expect(deps.rows).toHaveLength(0);
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+
+    messages.push({ id: "m-final", blocks: [{ kind: "text", text: "Here is the answer" }] });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.rows.some((row) => row.kind === "activity")).toBe(false);
+    expect(deps.sendToThread).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Here is the answer" }),
+      context,
+    );
+  });
+
+  it("never opens an activity message from the end-of-run mirror alone", async () => {
+    const deps = createDeps({
+      run: activityRun({
+        status: "completed",
+        completedAt: new Date(startedAt.getTime() + 60_000),
+      }),
+      identity: telegramIdentity,
+      messages: [
+        stepsMessage("m-steps-1", ["Researching the topic"]),
+        { id: "m-final", blocks: [{ kind: "text", text: "Here is the answer" }] },
+      ],
+      edits: true,
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.rows.some((row) => row.kind === "activity")).toBe(false);
+    expect(deps.editMessage).not.toHaveBeenCalled();
+    expect(deps.sendToThread).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Here is the answer" }),
+      context,
+    );
+  });
+
+  it("keeps runs without a linked identity free of activity messages", async () => {
+    const deps = createDeps({
+      run: activityRun(),
+      identity: null,
+      messages: [stepsMessage("m-steps-1", ["Researching the topic"])],
+      edits: true,
+    });
+    await mirrorMessagingProgress(deps, "run-1");
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    expect(deps.rows).toHaveLength(0);
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.editMessage).not.toHaveBeenCalled();
   });
 });

@@ -106,6 +106,27 @@ export class InstalledMessagingSurface implements MessagingSurface {
     );
   }
 
+  async editMessage(
+    threadId: string,
+    handle: string,
+    request: MessagingSendRequest,
+    context: AdapterContext,
+  ): Promise<void> {
+    const scoped = await this.resolve(threadId, context);
+    if (!scoped) {
+      await this.fallback?.editMessage?.(threadId, handle, request, context);
+      return;
+    }
+    await this.withSurface(scoped.installation, async (surface) => {
+      await surface.editMessage?.(
+        scoped.threadId,
+        unScopeHandle(scoped.installation, handle),
+        { ...request, threadId: scoped.threadId },
+        context,
+      );
+    });
+  }
+
   async openDirectThread(provider: string, address: string, context: AdapterContext) {
     if (provider !== this.provider.provider) {
       if (!this.fallback) throw new Error("Messaging provider unavailable");

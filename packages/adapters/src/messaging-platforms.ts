@@ -273,7 +273,14 @@ export function messagingPlatformsFromEnv(
     });
     platforms.push({
       provider: "slack",
-      capabilities: { direct: true, groups: true, receipt: "reaction", files: true, actions: true },
+      capabilities: {
+        direct: true,
+        groups: true,
+        receipt: "reaction",
+        files: true,
+        actions: true,
+        edits: true,
+      },
       adapter,
       enrichTeamRoom: enrichSlackTeamRoom,
       redeliveryKeys: slackRedeliveryKeys,
@@ -292,7 +299,7 @@ export function messagingPlatformsFromEnv(
     };
     platforms.push({
       provider: "teams",
-      capabilities: { direct: true, groups: false, receipt: "typing" },
+      capabilities: { direct: true, groups: false, receipt: "typing", edits: true },
       adapter: lazyChatAdapter("teams", async () => {
         const { createTeamsAdapter } = await import("@chat-adapter/teams");
         const adapter = createTeamsAdapter(config);
@@ -340,7 +347,14 @@ export function messagingPlatformsFromEnv(
     const adapter = telegramAdapter(env.telegramBotToken, env.telegramWebhookSecret, options);
     platforms.push({
       provider: "telegram",
-      capabilities: { direct: true, groups: true, receipt: null, files: true, actions: true },
+      capabilities: {
+        direct: true,
+        groups: true,
+        receipt: null,
+        files: true,
+        actions: true,
+        edits: true,
+      },
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
       isPermanentSendError: isTelegramBlocked,
@@ -362,7 +376,14 @@ export function messagingPlatformsFromEnv(
     platforms.push({
       provider: `telegram-${bot.name}`,
       adapterName: "telegram",
-      capabilities: { direct: true, groups: true, receipt: null, files: true, actions: true },
+      capabilities: {
+        direct: true,
+        groups: true,
+        receipt: null,
+        files: true,
+        actions: true,
+        edits: true,
+      },
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
       isPermanentSendError: isTelegramBlocked,
@@ -375,7 +396,7 @@ export function messagingPlatformsFromEnv(
   if (env.larkAppId && env.larkAppSecret && env.larkVerificationToken) {
     platforms.push({
       provider: "lark",
-      capabilities: { direct: true, groups: false, receipt: null },
+      capabilities: { direct: true, groups: false, receipt: null, edits: true },
       // Webhook-only: ws/long-connection incoming would consume events so
       // the HTTP webhook at /api/v1/messaging/webhook/lark never sees them.
       adapter: new LazyLarkAdapter({

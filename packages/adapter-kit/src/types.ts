@@ -951,6 +951,12 @@ export interface MessagingCapabilities {
   actions?: boolean;
   /** Native button cap when `actions` is set; actions past it join the numbered list. */
   maxActions?: number;
+  /**
+   * Replaces the body of a message the platform already delivered, in place
+   * (the surface's `editMessage`). Absent means a sent message is final:
+   * live progress reaches the conversation only as new messages.
+   */
+  edits?: boolean;
 }
 
 /** One messaging platform behind the chat surface (sendblue, slack, …). */
