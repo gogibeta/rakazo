@@ -15,6 +15,8 @@ import {
   isSecretAskBlock,
   isTerminal,
   MESSAGING_ASK_ACTION_ID,
+  MESSAGING_BOT_PICKER_ACTION_ID,
+  MESSAGING_MODEL_PICKER_ACTION_ID,
   messagingAskActionValue,
   nextBotMessageHop,
   pageLinksAsTitles,
@@ -88,6 +90,15 @@ export interface MessagingDeliveryDeps {
    * send, just without the link.
    */
   appOrigin?: string;
+  /**
+   * The models a person's configured connections can run, for the /model
+   * picker's buttons. Read fresh at send time, like an ask card's options.
+   * Without it a model picker row still sends — as its plain prompt text.
+   */
+  modelChoices?: (scope: {
+    userId: string;
+    spaceId: string;
+  }) => Promise<Array<{ provider: string; id: string; label: string }>>;
 }
 
 type IdentityRow = {
@@ -873,6 +884,71 @@ async function deliverAskRow(
   return "sent";
 }
 
+/** `picker:bot:<identityId>:<handle>` / `picker:model:<identityId>:<handle>` — chat command pickers. */
+function pickerKindOf(idempotencyKey: string): "bot" | "model" | null {
+  if (idempotencyKey.startsWith("picker:bot:")) return "bot";
+  if (idempotencyKey.startsWith("picker:model:")) return "model";
+  return null;
+}
+
+/** How many options ride as buttons; the rest stay reachable by the command's text form. */
+const PICKER_ACTION_LIMIT = 12;
+
+/**
+ * Sends one picker row. The options are re-read at send time, like an ask
+ * card's: a bot archived (or a connection removed) since the command
+ * landed never gets a button, and what the person can tap always matches
+ * what a tap will apply. With nothing to offer — a single bot, no models,
+ * or no model source wired — the row still sends, as the plain prompt
+ * its body already carries.
+ */
+async function deliverPickerRow(
+  deps: MessagingDeliveryDeps,
+  context: AdapterContext,
+  row: MessagingOutboundRow,
+  identity: { userId: string; spaceId: string; botId: string },
+  threadId: string,
+  picker: "bot" | "model",
+): Promise<void> {
+  let actions: MessagingAction[] | undefined;
+  if (picker === "bot") {
+    const bots = await deps.prisma.bot.findMany({
+      where: { userId: identity.userId, spaceId: identity.spaceId, archivedAt: null },
+      orderBy: { createdAt: "asc" },
+      take: PICKER_ACTION_LIMIT,
+      select: { id: true, name: true },
+    });
+    if (bots.length > 1) {
+      actions = bots.map((bot) => ({
+        id: MESSAGING_BOT_PICKER_ACTION_ID,
+        label: bot.name,
+        value: bot.id,
+        ...(bot.id === identity.botId ? { style: "primary" as const } : {}),
+      }));
+    }
+  } else if (deps.modelChoices) {
+    const choices = await deps.modelChoices({
+      userId: identity.userId,
+      spaceId: identity.spaceId,
+    });
+    if (choices.length > 1) {
+      actions = choices.slice(0, PICKER_ACTION_LIMIT).map((choice, index) => ({
+        id: MESSAGING_MODEL_PICKER_ACTION_ID,
+        label: choice.label,
+        value: String(index),
+      }));
+    }
+  }
+  const sent = await deps.messaging.sendToThread(
+    { threadId, body: row.body, ...(actions ? { actions } : {}) },
+    context,
+  );
+  await deps.prisma.messagingOutbound.updateMany({
+    where: { id: row.id },
+    data: { providerHandle: sent.handle },
+  });
+}
+
 /** `connect:{requesterBotId}:{targetBotId}` — agent-connection approval DMs. */
 function connectInvitePair(
   idempotencyKey: string,
@@ -1143,6 +1219,16 @@ async function deliverRow(
           data: { outboundSinceInbound: { increment: 1 } },
         });
       }
+      return true;
+    }
+    const picker = pickerKindOf(row.idempotencyKey);
+    if (picker) {
+      await deliverPickerRow(deps, context, row, identity, threadId, picker);
+      accepted = true;
+      await deps.prisma.messagingIdentity.update({
+        where: { id: identity.id },
+        data: { outboundSinceInbound: { increment: 1 } },
+      });
       return true;
     }
     let attachment: MessagingOutboundAttachment | undefined;

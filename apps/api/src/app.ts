@@ -1079,6 +1079,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
         env,
         messaging,
         messagingInstallations,
+        hostedModelProvider: modelCreditsEnabled ? env.defaultProvider : undefined,
+        codexCatalog,
       })
     : undefined;
 

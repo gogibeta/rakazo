@@ -36,6 +36,7 @@ import {
   mirrorMessagingOutbound,
   mirrorMessagingProgress,
 } from "./messaging-delivery.js";
+import { connectedModelChoices } from "./model-choice.js";
 import { pollPurchase } from "./purchase-poll.js";
 import { expireTaughtSkillTeaching } from "./teaching-session.js";
 
@@ -93,6 +94,8 @@ export function createBackgroundJobHandlers(deps: {
         jobs: deps.jobs,
         artifacts: deps.artifacts,
         appOrigin: deps.appOrigin,
+        modelChoices: (scope: { userId: string; spaceId: string }) =>
+          connectedModelChoices({ prisma: deps.prisma, secretStore: deps.secretStore }, scope),
       }
     : undefined;
   // The outbox holds every Space's pending sends, so draining it is cross-tenant.

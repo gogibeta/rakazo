@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AgentRuntime,
   ArtifactStore,
@@ -7,20 +8,32 @@ import type {
   SandboxProvider,
   SecretStore,
 } from "@rakazo/adapter-kit";
-import type { MessagingInstallations } from "@rakazo/adapters";
+import { createAdapterContext, runJobKey } from "@rakazo/adapter-kit";
+import type {
+  BotModelChangeDeps,
+  CodexLiveCatalog,
+  MessagingInstallations,
+} from "@rakazo/adapters";
 import {
   applyMessagingOutboundStatus,
+  connectedModelChoices,
   createMessagingTeamChatHistory,
   createMessagingTeamChatSender,
+  kickModelCredentialRefresh,
+  resolveModelChoice,
+  SpaceMemoryProviderResolver,
+  validateBotModelChange,
 } from "@rakazo/adapters";
+import { MESSAGING_SLASH_COMMANDS } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { provisionMessagingIdentity, runAsSystem } from "@rakazo/db";
+import { commitBotUpdate, provisionMessagingIdentity, runAsSystem } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { Hono } from "hono";
 import { storeInboundAttachment } from "./artifacts.js";
 import type { AppEnv } from "./env.js";
 import {
   answerMessagingAskAction,
+  answerMessagingPickerAction,
   createMessagingInboundHandler,
   messagingMessageForAction,
 } from "./messaging-inbound.js";
@@ -51,11 +64,13 @@ export async function startMessagingRuntime({
   env,
   messaging,
   messagingInstallations,
+  hostedModelProvider,
+  codexCatalog,
 }: {
   app: Hono;
   prisma: PrismaClient;
   events: ThreadEvents;
-  jobs: Pick<JobPublisher, "enqueue">;
+  jobs: Pick<JobPublisher, "enqueue" | "cancel">;
   sandbox: SandboxProvider;
   secrets: SecretStore;
   artifacts: ArtifactStore;
@@ -63,6 +78,9 @@ export async function startMessagingRuntime({
   env: AppEnv;
   messaging: MessagingSurface;
   messagingInstallations: MessagingInstallations | undefined;
+  /** The hosted model provider id when model credits are enabled (the /model command's catalog). */
+  hostedModelProvider?: string | undefined;
+  codexCatalog?: CodexLiveCatalog | undefined;
 }): Promise<{ stop: () => Promise<void> }> {
   // Shared with stop so a shutdown during retry delays does not restart polling.
   let messagingStopped = false;
@@ -76,6 +94,18 @@ export async function startMessagingRuntime({
   let teamChatBridgeInstance: TeamChatBridge | undefined;
   const pendingTeamChatInbound = new PendingTeamChatInbound();
   const receipts = createMessagingReceipts(messaging);
+  // The /model command's seam: the same deps the app model picker is
+  // validated against, built the same way (see routes' botModelValidation).
+  const modelChangeDeps: BotModelChangeDeps = {
+    prisma,
+    secretStore: secrets,
+    hostedProvider: hostedModelProvider,
+    codexCatalog,
+    refreshExpiredCredential: (scope, secretId, provider) =>
+      kickModelCredentialRefresh(prisma, secrets, scope, secretId, provider),
+    defaultModel: async () => ({ provider: env.defaultProvider, model: env.defaultModel }),
+  };
+  const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const inboundDeps = {
     prisma,
     events,
@@ -105,6 +135,100 @@ export async function startMessagingRuntime({
         { spaceId, userId },
         { audio, mimeType, signal },
       ),
+    models: {
+      choices: (scope) => connectedModelChoices(modelChangeDeps, scope),
+      resolve: async (scope, query, preferredProvider) => {
+        const resolved = await resolveModelChoice(modelChangeDeps, scope, {
+          model: query,
+          preferredProvider,
+        });
+        return resolved.ok ? { provider: resolved.provider, model: resolved.model } : null;
+      },
+      apply: async (scope, bot, choice) => {
+        const thread = await prisma.thread.findFirst({
+          where: { botId: bot.id },
+          select: { id: true },
+        });
+        if (!thread) return { ok: false as const, error: "This bot has no conversation yet." };
+        const validated = await validateBotModelChange(modelChangeDeps, {
+          userId: scope.userId,
+          spaceId: scope.spaceId,
+          provider: choice.provider,
+          model: choice.model,
+          thinkingLevel: bot.thinkingLevel ?? undefined,
+          current: { provider: bot.modelProvider, model: bot.modelId },
+        });
+        if (!validated.ok) return validated;
+        await commitBotUpdate({
+          prisma,
+          notify: (threadId, seq) => events.notify(threadId, seq),
+          spaceId: scope.spaceId,
+          threadId: thread.id,
+          botId: bot.id,
+          emitBotUpdated: false,
+          data: {
+            modelProvider: validated.provider,
+            modelId: validated.model,
+            thinkingLevel: validated.thinkingLevel,
+          },
+        });
+        return { ok: true as const };
+      },
+    },
+    createTopic: messaging.createTopic
+      ? async (provider: string, threadId: string, name: string) => {
+          const operationId = `messaging.command.new:${randomUUID()}`;
+          const created = await messaging.createTopic!(
+            { provider, threadId, name },
+            {
+              operationId,
+              traceId: operationId,
+              spaceId: "",
+              userId: "",
+              signal: AbortSignal.timeout(15_000),
+            },
+          );
+          return created?.threadId ?? null;
+        }
+      : undefined,
+    // The app's Clear conversation follow-through, mirrored for /new:
+    // cancel the cleared runs' jobs, then purge the previous
+    // generations' conversation-derived memory. Both are best-effort —
+    // the conversation rows are already gone either way.
+    afterThreadClear: async ({
+      spaceId,
+      userId,
+      threadId,
+      botId,
+      cancelledRunIds,
+      historyCompactionGeneration,
+    }) => {
+      await Promise.all(
+        cancelledRunIds.map((runId) => jobs.cancel(runJobKey(runId)).catch(() => undefined)),
+      );
+      const configured = await memoryProviders.resolve(spaceId).catch((error) => {
+        getLogger().error("semantic memory resolution after chat /new failed", error);
+        return null;
+      });
+      if (!configured) return;
+      try {
+        const purged = await configured.provider.purgeHistory(
+          {
+            botId,
+            generations: [
+              Math.max(0, historyCompactionGeneration - 1),
+              historyCompactionGeneration,
+            ],
+          },
+          createAdapterContext({ userId, spaceId }, botId, `thread-clear:${threadId}`),
+        );
+        if (!purged.ok) {
+          getLogger().error("semantic memory purge after chat /new failed", purged.error);
+        }
+      } catch (error) {
+        getLogger().error("semantic memory purge after chat /new failed", error);
+      }
+    },
   } satisfies Parameters<typeof createMessagingInboundHandler>[0];
   const inbound = createMessagingInboundHandler(inboundDeps);
   const handleTeamChatInbound = createTeamChatInboundHandler(inboundDeps, inbound);
@@ -287,13 +411,13 @@ export async function startMessagingRuntime({
     // so it resolves here, before any command-word or message routing can
     // misread it. Ask cards only ever go to the personal line's DMs, never
     // to an installed team-chat surface.
-    if (
-      event.type === "action" &&
-      event.isDirect &&
-      !event.installationId &&
-      (await answerMessagingAskAction(inboundDeps, event))
-    )
-      return;
+    if (event.type === "action" && event.isDirect && !event.installationId) {
+      if (await answerMessagingAskAction(inboundDeps, event)) return;
+      // A tap on a /bot or /model picker card is a command answer, not a
+      // message either: its payload is a bot id or a list position, which
+      // message routing would misread as a choice answer or plain text.
+      if (await answerMessagingPickerAction(inboundDeps, event)) return;
+    }
     // A button tap is the person's answer to a message the bot sent; from
     // here it flows exactly like their next message in that conversation.
     const message = event.type === "action" ? messagingMessageForAction(event) : event;
@@ -351,6 +475,11 @@ export async function startMessagingRuntime({
       if (messagingStopped) return;
       try {
         await messaging.initialize?.();
+        // The chat command menu is a convenience layered over typed
+        // commands; registering it must never fail startup.
+        await messaging.registerCommands?.(MESSAGING_SLASH_COMMANDS).catch((error) => {
+          getLogger().error("messaging command menu registration failed", error);
+        });
         return;
       } catch (error) {
         getLogger().error(
