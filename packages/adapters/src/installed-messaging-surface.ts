@@ -111,17 +111,20 @@ export class InstalledMessagingSurface implements MessagingSurface {
     handle: string,
     request: MessagingSendRequest,
     context: AdapterContext,
-  ) {
+  ): Promise<void> {
     const scoped = await this.resolve(threadId, context);
-    if (!scoped) return this.fallback?.editMessage?.(threadId, handle, request, context);
-    return this.withSurface(scoped.installation, (surface) =>
-      surface.editMessage?.(
+    if (!scoped) {
+      await this.fallback?.editMessage?.(threadId, handle, request, context);
+      return;
+    }
+    await this.withSurface(scoped.installation, async (surface) => {
+      await surface.editMessage?.(
         scoped.threadId,
         unScopeHandle(scoped.installation, handle),
         { ...request, threadId: scoped.threadId },
         context,
-      ),
-    );
+      );
+    });
   }
 
   async openDirectThread(provider: string, address: string, context: AdapterContext) {

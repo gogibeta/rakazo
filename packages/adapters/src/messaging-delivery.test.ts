@@ -7,7 +7,6 @@ import type { MessagingDeliveryDeps } from "./messaging-delivery.js";
 import {
   applyMessagingOutboundStatus,
   deliverMessagingOutbound,
-  drainMessagingOutbound,
   MESSAGING_DM_OUTBOUND_CAP,
   MESSAGING_OUTBOUND_MAX_ATTEMPTS,
   mirrorMessagingOutbound,
@@ -2613,7 +2612,7 @@ describe("run activity messages", () => {
 
     // The run starts producing steps: one activity message is posted.
     await mirrorMessagingProgress(deps, "run-1");
-    await drainMessagingOutbound(deps, context);
+    await deliverMessagingOutbound(deps, {}, context);
     expect(deps.sendToThread).toHaveBeenCalledTimes(1);
     expect(deps.sendToThread).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2632,7 +2631,7 @@ describe("run activity messages", () => {
     // only: no edit reaches the platform yet.
     messages.push(stepsMessage("m-steps-2", ["Drafting the answer"]));
     await mirrorMessagingProgress(deps, "run-1");
-    await drainMessagingOutbound(deps, context);
+    await deliverMessagingOutbound(deps, {}, context);
     expect(deps.editMessage).not.toHaveBeenCalled();
     expect(deps.sendToThread).toHaveBeenCalledTimes(1);
     expect(String(activity?.body)).toContain("Drafting the answer");
@@ -2641,7 +2640,7 @@ describe("run activity messages", () => {
     // edit carrying the latest body.
     if (activity) activity.updatedAt = new Date(Date.now() - 10_000);
     await mirrorMessagingProgress(deps, "run-1");
-    await drainMessagingOutbound(deps, context);
+    await deliverMessagingOutbound(deps, {}, context);
     expect(deps.editMessage).toHaveBeenCalledTimes(1);
     expect(deps.editMessage).toHaveBeenCalledWith(
       "telegram:dm-1",
@@ -2730,7 +2729,7 @@ describe("run activity messages", () => {
       sendError: new Error("provider down"),
     });
     await mirrorMessagingProgress(deps, "run-1");
-    await drainMessagingOutbound(deps, context);
+    await deliverMessagingOutbound(deps, {}, context);
     const activity = deps.rows.find((row) => row.idempotencyKey === "activity:run-1");
     expect(activity?.status).toBe("failed");
 
@@ -2753,7 +2752,7 @@ describe("run activity messages", () => {
       messages,
     });
     await mirrorMessagingProgress(deps, "run-1");
-    await drainMessagingOutbound(deps, context);
+    await deliverMessagingOutbound(deps, {}, context);
     expect(deps.rows).toHaveLength(0);
     expect(deps.sendToThread).not.toHaveBeenCalled();
 
