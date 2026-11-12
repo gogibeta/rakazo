@@ -177,7 +177,12 @@ export function useOnboardingModel({
             })),
           ];
         }),
-      (option) => option.value,
+      // Preset options carry their endpoint in the value; rank them as the
+      // compatible provider they connect through, not as a distinct id.
+      (option) =>
+        option.value.startsWith(ENDPOINT_PRESET_OPTION)
+          ? OPENAI_COMPATIBLE_PROVIDER_ID
+          : option.value,
       (option) => option.label,
     );
     return { main, rest };
