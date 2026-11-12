@@ -126,6 +126,12 @@ export interface MessagingPlatform {
    */
   acceptsGroup?: (raw: unknown) => boolean;
   /**
+   * Sender gate (Telegram's owner allowlist): inbound from anyone it
+   * refuses — messages and button taps alike — is dropped silently before
+   * it reaches the sink. Omitted by platforms with no sender gate.
+   */
+  acceptsSender?: (senderId: string) => boolean;
+  /**
    * Rewrites the adapter's native thread id for Rakazo thread identity when
    * the SDK's granularity differs from the platform's conversations: Telegram
    * marks a non-forum reply with the reply root as its message thread id,
@@ -573,6 +579,12 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
   ): MessagingInboundMessage | null {
     if (message.author.isMe || message.author.isSystem) return null;
     const { platform } = mounted;
+    if (platform.acceptsSender && !platform.acceptsSender(message.author.userId)) {
+      getLogger().debug("dropped inbound from a sender the platform refuses", {
+        provider: platform.provider,
+      });
+      return null;
+    }
     if (!isDirect && !platform.capabilities.groups) return null;
     if (!isDirect && platform.acceptsGroup?.(message.raw) === false) return null;
     const fromLabel = message.author.fullName || message.author.userName || null;
@@ -620,6 +632,12 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
   ): MessagingInboundAction | null {
     if (event.user.isMe || !event.thread) return null;
     const { platform } = mounted;
+    if (platform.acceptsSender && !platform.acceptsSender(event.user.userId)) {
+      getLogger().debug("dropped inbound action from a sender the platform refuses", {
+        provider: platform.provider,
+      });
+      return null;
+    }
     const isDirect = event.thread.isDM;
     if (!isDirect && !platform.capabilities.groups) return null;
     const fromLabel = event.user.fullName || event.user.userName || null;

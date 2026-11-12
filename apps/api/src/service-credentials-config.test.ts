@@ -17,12 +17,16 @@ const EMPTY_STATUS = {
   whatsappPhoneNumberId: false,
   whatsappAppSecret: false,
   whatsappVerifyToken: false,
+  telegramOwnerUserIds: [] as string[],
 };
 
 /** An in-memory deployment settings row and secret table behind the calls the config makes. */
 function makeDeps(options: { admin?: boolean } = {}) {
   const state = {
-    settings: null as null | { serviceCredentialsCipher: string | null },
+    settings: null as null | {
+      serviceCredentialsCipher: string | null;
+      telegramOwnerUserIds?: string | null;
+    },
     secrets: new Map<string, string>(),
   };
   let nextSecret = 0;
@@ -132,5 +136,42 @@ describe("service credentials settings", () => {
     expect(status).toEqual(EMPTY_STATUS);
     expect(state.settings?.serviceCredentialsCipher).toBeNull();
     expect(state.secrets.size).toBe(0);
+  });
+
+  it("saves the Telegram owner allowlist in the clear and reports it back", async () => {
+    const { deps, state } = makeDeps();
+    const status = await updateServiceCredentials(deps, actor, {
+      telegramBotToken: "bot-token",
+      telegramOwnerUserIds: "123456789, 987654321",
+    });
+    expect(status).toEqual({
+      ...EMPTY_STATUS,
+      telegramBotToken: true,
+      telegramOwnerUserIds: ["123456789", "987654321"],
+    });
+    // The IDs sit on the settings row in the clear, never in the sealed record.
+    expect(state.settings?.telegramOwnerUserIds).toBe("123456789,987654321");
+    expect([...state.secrets.values()].join(" ")).not.toContain("123456789");
+    await expect(getServiceCredentials(deps, actor)).resolves.toEqual(status);
+  });
+
+  it("leaves the allowlist alone when the field is absent and clears it on empty", async () => {
+    const { deps, state } = makeDeps();
+    await updateServiceCredentials(deps, actor, { telegramOwnerUserIds: "42" });
+    const kept = await updateServiceCredentials(deps, actor, { naceApiKey: "nace-key" });
+    expect(kept.telegramOwnerUserIds).toEqual(["42"]);
+    const cleared = await updateServiceCredentials(deps, actor, { telegramOwnerUserIds: "" });
+    expect(cleared.telegramOwnerUserIds).toEqual([]);
+    expect(state.settings?.telegramOwnerUserIds).toBe("");
+  });
+
+  it("clearing a key keeps the allowlist", async () => {
+    const { deps } = makeDeps();
+    await updateServiceCredentials(deps, actor, {
+      tinyfishApiKey: "fish-key",
+      telegramOwnerUserIds: "42",
+    });
+    const status = await clearServiceCredentials(deps, actor, { keys: ["tinyfishApiKey"] });
+    expect(status.telegramOwnerUserIds).toEqual(["42"]);
   });
 });

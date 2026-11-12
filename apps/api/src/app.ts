@@ -52,6 +52,7 @@ import {
   installedMessaging,
   isMessagingSurfaceEnabled,
   loadServiceCredentials,
+  loadTelegramOwnerUserIds,
   mergeServiceCredentialsIntoMessagingEnv,
   messagingPlatformsFromEnv,
   ObjectAgentHomeStore,
@@ -307,6 +308,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   prisma = withSecretPersistence(prisma, secrets);
   // Service keys the deployment owner saved in Settings; the matching env vars win.
   const serviceCredentials = await loadServiceCredentials(prisma, secrets);
+  // The Telegram owner allowlist saved in Settings; empty leaves the bots open.
+  const telegramOwnerUserIds = await loadTelegramOwnerUserIds(prisma);
   runtimeEnv.tinyfishApiKey = serviceCredentials.tinyfishApiKey;
   runtimeEnv.naceApiKey = serviceCredentials.naceApiKey;
   installSecurityEventStore(prisma);
@@ -400,7 +403,10 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   const memory = new MarkdownMemoryStore(prisma);
   // This process registers the inbound sink, so it must hold Telegram's getUpdates connection.
   const messagingPlatforms = messagingPlatformsFromEnv(
-    mergeServiceCredentialsIntoMessagingEnv(env, serviceCredentials),
+    {
+      ...mergeServiceCredentialsIntoMessagingEnv(env, serviceCredentials),
+      telegramOwnerUserIds,
+    },
     { pollInboundMessages: true },
   ).filter((platform) => platform.provider !== "slack" || !env.slackClientId);
   const legacyMessaging =
