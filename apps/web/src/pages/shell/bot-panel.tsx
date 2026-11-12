@@ -5,6 +5,7 @@ import type {
   BotAvatarSet,
   ComputerMode,
   ModelCatalogEntry,
+  ProxySummary,
   ReplyMode,
   ThinkingLevel,
 } from "@rakazo/contracts";
@@ -29,6 +30,7 @@ import { PagesList } from "../../components/pages/PagesList";
 import { botProfilePatch } from "../../lib/bot-profile-patch";
 import { lazyComponent } from "../../lib/preload-recovery";
 import { useSpaceQueries } from "../../lib/query";
+import { rpc } from "../../lib/rpc";
 import { errorText } from "../../lib/user-error";
 import { AvatarStudioPopover } from "./avatar-studio-popover";
 import {
@@ -38,6 +40,7 @@ import {
   ModelSection,
   NotificationsSection,
   PermissionsGroup,
+  ProxySection,
   RepliesGroup,
   ToolsGroup,
   VoiceGroup,
@@ -100,6 +103,7 @@ export function BotSettings({
     memoryScope?: "isolated" | "shared" | null;
     autoSpeak?: boolean;
     fleetManagement?: boolean;
+    proxyId?: string | null;
     replyMode?: ReplyMode;
     crossSpaceCommunication?: boolean;
     dailyCheckIns?: boolean;
@@ -152,6 +156,13 @@ export function BotSettings({
   useEffect(() => setDailyCheckIns(bot.dailyCheckIns ?? true), [bot.dailyCheckIns]);
   const [fleetManagement, setFleetManagement] = useState(bot.fleetManagement);
   useEffect(() => setFleetManagement(bot.fleetManagement), [bot.fleetManagement]);
+  const [proxyId, setProxyId] = useState(bot.proxyId ?? null);
+  useEffect(() => setProxyId(bot.proxyId ?? null), [bot.proxyId]);
+  const proxiesQuery = useQuery({
+    queryKey: ["proxies"],
+    queryFn: () => rpc.proxies.list(),
+  });
+  const proxies: ProxySummary[] = proxiesQuery.data?.proxies ?? [];
   const [replyMode, setReplyMode] = useState(bot.replyMode);
   useEffect(() => setReplyMode(bot.replyMode), [bot.replyMode]);
   const [voiceId, setVoiceId] = useState(bot.voiceId ?? "");
@@ -214,6 +225,7 @@ export function BotSettings({
         avatarSet?: BotAvatarSet;
         notifyOnFinish?: boolean;
         fleetManagement?: boolean;
+        proxyId?: string | null;
         replyMode?: ReplyMode;
         crossSpaceCommunication?: boolean;
         dailyCheckIns?: boolean;
@@ -304,6 +316,7 @@ export function BotSettings({
       avatarSet?: BotAvatarSet;
       notifyOnFinish?: boolean;
       fleetManagement?: boolean;
+      proxyId?: string | null;
       replyMode?: ReplyMode;
       crossSpaceCommunication?: boolean;
       dailyCheckIns?: boolean;
@@ -325,6 +338,10 @@ export function BotSettings({
       }
       if (patchOverrides?.fleetManagement !== undefined) {
         await onSave({ fleetManagement: patchOverrides.fleetManagement });
+        return;
+      }
+      if (patchOverrides?.proxyId !== undefined) {
+        await onSave({ proxyId: patchOverrides.proxyId });
         return;
       }
       if (patchOverrides?.replyMode !== undefined) {
@@ -437,6 +454,7 @@ export function BotSettings({
         setDailyCheckIns(!patchOverrides.dailyCheckIns);
       if (patchOverrides?.fleetManagement !== undefined)
         setFleetManagement(!patchOverrides.fleetManagement);
+      if (patchOverrides?.proxyId !== undefined) setProxyId(bot.proxyId ?? null);
       if (patchOverrides?.replyMode !== undefined) setReplyMode(bot.replyMode);
       setError(errorText(err, t`Could not save`));
     } finally {
@@ -467,6 +485,7 @@ export function BotSettings({
     avatarSet?: BotAvatarSet;
     notifyOnFinish?: boolean;
     fleetManagement?: boolean;
+    proxyId?: string | null;
     replyMode?: ReplyMode;
     crossSpaceCommunication?: boolean;
     dailyCheckIns?: boolean;
@@ -594,6 +613,17 @@ export function BotSettings({
               memoryScope={memoryScope}
               onMemoryScopeChange={setMemoryScope}
             />
+            {proxies.length > 0 ? (
+              <ProxySection
+                ids={ids}
+                proxies={proxies}
+                proxyId={proxyId}
+                onProxyChange={(next) => {
+                  setProxyId(next);
+                  void enqueueSave({ proxyId: next });
+                }}
+              />
+            ) : null}
             <VoiceGroup
               ids={ids}
               autoSpeak={autoSpeak}

@@ -415,6 +415,17 @@ export function botsRoutes(ctx: RouterContext) {
           });
           if (!section) throw new IsolationError();
         }
+        if (input.proxyId !== undefined) {
+          // A bot routes through its owner's proxy, so only the owner can pick one.
+          if (existing.userId !== context.actor.userId) throw new ORPCError("FORBIDDEN");
+          if (input.proxyId !== null) {
+            const proxy = await deps.prisma.userProxy.findFirst({
+              where: { id: input.proxyId, userId: context.actor.userId },
+              select: { id: true },
+            });
+            if (!proxy) throw new ORPCError("BAD_REQUEST", { message: "Proxy not found" });
+          }
+        }
         const modelChange = await validateBotModelChange(botModelValidation(context.actor), {
           userId: context.actor.userId,
           spaceId: context.actor.spaceId,
@@ -478,6 +489,7 @@ export function botsRoutes(ctx: RouterContext) {
             ...(input.fleetManagement !== undefined
               ? { fleetManagement: input.fleetManagement }
               : {}),
+            ...(input.proxyId !== undefined ? { proxyId: input.proxyId } : {}),
             ...(input.replyMode !== undefined ? { replyMode: input.replyMode } : {}),
             ...(input.disabledBuiltinTools !== undefined
               ? { disabledBuiltinTools: input.disabledBuiltinTools }

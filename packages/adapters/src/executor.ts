@@ -46,6 +46,7 @@ import { createApprovedEffectReplayQueue } from "./approval-effect.js";
 import { PARTIAL_REPLY_NOTE } from "./automated-messages.js";
 import { backgroundHelpersAllowed } from "./background-helpers.js";
 import { loadBotMessageContext } from "./bot-messages.js";
+import { webProviderForBot } from "./bot-proxy.js";
 import {
   commandCredentialRedactions,
   loadBotCommandEnvironment,
@@ -697,6 +698,8 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           ...connectedContext(connectedPlugins),
           connectedProviders: connectedComposio.map((row) => row.provider),
         };
+        // The bot's own proxy, when its owner picked one, replaces the shared web provider.
+        const runWeb = await webProviderForBot(deps, bot, runSecrets, web);
         const memoryScope = configuredMemory
           ? effectiveMemoryScope(bot.memoryScope, configuredMemory.defaultScope)
           : null;
@@ -1444,7 +1447,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
 
         const ctx: RunContext = {
           deps,
-          providers: { web, mediaGeneration, paidServices, decisions, browser, cloudAgent },
+          providers: { web: runWeb, mediaGeneration, paidServices, decisions, browser, cloudAgent },
           run,
           runId,
           workerId,

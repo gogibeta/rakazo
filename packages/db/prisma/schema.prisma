@@ -64,6 +64,7 @@ model User {
   accessGrants                AccessGrant[]
   invitations                 Invitation[]
   modelCredentials            UserModelCredential[]
+  proxies                     UserProxy[]
   voiceCredentials            UserVoiceCredential[]
   paymentWallet               PaymentWallet?
   spendingLimit               SpendingLimit?
@@ -862,6 +863,28 @@ model UserModelCredential {
   @@map("user_model_credentials")
 }
 
+/// A named proxy a person saved for their bots' web traffic. The password is
+/// sealed with the deployment encryption key (record id is this row's id, the
+/// way bot secrets seal); only its presence is ever read back.
+model UserProxy {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  protocol       String
+  host           String
+  port           Int
+  country        String?
+  username       String?
+  passwordCipher String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  bots           Bot[]    @relation("BotProxy")
+
+  @@index([userId, createdAt])
+  @@map("user_proxies")
+}
+
 /// A problem or suggestion a user asked their bot to send to the people who run this server.
 /// The ids point at where it happened; the description is written to leave out personal details.
 model FeedbackReport {
@@ -988,6 +1011,9 @@ model Bot {
   modelProvider     String?
   modelId           String?
   thinkingLevel     String?
+  /// The owner's proxy this bot's web traffic uses; null is its own connection.
+  proxyId           String?
+  proxy             UserProxy?        @relation("BotProxy", fields: [proxyId], references: [id], onDelete: SetNull)
   disabledBuiltinTools String[] @default([])
   webhookSecretId   String?
   teamChatAmbientEnabled Boolean @default(false)
@@ -1024,6 +1050,7 @@ model Bot {
   @@index([sectionId])
   @@index([computerId])
   @@index([parentBotId])
+  @@index([proxyId])
   @@map("bots")
   messagingInstallations MessagingInstallation[]
   messagingInstallSessions MessagingInstallSession[]

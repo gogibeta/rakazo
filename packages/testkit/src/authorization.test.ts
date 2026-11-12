@@ -239,6 +239,9 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const calls = exhaustiveProtectedCalls([
       ["me"],
       ["diagnostics/report"],
+      ["proxies/list"],
+      ["proxies/add", { name: "Test", host: "proxy.example.com", port: 8080 }],
+      ["proxies/remove", { proxyId: "missing-proxy" }],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
       ["updater/status"],

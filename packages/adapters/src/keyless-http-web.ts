@@ -38,6 +38,8 @@ export type KeylessHttpWebOptions = {
   fetchTimeoutMs?: number;
   maxBufferBytes?: number;
   userAgent?: string;
+  /** Route search and fetch through this proxy instead of the deployment's own connection. */
+  proxyUrl?: string;
 };
 
 /** HTML search backend using DuckDuckGo’s public HTML form. One keyless option, not the interface. */
@@ -56,10 +58,12 @@ export class KeylessHttpWebProvider implements WebProvider {
   private readonly fetchTimeoutMs: number;
   private readonly maxBufferBytes: number;
   private readonly userAgent: string;
+  private readonly proxyUrl?: string;
 
   constructor(options: KeylessHttpWebOptions = {}) {
     this.fetchImpl = options.fetch;
     this.resolveHostname = options.resolveHostname;
+    this.proxyUrl = options.proxyUrl;
     this.searchBackend = options.searchBackend ?? duckDuckGoHtmlSearchBackend;
     this.searchTimeoutMs = options.searchTimeoutMs ?? 15_000;
     this.fetchTimeoutMs = options.fetchTimeoutMs ?? 15_000;
@@ -96,6 +100,7 @@ export class KeylessHttpWebProvider implements WebProvider {
       maxBytes: 1024 * 1024,
       userAgent: this.userAgent,
       signal: request.signal ?? context.signal,
+      proxyUrl: this.proxyUrl,
     });
     return this.searchBackend.parse(body, maxResults);
   }
@@ -110,6 +115,7 @@ export class KeylessHttpWebProvider implements WebProvider {
       maxBytes: this.maxBufferBytes,
       userAgent: this.userAgent,
       signal: request.signal ?? context.signal,
+      proxyUrl: this.proxyUrl,
     });
     if (!body.trim()) throw new Error(`Failed to fetch content from ${url}`);
     const mediaType = contentType?.split(";", 1)[0]?.trim().toLowerCase();

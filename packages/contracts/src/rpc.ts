@@ -196,6 +196,7 @@ import {
   SpendingPaymentSchema,
   SpendingStatusSchema,
 } from "./payments.js";
+import { ProxyAddInput, ProxyRemoveInput, ProxySummarySchema } from "./proxies.js";
 import { MessageReactionSchema } from "./reactions.js";
 import { RoutineWatchSchema } from "./routine-watch.js";
 import {
@@ -479,6 +480,12 @@ export const appContract = {
   /** Redacted diagnostics report for the signed-in user, safe to copy and share for support. */
   diagnostics: {
     report: oc.output(z.object({ report: z.string() })),
+  },
+  /** The signed-in user's named proxies. Summaries never carry the password. */
+  proxies: {
+    list: oc.output(z.object({ proxies: z.array(ProxySummarySchema) })),
+    add: oc.input(ProxyAddInput).output(ProxySummarySchema),
+    remove: oc.input(ProxyRemoveInput).output(z.object({ ok: z.literal(true) })),
   },
   /** Deployment-owner view of the append-only security event log, newest first. */
   security: {
