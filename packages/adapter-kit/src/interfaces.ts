@@ -586,6 +586,18 @@ export interface MessagingSurface {
     request: MessagingSendRequest,
     context: AdapterContext,
   ): Promise<MessagingSendResult>;
+  /**
+   * Replace the body of a message this surface sent earlier, addressed by
+   * the handle its send returned. Absent when no mounted platform can edit
+   * (see the `edits` capability); callers treat a failed edit as lost,
+   * never as a reason to send the content again as a new message.
+   */
+  editMessage?(
+    threadId: string,
+    handle: string,
+    request: MessagingSendRequest,
+    context: AdapterContext,
+  ): Promise<void>;
   /** Resolve (or create) the 1:1 thread for a provider address. */
   openDirectThread(provider: string, address: string, context: AdapterContext): Promise<string>;
   /**

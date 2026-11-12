@@ -402,6 +402,7 @@ describe("messagingPlatformsFromEnv", () => {
       receipt: "reaction",
       files: true,
       actions: true,
+      edits: true,
     });
     expect(capabilities.whatsapp).toEqual({
       direct: true,
@@ -417,9 +418,33 @@ describe("messagingPlatformsFromEnv", () => {
       receipt: null,
       files: true,
       actions: true,
+      edits: true,
     });
-    expect(capabilities.lark).toEqual({ direct: true, groups: false, receipt: null });
+    expect(capabilities.lark).toEqual({
+      direct: true,
+      groups: false,
+      receipt: null,
+      edits: true,
+    });
     expect(capabilities.photon).toEqual({ direct: true, groups: false, receipt: "typing" });
+  });
+
+  it("declares edit support only where the platform adapter really edits", () => {
+    const capabilities = Object.fromEntries(
+      messagingPlatformsFromEnv(fullEnv).map((platform) => [
+        platform.provider,
+        platform.capabilities,
+      ]),
+    );
+    // Telegram editMessageText, Slack chat.update, Lark im.message.update.
+    expect(capabilities.telegram).toMatchObject({ edits: true });
+    expect(capabilities.slack).toMatchObject({ edits: true });
+    expect(capabilities.lark).toMatchObject({ edits: true });
+    // WhatsApp has no message edit; the Sendblue and Photon adapters throw
+    // or no-op edits for messages they did not receive in this session.
+    expect(capabilities.whatsapp?.edits).toBeUndefined();
+    expect(capabilities.sendblue?.edits).toBeUndefined();
+    expect(capabilities.photon?.edits).toBeUndefined();
   });
 });
 

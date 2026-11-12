@@ -289,17 +289,8 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
   ): Promise<MessagingSendResult> {
     const mounted = this.mountedForThread(request.threadId);
     await this.ensureInitialized();
-    // Telegram converts Markdown and retries parse errors as plain text;
-    // WhatsApp renders it as its own formatting and Lark posts it as an md
-    // block; Photon's iMessage adapter renders it as native styled text. Keep
-    // the other adapters' plain payloads (Slack markdown_text has a lower
-    // limit, Sendblue's iMessage has no markup).
     const telegram = mounted.adapterName === "telegram";
-    const markdown =
-      telegram ||
-      mounted.adapterName === "whatsapp" ||
-      mounted.adapterName === "lark" ||
-      mounted.adapterName === "imessage";
+    const markdown = usesMarkdown(mounted);
     const { attachment } = request;
     if (telegram && attachment && attachment.data.byteLength > TELEGRAM_UPLOAD_MAX_BYTES) {
       throw new MessagingSendError(new Error("File is larger than Telegram accepts"), {
@@ -316,6 +307,32 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
         .post(message);
       const handle = "id" in sent && typeof sent.id === "string" ? sent.id : "";
       return { handle };
+    } catch (error) {
+      throw sendError(mounted.platform, error);
+    }
+  }
+
+  /**
+   * Replace a sent message's body through the platform adapter's own edit
+   * call. Only mounted platforms whose descriptor claims `edits` are ever
+   * asked; the rest have no edit call worth making (several adapters answer
+   * one with a thrown "not supported").
+   */
+  async editMessage(
+    threadId: string,
+    handle: string,
+    request: MessagingSendRequest,
+    _context: AdapterContext,
+  ): Promise<void> {
+    const mounted = this.mountedForThread(threadId);
+    await this.ensureInitialized();
+    const message = postableForSend(mounted.platform, request, usesMarkdown(mounted));
+    try {
+      await mounted.platform.adapter.editMessage(
+        toAdapterThreadId(mounted, threadId),
+        handle,
+        message,
+      );
     } catch (error) {
       throw sendError(mounted.platform, error);
     }
@@ -577,6 +594,23 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       messageId: event.messageId,
     };
   }
+}
+
+/**
+ * Whether a send to this platform goes out as Markdown. Telegram converts
+ * Markdown and retries parse errors as plain text; WhatsApp renders it as
+ * its own formatting and Lark posts it as an md block; Photon's iMessage
+ * adapter renders it as native styled text. Keep the other adapters' plain
+ * payloads (Slack markdown_text has a lower limit, Sendblue's iMessage has
+ * no markup).
+ */
+function usesMarkdown(mounted: MountedPlatform): boolean {
+  return (
+    mounted.adapterName === "telegram" ||
+    mounted.adapterName === "whatsapp" ||
+    mounted.adapterName === "lark" ||
+    mounted.adapterName === "imessage"
+  );
 }
 
 /**

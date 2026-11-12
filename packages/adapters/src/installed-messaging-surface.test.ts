@@ -67,6 +67,9 @@ function fixture(event: MessagingInboundEvent = inbound) {
   const receipts = vi.fn(
     async (_credential: string, _threadId: string, _handle: string) => undefined,
   );
+  const edits = vi.fn(
+    async (_credential: string, _threadId: string, _handle: string, _request: unknown) => undefined,
+  );
   const surfaces = vi.fn((credential: string) => {
     let sink: ((event: MessagingInboundEvent) => Promise<void>) | undefined;
     return {
@@ -87,6 +90,7 @@ function fixture(event: MessagingInboundEvent = inbound) {
         return new Response(null, { status: 200 });
       },
       sendToThread: (request) => sends(credential, request),
+      editMessage: (threadId, handle, request) => edits(credential, threadId, handle, request),
       acknowledge: (threadId, handle) => receipts(credential, threadId, handle),
       openDirectThread: async (_provider, address) => `slack:D-${address}`,
       fetchThreadHistory: async () => [inbound],
@@ -112,6 +116,7 @@ function fixture(event: MessagingInboundEvent = inbound) {
     surfaces,
     sends,
     receipts,
+    edits,
   };
 }
 const webhook = (team = "Ta") =>
@@ -182,6 +187,16 @@ describe("installed messaging isolation", () => {
     expect(f.sends).toHaveBeenCalledWith("token-a", { threadId: "slack:C1:1.001", body: "reply" });
     await f.messaging.acknowledge("slack~a:C1:1.001", "Ta:1.001", context);
     expect(f.receipts).toHaveBeenCalledWith("token-a", "slack:C1:1.001", "1.001");
+    await f.messaging.editMessage?.(
+      "slack~a:C1:1.001",
+      "Ta:1.001",
+      { threadId: "slack~a:C1:1.001", body: "Updated summary" },
+      context,
+    );
+    expect(f.edits).toHaveBeenCalledWith("token-a", "slack:C1:1.001", "1.001", {
+      threadId: "slack:C1:1.001",
+      body: "Updated summary",
+    });
     expect(f.surfaces).toHaveBeenCalledTimes(1);
     await expect(f.messaging.acknowledge("slack~a:C1", "Tb:1.001", context)).rejects.toThrow(
       "another workspace",

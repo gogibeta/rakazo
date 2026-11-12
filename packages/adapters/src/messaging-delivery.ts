@@ -13,6 +13,7 @@ import {
   botMessageHopExhausted,
   isApprovalAskBlock,
   isSecretAskBlock,
+  isTerminal,
   MESSAGING_ASK_ACTION_ID,
   messagingAskActionValue,
   nextBotMessageHop,
@@ -34,7 +35,7 @@ import { getLogger } from "@rakazo/logging";
 import { truncate } from "./approval-ask.js";
 import { MessagingSendError } from "./chat-sdk-surface.js";
 import { splitOutboundBody } from "./messaging-platforms.js";
-import { isUserProgressClientNonce } from "./user-progress.js";
+import { isUserProgressClientNonce, narrationStatusLine } from "./user-progress.js";
 
 /**
  * Margin under vendor consecutive-outbound caps (sendblue enforces one hard):
@@ -45,6 +46,9 @@ export const MESSAGING_DM_OUTBOUND_CAP = 140;
 
 /** Provider-send attempts before a mirrored row is declared lost. */
 export const MESSAGING_OUTBOUND_MAX_ATTEMPTS = 5;
+
+/** Minimum spacing between edits of one run's activity message. */
+export const MESSAGING_ACTIVITY_EDIT_INTERVAL_MS = 5_000;
 
 /**
  * The send order every drain agrees on: mirrored rows carry explicit
@@ -67,6 +71,7 @@ type MessagingOutboundRow = {
   body: string;
   attempts: number | null;
   nextAttemptAt: Date | null;
+  providerHandle: string | null;
   sourceMessageId: string | null;
   createdAt: Date;
 };
@@ -246,10 +251,195 @@ async function mirrorRun(
       )
     : -1;
   const rows = (held === -1 ? rowsByMessage : rowsByMessage.slice(0, held)).flat();
-  if (rows.length === 0) return;
-  // Atomic dedupe: a concurrent messaging.deliver for the same run loses on
-  // the idempotencyKey unique key instead of throwing P2002.
-  await insertOutboundRows(deps.prisma, { identityId: identity.id }, rows);
+  if (rows.length > 0) {
+    // Atomic dedupe: a concurrent messaging.deliver for the same run loses on
+    // the idempotencyKey unique key instead of throwing P2002.
+    await insertOutboundRows(deps.prisma, { identityId: identity.id }, rows);
+  }
+  await mirrorRunActivity(deps, run, identity, messages, !progress);
+}
+
+/** Step lines an activity message shows; older steps collapse into a count. */
+const ACTIVITY_MAX_STEP_LINES = 6;
+
+/** Chat-sized cap for an activity message, which is a summary, not the reply. */
+const ACTIVITY_BODY_MAX_LENGTH = 1_000;
+
+type ActivityRun = {
+  id: string;
+  status: string;
+  startedAt: Date | null;
+  createdAt: Date;
+  completedAt: Date | null;
+};
+
+type ActivityMessage = { blocks: unknown; clientNonce?: string | null };
+
+/**
+ * One evolving message per run on platforms that can edit: opened by the
+ * progress mirror, refreshed in place as the run's steps accumulate, and
+ * finalized by the end-of-run mirror. The outbox row is the whole state —
+ * its body is always the newest summary, so a burst of progress mirrors
+ * inside the edit interval stores one pending edit instead of queueing
+ * several, and a stale summary is never sent after a newer one exists.
+ * Platforms without the `edits` capability never get a row: their only
+ * channel message stays the end-of-run delivery.
+ */
+async function mirrorRunActivity(
+  deps: MessagingDeliveryDeps,
+  run: ActivityRun,
+  identity: { id: string; provider: string },
+  messages: ActivityMessage[],
+  final: boolean,
+): Promise<void> {
+  const supported =
+    typeof deps.messaging.editMessage === "function" &&
+    deps.messaging
+      .platforms()
+      .some((platform) => platform.provider === identity.provider && platform.capabilities.edits);
+  if (!supported) return;
+  const idempotencyKey = `activity:${run.id}`;
+  const existing = await deps.prisma.messagingOutbound.findFirst({
+    where: { idempotencyKey },
+  });
+  const body = activityBody(run, messages, final);
+  if (!existing) {
+    // Open the message only while the run is still going: a progress mirror
+    // that lands after the run ended must not post activity behind the
+    // reply it was announcing, and the end-of-run mirror never opens one.
+    if (!body || final || isTerminal(run.status)) return;
+    await insertOutboundRows(deps.prisma, { identityId: identity.id }, [
+      {
+        idempotencyKey,
+        kind: "activity",
+        identityId: identity.id,
+        body,
+        sourceMessageId: null,
+      },
+    ]);
+    return;
+  }
+  if (existing.status === "failed") return;
+  if (!body) {
+    // Nothing left to summarize: an activity message that never posted is
+    // dropped instead of sending a stale line at the end of the run; one
+    // already showing keeps its last state.
+    if (final && !existing.providerHandle) {
+      await deps.prisma.messagingOutbound.update({
+        where: { id: existing.id },
+        data: { status: "failed" },
+      });
+    }
+    return;
+  }
+  if (existing.status === "pending") {
+    // Not posted yet: the newest summary simply replaces the queued one.
+    if (existing.body !== body) {
+      await deps.prisma.messagingOutbound.update({
+        where: { id: existing.id },
+        data: { body },
+      });
+    }
+    return;
+  }
+  const updatedAtMs = existing.updatedAt?.getTime() ?? Date.now();
+  if (!existing.providerHandle) {
+    // Claimed by a drain that has not recorded its handle: leave an
+    // in-flight send alone; an abandoned claim reopens for the drain.
+    if (Date.now() - updatedAtMs < MESSAGING_ROW_IN_FLIGHT_MS) return;
+    await reopenActivityRow(deps, existing.id, body);
+    return;
+  }
+  // Posted: the platform shows an older summary. Inside the edit interval
+  // only the stored body moves; the drain is handed the row again by a later
+  // mirror, so a burst collapses into at most one edit per interval.
+  if (existing.body === body && !final) return;
+  if (!final && Date.now() - updatedAtMs < MESSAGING_ACTIVITY_EDIT_INTERVAL_MS) {
+    if (existing.body !== body) {
+      await deps.prisma.messagingOutbound.update({
+        where: { id: existing.id },
+        data: { body },
+      });
+    }
+    return;
+  }
+  await reopenActivityRow(deps, existing.id, body);
+}
+
+/** Hands a posted activity row back to the drain for one more edit. */
+async function reopenActivityRow(
+  deps: MessagingDeliveryDeps,
+  rowId: string,
+  body: string,
+): Promise<void> {
+  await deps.prisma.messagingOutbound.updateMany({
+    where: { id: rowId, status: "sent" },
+    data: { status: "pending", body, nextAttemptAt: null },
+  });
+}
+
+/**
+ * The activity message's text: the run's step lines so far, its latest
+ * progress line when it adds anything new, and how long the run has been
+ * going. Null while the run has produced no steps worth summarizing —
+ * interim text already reaches the channel as its own message, so activity
+ * opens only once there is an evolving summary to show.
+ */
+function activityBody(
+  run: ActivityRun,
+  messages: ActivityMessage[],
+  final: boolean,
+): string | null {
+  const lines = messages
+    .flatMap((message) => {
+      if (!Array.isArray(message.blocks)) return [];
+      return (message.blocks as RenderableBlock[]).flatMap((block) =>
+        block?.kind === "steps" ? stepLines(block.steps) : [],
+      );
+    })
+    .flatMap((joined) => joined.split("\n"))
+    .filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return null;
+  const shown = lines.slice(-ACTIVITY_MAX_STEP_LINES);
+  const progress = latestActivityLine(messages);
+  const parts = [
+    ...(lines.length > shown.length ? [`(${lines.length - shown.length} earlier steps)`] : []),
+    ...shown,
+    ...(progress && !shown.includes(progress) ? [progress] : []),
+  ];
+  const startedAt = run.startedAt ?? run.createdAt;
+  const endedAt = final ? (run.completedAt ?? new Date()) : new Date();
+  const elapsed = formatActivityDuration(endedAt.getTime() - startedAt.getTime());
+  parts.push(final ? `Finished in ${elapsed}` : `Working for ${elapsed}`);
+  return truncate(parts.join("\n"), ACTIVITY_BODY_MAX_LENGTH);
+}
+
+/** The newest progress line the run has shown: a progress block, else its latest interim update. */
+function latestActivityLine(messages: ActivityMessage[]): string | null {
+  for (const message of [...messages].reverse()) {
+    if (!Array.isArray(message.blocks)) continue;
+    for (const block of [...(message.blocks as RenderableBlock[])].reverse()) {
+      if (block?.kind === "progress" && typeof block.text === "string" && block.text.trim()) {
+        return narrationStatusLine(block.text);
+      }
+    }
+    if (isUserProgressClientNonce(message.clientNonce)) {
+      const text = extractText(message.blocks, new Set());
+      if (text) return narrationStatusLine(text);
+    }
+  }
+  return null;
+}
+
+/** "45s", "2m 05s", "1h 03m": compact elapsed time for an activity line. */
+function formatActivityDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${seconds}s`;
 }
 
 /**
@@ -845,6 +1035,9 @@ async function deliverRow(
       return false;
     }
     const threadId = await resolveDirectThread(deps, identity, context);
+    if (row.kind === "activity") {
+      return deliverActivityRow(deps, context, row, identity, threadId);
+    }
     const invitePair = connectInvitePair(row.idempotencyKey);
     if (invitePair) {
       const result = await sendConnectInvite(
@@ -969,6 +1162,53 @@ async function deliverRow(
       await deps.jobs.enqueue(messagingDeliverJob(undefined, retryAt));
     }
     return false;
+  }
+}
+
+/**
+ * Posts the run's activity message, or edits it to the row's newest body.
+ * Activity decorates the reply, so a provider failure is dropped here
+ * instead of entering the outbox retry path: a lost first post marks the
+ * row failed (no handle exists for the run's later steps to edit), a lost
+ * edit keeps the summary the platform already shows, and neither holds
+ * back the rows queued behind this one.
+ */
+async function deliverActivityRow(
+  deps: MessagingDeliveryDeps,
+  context: AdapterContext,
+  row: MessagingOutboundRow,
+  identity: IdentityRow,
+  threadId: string,
+): Promise<boolean> {
+  try {
+    if (row.providerHandle) {
+      await deps.messaging.editMessage?.(
+        threadId,
+        row.providerHandle,
+        { threadId, body: row.body },
+        context,
+      );
+      return true;
+    }
+    const sent = await deps.messaging.sendToThread({ threadId, body: row.body }, context);
+    if (!sent.handle) throw new Error("Messaging send returned no handle to edit later");
+    await deps.prisma.messagingOutbound.updateMany({
+      where: { id: row.id },
+      data: { providerHandle: sent.handle },
+    });
+    await deps.prisma.messagingIdentity.update({
+      where: { id: identity.id },
+      data: { outboundSinceInbound: { increment: 1 } },
+    });
+    return true;
+  } catch (error) {
+    getLogger().warn("messaging activity delivery failed", { error });
+    if (!row.providerHandle) {
+      await deps.prisma.messagingOutbound
+        .updateMany({ where: { id: row.id }, data: { status: "failed" } })
+        .catch(() => undefined);
+    }
+    return true;
   }
 }
 

@@ -1153,6 +1153,42 @@ describe("ChatSdkMessagingSurface acknowledge", () => {
   });
 });
 
+describe("ChatSdkMessagingSurface editMessage", () => {
+  it("edits through the platform adapter with the adapter thread id", async () => {
+    const { surface, adapter } = createSurface({
+      capabilities: { direct: true, groups: true, receipt: "typing", edits: true },
+    });
+    await surface.editMessage?.(
+      "mock:Duser:1",
+      "1700000000.000100",
+      { threadId: "mock:Duser:1", body: "Updated summary" },
+      context,
+    );
+    expect(adapter.editMessage).toHaveBeenCalledWith(
+      "mock:Duser:1",
+      "1700000000.000100",
+      "Updated summary",
+    );
+  });
+
+  it("surfaces an adapter edit failure as a send error", async () => {
+    const { surface, adapter } = createSurface({
+      capabilities: { direct: true, groups: true, receipt: "typing", edits: true },
+    });
+    (adapter.editMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("message not found"),
+    );
+    await expect(
+      surface.editMessage?.(
+        "mock:Duser:1",
+        "1700000000.000100",
+        { threadId: "mock:Duser:1", body: "Updated summary" },
+        context,
+      ),
+    ).rejects.toMatchObject({ name: "MessagingSendError" });
+  });
+});
+
 describe("ChatSdkMessagingSurface shape", () => {
   it("requires at least one platform and reports the mounted ones", () => {
     expect(() => new ChatSdkMessagingSurface([])).toThrow(/>=1 platform/);
