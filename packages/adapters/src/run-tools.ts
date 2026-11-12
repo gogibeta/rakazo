@@ -24,7 +24,6 @@ import { pageTools } from "./run-tools-pages.js";
 import { preferenceTools } from "./run-tools-preferences.js";
 import { purchaseTools } from "./run-tools-purchases.js";
 import { secretTools } from "./run-tools-secrets.js";
-import { walletTools } from "./run-tools-wallets.js";
 import { taskTools } from "./run-tools-tasks.js";
 import {
   USER_COMPUTER_ACT_TOOL,
@@ -34,6 +33,7 @@ import {
   userComputerObserve,
   userComputerShell,
 } from "./run-tools-user-computer.js";
+import { walletTools } from "./run-tools-wallets.js";
 import { strategicInitiativeToolAllowed } from "./strategic-initiative.js";
 import { logToolRefusal } from "./tool-completion-audit.js";
 import { refusal } from "./tool-refusal.js";

@@ -218,8 +218,8 @@ import {
   WalletAddInput,
   WalletRemoveInput,
   WalletSummarySchema,
-  WalletUsesInput,
   WalletUseSummarySchema,
+  WalletUsesInput,
 } from "./wallets.js";
 
 const botId = z.object({ botId: Id });
