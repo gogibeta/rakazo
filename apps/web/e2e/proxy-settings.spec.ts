@@ -14,7 +14,7 @@ test("adds proxies from the fields and from a pasted URL, showing no password", 
   await settings.getByLabel("Port", { exact: true }).fill("7777");
   await settings.getByLabel("Country").fill("in");
   await settings.getByLabel("Username").fill("customer-42");
-  await settings.getByLabel("Password").fill(`fake-password-${stamp}`);
+  await settings.getByRole("textbox", { name: "Password" }).fill(`fake-password-${stamp}`);
   await settings.getByRole("button", { name: "Add proxy", exact: true }).click();
 
   const mumbai = settings.locator("li", { hasText: "Mumbai" });
