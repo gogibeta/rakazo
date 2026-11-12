@@ -5774,7 +5774,7 @@ describe("model credential persistence", () => {
       string,
       ReturnType<typeof vi.fn>
     >;
-    credentialsFake.findFirst.mockResolvedValue(credentialRow);
+    credentialsFake.findFirst!.mockResolvedValue(credentialRow);
     Object.assign(credentialsFake, {
       count: vi.fn(async () => 0),
       updateMany: vi.fn(async () => ({ count: 1 })),
