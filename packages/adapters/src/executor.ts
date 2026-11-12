@@ -1775,7 +1775,12 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         ) => JSON.stringify([provider, modelId, credentialId ?? null, keyId ?? null]);
         const fallbackModelKeys = new Set(
           runFallbackModels.map((candidate) =>
-            fallbackKey(candidate.provider, candidate.modelId, candidate.credentialId, candidate.keyId),
+            fallbackKey(
+              candidate.provider,
+              candidate.modelId,
+              candidate.credentialId,
+              candidate.keyId,
+            ),
           ),
         );
         const fallbackModelIds = new Set(

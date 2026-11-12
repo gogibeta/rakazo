@@ -2,10 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { deleteUnreferencedCredentialSecret, retireModelCredential } from "./credential-secrets.js";
 
-function credentialSecretPrisma(modelReferences: number, voiceReferences: number) {
+function credentialSecretPrisma(
+  modelReferences: number,
+  voiceReferences: number,
+  keyReferences = 0,
+) {
   return {
     userModelCredential: { count: vi.fn().mockResolvedValue(modelReferences) },
     userVoiceCredential: { count: vi.fn().mockResolvedValue(voiceReferences) },
+    userModelCredentialKey: { count: vi.fn().mockResolvedValue(keyReferences) },
     secret: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
   } as unknown as PrismaClient;
 }
@@ -26,7 +31,22 @@ describe("deleteUnreferencedCredentialSecret", () => {
     expect(prisma.userVoiceCredential.count).toHaveBeenCalledWith({
       where: { secretId: "secret" },
     });
+    expect(prisma.userModelCredentialKey.count).toHaveBeenCalledWith({
+      where: { secretId: "secret" },
+    });
     expect(prisma.secret.deleteMany).toHaveBeenCalledWith({ where: { id: "secret" } });
+  });
+
+  it("keeps a secret while a pooled key still references it", async () => {
+    const prisma = credentialSecretPrisma(0, 0, 1);
+
+    await deleteUnreferencedCredentialSecret(prisma, {
+      credentialKind: "model",
+      credentialId: "credential",
+      secretId: "secret",
+    });
+
+    expect(prisma.secret.deleteMany).not.toHaveBeenCalled();
   });
 
   it("keeps a secret while either credential kind still references it", async () => {

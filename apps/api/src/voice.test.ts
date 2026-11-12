@@ -198,6 +198,7 @@ function makeDisconnectDeps(
     spaceVoicePreference: { deleteMany: preferenceDeleteMany },
     userVoicePreference: { deleteMany: accountPreferenceDeleteMany },
     userModelCredential: { count: modelCount },
+    userModelCredentialKey: { count: vi.fn().mockResolvedValue(0) },
     secret: { deleteMany: secretDeleteMany },
     $transaction: vi.fn(),
   };

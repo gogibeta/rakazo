@@ -5166,8 +5166,19 @@ describe("model credential persistence", () => {
       updateMany: vi.fn().mockResolvedValue({ count: 0 }),
       upsert,
     };
+    const userModelCredentialKey = {
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: "key-1",
+        ...data,
+      })),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      count: vi.fn().mockResolvedValue(0),
+    };
     const tx = {
       userModelCredential,
+      userModelCredentialKey,
       secret: { create: vi.fn().mockResolvedValue({}) },
       userModelPreference,
     };
@@ -5328,6 +5339,16 @@ describe("model credential persistence", () => {
         withModelRoles({
           userModelCredential: deps.prisma.userModelCredential,
           userVoiceCredential: { count: vi.fn().mockResolvedValue(0) },
+          userModelCredentialKey: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+              id: "key-1",
+              ...data,
+            })),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            count: vi.fn().mockResolvedValue(0),
+          },
           userModelPreference: deps.prisma.userModelPreference,
           secret: {
             create: vi.fn().mockResolvedValue({ id: "new-secret" }),
@@ -5917,6 +5938,16 @@ describe("model credential persistence", () => {
         withModelRoles({
           userModelCredential: credentials,
           userVoiceCredential: { count: vi.fn().mockResolvedValue(0) },
+          userModelCredentialKey: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+              id: "key-1",
+              ...data,
+            })),
+            updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            count: vi.fn().mockResolvedValue(0),
+          },
           userModelPreference: deps.prisma.userModelPreference,
           secret: {
             create: vi.fn().mockResolvedValue({ id: "new-secret" }),
@@ -6090,6 +6121,10 @@ describe("model disconnect", () => {
       userModelCredential: {
         findMany: vi.fn(async () => connections),
         deleteMany: vi.fn(async () => ({ count: 1 })),
+        count: vi.fn(async () => 0),
+      },
+      userModelCredentialKey: {
+        findMany: vi.fn(async () => []),
         count: vi.fn(async () => 0),
       },
       userVoiceCredential: { count: vi.fn(async () => 0) },
@@ -8549,6 +8584,16 @@ describe("openai-compatible enabled models", () => {
         update: vi.fn(async ({ data }: { data: Record<string, unknown> }) =>
           Object.assign(state.credential, data),
         ),
+        count: vi.fn(async () => 0),
+      },
+      userModelCredentialKey: {
+        findFirst: vi.fn(async () => null),
+        findMany: vi.fn(async () => []),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: "key-1",
+          ...data,
+        })),
+        updateMany: vi.fn(async () => ({ count: 0 })),
         count: vi.fn(async () => 0),
       },
       userVoiceCredential: { count: vi.fn(async () => 0) },
