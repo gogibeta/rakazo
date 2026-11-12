@@ -80,6 +80,7 @@ import {
 import { teamWorkspaceInstruction } from "./computer-support.js";
 import { checkpointRunComputerWorkspace } from "./computer-workspace.js";
 import { createConfiguredDecision } from "./configured-decision.js";
+import { createConfiguredDocuments } from "./configured-documents.js";
 import {
   connectedContext,
   loadLivePluginSlugs,
@@ -253,6 +254,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
   const mediaGeneration = executorDeps.mediaGeneration ?? createMediaGenerationProvider();
   const paidServices = executorDeps.paidServices ?? createPaidServiceProvider();
   const decisions = executorDeps.decisions ?? createConfiguredDecision();
+  const documents = executorDeps.documents ?? createConfiguredDocuments();
   const browser =
     executorDeps.browser ?? createBrowserProvider(undefined, { sandbox: executorDeps.sandbox });
   const cloudAgent = executorDeps.cloudAgent;
@@ -1280,6 +1282,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
             mediaVideoEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.video),
             paidServicesEnabled: Boolean(paidServices),
             decisionsEnabled: Boolean(decisions),
+            documentsEnabled: Boolean(documents),
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             paymentWalletEnabled,
             messagingChannelRun: nonOwnerChatRun,
@@ -1447,7 +1450,15 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
 
         const ctx: RunContext = {
           deps,
-          providers: { web: runWeb, mediaGeneration, paidServices, decisions, browser, cloudAgent },
+          providers: {
+            web: runWeb,
+            mediaGeneration,
+            paidServices,
+            decisions,
+            documents,
+            browser,
+            cloudAgent,
+          },
           run,
           runId,
           workerId,

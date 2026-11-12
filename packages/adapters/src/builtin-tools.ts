@@ -856,6 +856,220 @@ export const builtinAgentTools: ConnectorTool[] = [
     readOnly: false,
   },
   {
+    name: "document_parse",
+    description:
+      "Read a document file from the workspace (PDF, Office document, spreadsheet, image, email or text) and return its text as Markdown, using the deployment's document service. Use for files read_file cannot read as text. Long documents come back clipped; pass page_ranges to read the rest. Only offered when a document service is configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace path of the document." },
+        page_ranges: {
+          type: "array",
+          maxItems: 200,
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "number", description: "First page, one-based." },
+              end: { type: "number", description: "Last page, inclusive." },
+            },
+            required: ["start", "end"],
+          },
+          description: "Pages to read. Omit to read the whole document.",
+        },
+      },
+      required: ["path"],
+    },
+    readOnly: false,
+  },
+  {
+    name: "document_extract",
+    description:
+      "Extract structured fields from a workspace document with the deployment's document service. Returns the values as JSON plus a found, not_found or ambiguous status and source quotes per field. Only offered when a document service is configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace path of the document." },
+        fields: {
+          type: "array",
+          minItems: 1,
+          maxItems: 50,
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Field name in the result." },
+              type: {
+                type: "string",
+                enum: ["string", "number", "integer", "boolean", "array", "object"],
+                description: "Value type (default string).",
+              },
+              description: {
+                type: "string",
+                description: "What the field is, guiding the extraction.",
+              },
+              required: { type: "boolean", description: "Whether the field must be filled." },
+              enum: {
+                type: "array",
+                description: "The allowed values, when the field takes one of a set.",
+              },
+              items: {
+                type: "string",
+                description: "Element type, for an array field.",
+              },
+            },
+            required: ["name"],
+          },
+          description: "The fields to fill from the document.",
+        },
+        instructions: {
+          type: "string",
+          description: "Extra guidance for filling the fields. Cannot add fields.",
+        },
+        page_ranges: {
+          type: "array",
+          maxItems: 200,
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "number", description: "First page, one-based." },
+              end: { type: "number", description: "Last page, inclusive." },
+            },
+            required: ["start", "end"],
+          },
+          description: "Pages to read. Omit to read the whole document.",
+        },
+      },
+      required: ["path", "fields"],
+    },
+    readOnly: false,
+  },
+  {
+    name: "document_classify",
+    description:
+      "Classify a workspace document against classes you define, with the deployment's document service: the winning label, a confidence and a reason per class. Set per_page to label each page instead of the whole document. Only offered when a document service is configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace path of the document." },
+        classes: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Stable class id (default: the label)." },
+              label: { type: "string", description: "Class name." },
+              description: {
+                type: "string",
+                description: "What belongs in this class.",
+              },
+            },
+            required: ["label"],
+          },
+          description: "The classes to score the document against.",
+        },
+        per_page: {
+          type: "boolean",
+          description: "Label each page separately instead of the whole document.",
+        },
+        page_ranges: {
+          type: "array",
+          maxItems: 200,
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "number", description: "First page, one-based." },
+              end: { type: "number", description: "Last page, inclusive." },
+            },
+            required: ["start", "end"],
+          },
+          description: "Pages to read. Omit to read the whole document.",
+        },
+      },
+      required: ["path", "classes"],
+    },
+    readOnly: false,
+  },
+  {
+    name: "document_split",
+    description:
+      "Split a workspace file that holds several documents (a scanned packet, or a workbook by sheet) into its documents with the deployment's document service. Returns each segment's page range, the class it matched, and its Markdown when short. Only offered when a document service is configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace path of the file." },
+        classes: {
+          type: "array",
+          minItems: 1,
+          maxItems: 20,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Stable class id (default: the label)." },
+              label: { type: "string", description: "Class name." },
+              description: {
+                type: "string",
+                description: "What belongs in this class.",
+              },
+            },
+            required: ["label"],
+          },
+          description: "The document classes to cut the file into.",
+        },
+        instructions: {
+          type: "string",
+          description: "Guidance for where one document ends and the next begins.",
+        },
+        page_ranges: {
+          type: "array",
+          maxItems: 200,
+          items: {
+            type: "object",
+            properties: {
+              start: { type: "number", description: "First page, one-based." },
+              end: { type: "number", description: "Last page, inclusive." },
+            },
+            required: ["start", "end"],
+          },
+          description: "Pages to consider. Omit to use the whole file.",
+        },
+      },
+      required: ["path", "classes"],
+    },
+    readOnly: false,
+  },
+  {
+    name: "document_locate",
+    description:
+      "Find where quoted text appears in a workspace document, with the deployment's document service: for each target, its status and the page and exact location of every match. It locates text; it does not check whether a claim is true. Only offered when a document service is configured.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Workspace path of the document." },
+        targets: {
+          type: "array",
+          minItems: 1,
+          maxItems: 30,
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string", description: "Your name for the target (default: target_N)." },
+              text: { type: "string", description: "The quoted text to find." },
+              hint: {
+                type: "string",
+                description: "Nearby text that picks the right occurrence.",
+              },
+            },
+            required: ["text"],
+          },
+          description: "The quotes to locate, at most 30.",
+        },
+      },
+      required: ["path", "targets"],
+    },
+    readOnly: false,
+  },
+  {
     name: "service_search",
     description:
       "Find a paid data service by the job it does: map places, search results, work emails, people and company profiles, social posts, SEO and backlink data. Returns service ids, prices in USD per call, and params. Then call one with service_call.",

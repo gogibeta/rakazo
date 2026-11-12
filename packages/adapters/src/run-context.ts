@@ -3,6 +3,7 @@ import type {
   BrowserProvider,
   ComputerRef,
   ConnectorTool,
+  DocumentProvider,
   MediaGenerationProvider,
   PaidServiceProvider,
   SandboxProvider,
@@ -266,6 +267,7 @@ export interface RunProviders {
   mediaGeneration: MediaGenerationProvider | undefined;
   paidServices: PaidServiceProvider | undefined;
   decisions: ConfiguredDecision | undefined;
+  documents: DocumentProvider | undefined;
   browser: BrowserProvider;
   cloudAgent: ExecutorDeps["cloudAgent"];
 }

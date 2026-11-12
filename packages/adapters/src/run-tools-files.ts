@@ -10,6 +10,8 @@ import { getLogger } from "@rakazo/logging";
 import { resolveBotWorkspacePath } from "./computer-support.js";
 import { desktopGuardApplies, desktopProtectionGuardMessage } from "./desktop-command-guard.js";
 import { protectedActivateScriptWriteRefusal } from "./desktop-guard-words.js";
+import type { DocumentFileReader, DocumentOperation } from "./document-tools.js";
+import { DOCUMENT_MAX_BYTES, documentFromTool } from "./document-tools.js";
 import { generateMediaFromTool } from "./media-generation-tools.js";
 import { mediaDelivery, scheduleMediaPoll } from "./media-video-poll.js";
 import type { RunContext } from "./run-context.js";
@@ -76,6 +78,33 @@ export async function callMediaTool(ctx: RunContext, call: ToolCall, recoverOnly
 
 async function generateMedia(ctx: RunContext, call: ToolCall) {
   return call.finish(await callMediaTool(ctx, call));
+}
+
+/** The document tools read the named file through the run's sandbox, like read_file. */
+async function documentTool(ctx: RunContext, call: ToolCall, operation: DocumentOperation) {
+  const documents = ctx.providers.documents;
+  if (!documents) return call.finish({ error: "Document tools are unavailable." });
+  const { deps } = ctx;
+  const workspace = runWorkspace(ctx, call);
+  const files: DocumentFileReader = {
+    async read(path) {
+      const storedPath = resolveBotWorkspacePath(workspace.computerMode, workspace.botId, path);
+      try {
+        const bytes = await deps.sandbox.readFile(
+          await workspace.computer(),
+          storedPath,
+          workspace.context,
+          { maxBytes: DOCUMENT_MAX_BYTES },
+        );
+        return { bytes };
+      } catch (error) {
+        if (error instanceof Error && /exceeds \d+ bytes/.test(error.message))
+          return { error: "file is too large for the document tools" };
+        return { error: "could not read the file" };
+      }
+    },
+  };
+  return call.finish(await documentFromTool(documents, files, ctx.context, operation, call.args));
 }
 
 /** Workspace files, attachments, plots and generated media. */
@@ -178,6 +207,21 @@ export const fileTools: ToolHandlers = {
     } catch (error) {
       return fail(error instanceof Error ? error.message : "could not attach file");
     }
+  },
+  async document_parse(ctx, call) {
+    return documentTool(ctx, call, "parse");
+  },
+  async document_extract(ctx, call) {
+    return documentTool(ctx, call, "extract");
+  },
+  async document_classify(ctx, call) {
+    return documentTool(ctx, call, "classify");
+  },
+  async document_split(ctx, call) {
+    return documentTool(ctx, call, "split");
+  },
+  async document_locate(ctx, call) {
+    return documentTool(ctx, call, "locate");
   },
 };
 

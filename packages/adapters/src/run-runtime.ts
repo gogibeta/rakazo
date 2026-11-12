@@ -17,6 +17,7 @@ import { ComposioConnector, isComposioEnabled } from "./composio-connector.js";
 import { createIdleComputerSweeper } from "./computer-idle.js";
 import { reconcileComputerUpdates } from "./computer-update.js";
 import { createConfiguredDecision } from "./configured-decision.js";
+import { createConfiguredDocuments } from "./configured-documents.js";
 import { createConnectorStack } from "./connector-registry.js";
 import { deploymentModelUsageLookup, resolveDeploymentModel } from "./deployment-model.js";
 import { createRunExecutor } from "./executor.js";
@@ -177,7 +178,8 @@ type SetByRunRuntime =
   | "maxUploadSizeBytes"
   | "messaging"
   | "web"
-  | "decisions";
+  | "decisions"
+  | "documents";
 
 /** The run executor and the background job handlers that drive it. */
 export function createRunRuntime(
@@ -218,6 +220,7 @@ export function createRunRuntime(
     messaging: messaging ? createMessagingContextLoader(deps.prisma) : undefined,
     web: createWebProvider(undefined, { tinyfishApiKey: env.tinyfishApiKey }),
     decisions: createConfiguredDecision(process.env, { naceApiKey: env.naceApiKey }),
+    documents: createConfiguredDocuments(process.env, { naceApiKey: env.naceApiKey }),
   });
   const jobHandlers = createBackgroundJobHandlers({
     executor,

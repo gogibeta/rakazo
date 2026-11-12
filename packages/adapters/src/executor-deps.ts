@@ -6,6 +6,7 @@ import type {
   AutoReviewProvider,
   BrowserProvider,
   ConnectorProvider,
+  DocumentProvider,
   JobPublisher,
   ManagedConnectorProvider,
   MediaGenerationProvider,
@@ -73,6 +74,8 @@ export interface ExecutorDeps {
   paidServices?: PaidServiceProvider;
   /** The deployment's decision provider for the `decide` tool. Defaults from env keys when omitted. */
   decisions?: ConfiguredDecision;
+  /** The deployment's document provider for the document tools. Defaults from env keys when omitted. */
+  documents?: DocumentProvider;
   /** Page browser (DOM refs) on the bot computer. Defaults to the sandbox live browser when supported. */
   browser?: BrowserProvider;
   secretHttp?: RemoteTransportDependencies;
