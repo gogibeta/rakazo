@@ -115,6 +115,47 @@ describe("diagnostics report", () => {
     );
   });
 
+  it("includes run errors, attempts and computer sessions, redacted", () => {
+    const report = renderDiagnostics(
+      input({
+        runs: [
+          {
+            id: "run_private_1",
+            botId: "bot_private_1",
+            status: "failed",
+            trigger: "message",
+            createdAt: new Date("2026-10-02T00:00:00Z"),
+            error: "Acme Payroll connection failed for owner@example.com",
+          },
+        ],
+        attempts: [
+          {
+            runId: "run_private_1",
+            status: "waiting_takeover",
+            error: null,
+            startedAt: new Date("2026-10-02T00:01:00Z"),
+            finishedAt: new Date("2026-10-02T00:02:00Z"),
+          },
+        ],
+        computerRuns: [
+          {
+            kind: "docker",
+            endReason: "idle",
+            startedAt: new Date("2026-10-02T00:01:30Z"),
+            endedAt: new Date("2026-10-02T00:12:00Z"),
+          },
+        ],
+      }),
+    );
+    expect(report).toContain("### Recent attempts");
+    expect(report).toContain(`| ${opaque("run_private_1")} | waiting_takeover |`);
+    expect(report).toContain("### Recent computer sessions");
+    expect(report).toContain("| docker |");
+    expect(report).toContain("| idle |");
+    expect(report).not.toContain("owner@example.com");
+    expect(report).not.toContain("Acme Payroll");
+  });
+
   it("flags assignments the MCP connector would silently skip", () => {
     const report = renderDiagnostics(
       input({

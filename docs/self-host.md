@@ -146,6 +146,9 @@ Attach a diagnostics report to a [self-host issue](https://github.com/elie222/ra
 docker compose -f docker-compose.images.yml exec api node dist/cli/diagnostics.js
 ```
 
+Users can also copy their own report from **Settings → Data → Copy diagnostics**; it covers
+only their own bots and runs, with the same redaction.
+
 From a checkout, use `-f infra/compose/docker-compose.yml` (or the production file) instead. The
 report lists the revision, which features are on, migration status, each bot's MCP servers with
 their health, and the latest runs. It prints no secrets, settings values, names, addresses,

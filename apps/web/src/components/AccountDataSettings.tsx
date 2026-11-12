@@ -18,9 +18,26 @@ export function AccountDataSettings({
   const { t } = useLingui();
   const { withIdentityConfirmation, identityDialog } = useIdentityConfirmation();
   const fileInput = useRef<HTMLInputElement>(null);
-  const [pending, setPending] = useState<"export" | "import" | null>(null);
+  const [pending, setPending] = useState<"export" | "import" | "diagnostics" | null>(null);
   const [imported, setImported] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  async function copyDiagnostics() {
+    if (pending) return;
+    setPending("diagnostics");
+    setCopied(false);
+    setError(null);
+    try {
+      const { report } = await rpc.diagnostics.report();
+      await navigator.clipboard.writeText(report);
+      setCopied(true);
+    } catch (cause) {
+      setError(errorText(cause, t`Could not continue`));
+    } finally {
+      setPending(null);
+    }
+  }
 
   async function exportData() {
     if (pending) return;
@@ -122,6 +139,26 @@ export function AccountDataSettings({
           </p>
         ) : null}
       </SettingsRow>
+      <SettingsRow
+        label={<Trans>Diagnostics</Trans>}
+        control={
+          <>
+            {copied ? <SuccessPop label={t`Copied`} /> : null}
+            <Button
+              variant="secondary"
+              size="sm"
+              aria-label={t`Copy diagnostics`}
+              data-testid="account-diagnostics-copy"
+              disabled={pending !== null}
+              aria-busy={pending === "diagnostics"}
+              onClick={() => void copyDiagnostics()}
+            >
+              {pending === "diagnostics" ? <Spinner aria-hidden /> : null}
+              <Trans>Copy diagnostics</Trans>
+            </Button>
+          </>
+        }
+      />
       {onImportAgent ? (
         <SettingsRow
           label={<Trans>Agent from another app</Trans>}

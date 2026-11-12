@@ -36,6 +36,22 @@ export type DiagnosticsRun = {
   status: string;
   trigger: string;
   createdAt: Date;
+  error?: string | null;
+};
+
+export type DiagnosticsAttempt = {
+  runId: string;
+  status: string;
+  error: string | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+};
+
+export type DiagnosticsComputerRun = {
+  kind: string;
+  endReason: string | null;
+  startedAt: Date;
+  endedAt: Date | null;
 };
 
 export type DiagnosticsInput = {
@@ -70,6 +86,8 @@ export type DiagnosticsInput = {
   assignments: DiagnosticsAssignment[];
   unassignedServers: DiagnosticsServer[];
   runs: DiagnosticsRun[];
+  attempts?: DiagnosticsAttempt[];
+  computerRuns?: DiagnosticsComputerRun[];
 };
 
 export function renderDiagnostics(input: DiagnosticsInput): string {
@@ -134,13 +152,41 @@ export function renderDiagnostics(input: DiagnosticsInput): string {
   if (!input.runs.length) lines.push("- None");
   else
     lines.push(
-      "| Run | Bot | Status | Trigger | Created |",
-      "| --- | --- | --- | --- | --- |",
+      "| Run | Bot | Status | Trigger | Created | Error |",
+      "| --- | --- | --- | --- | --- | --- |",
       ...input.runs.map(
         (run) =>
-          `| ${opaque(run.id)} | ${opaque(run.botId)} | ${word(run.status)} | ${word(run.trigger)} | ${run.createdAt.toISOString()} |`,
+          `| ${opaque(run.id)} | ${opaque(run.botId)} | ${word(run.status)} | ${word(run.trigger)} | ${run.createdAt.toISOString()} | ${run.error ? safeMessage(run.error) : "-"} |`,
       ),
     );
+
+  if (input.attempts?.length) {
+    lines.push(
+      "",
+      "### Recent attempts",
+      "",
+      "| Run | Status | Started | Finished | Error |",
+      "| --- | --- | --- | --- | --- |",
+      ...input.attempts.map(
+        (attempt) =>
+          `| ${opaque(attempt.runId)} | ${word(attempt.status)} | ${attempt.startedAt.toISOString()} | ${attempt.finishedAt?.toISOString() ?? "-"} | ${attempt.error ? safeMessage(attempt.error) : "-"} |`,
+      ),
+    );
+  }
+
+  if (input.computerRuns?.length) {
+    lines.push(
+      "",
+      "### Recent computer sessions",
+      "",
+      "| Kind | Started | Ended | End reason |",
+      "| --- | --- | --- | --- |",
+      ...input.computerRuns.map(
+        (run) =>
+          `| ${word(run.kind)} | ${run.startedAt.toISOString()} | ${run.endedAt?.toISOString() ?? "-"} | ${run.endReason ? word(run.endReason) : "-"} |`,
+      ),
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 
