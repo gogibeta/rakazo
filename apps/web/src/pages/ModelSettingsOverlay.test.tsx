@@ -1055,7 +1055,7 @@ it("lists not-connected providers by name alone", async () => {
   const view = await renderSettings();
   try {
     await openPicker("Change Main model");
-    expect(pickerOptions()).toEqual(["DeepSeek", "Ollama Cloud", "OpenAI-compatible"]);
+    expect(pickerOptions()).toEqual(["Ollama Cloud", "OpenAI-compatible", "DeepSeek"]);
     expect(document.querySelectorAll("[cmdk-group-heading]")).toHaveLength(0);
   } finally {
     await view.unmount();
