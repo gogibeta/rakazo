@@ -476,6 +476,10 @@ export const appContract = {
       update: oc.input(ComputerProviderUpdateSchema).output(ComputerProviderSettingsSchema),
     },
   },
+  /** Redacted diagnostics report for the signed-in user, safe to copy and share for support. */
+  diagnostics: {
+    report: oc.output(z.object({ report: z.string() })),
+  },
   /** Deployment-owner view of the append-only security event log, newest first. */
   security: {
     events: oc.input(SecurityEventListInputSchema).output(z.array(SecurityEventSchema)),

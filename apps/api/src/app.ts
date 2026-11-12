@@ -788,6 +788,11 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       computerSettingsEnabled: env.computerSettingsEnabled,
       mcpStdioEnabled: env.mcpStdioEnabled,
       mcpStdioAllowedCommands: env.mcpStdioAllowedCommands,
+      nodeEnv: env.nodeEnv,
+      cloudAgentProvider: env.cloudAgentProvider,
+      contentEncryption: env.contentEncryption,
+      wakeupDriver: env.wakeupDriver,
+      userDevicesEnabled: env.userDevicesEnabled,
     },
   });
   const rpc = new RPCHandler(router, {
