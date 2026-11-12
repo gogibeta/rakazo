@@ -14,6 +14,7 @@ import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
 import { PlanUsage } from "../components/PlanUsage";
 import { ProxiesSettings } from "../components/ProxiesSettings";
+import { ServiceCredentialsSettings } from "../components/ServiceCredentialsSettings";
 import { SETTINGS_CONTENT_WIDTH, SettingsGroup, SettingsRow } from "../components/SettingsRows";
 import { VaultSettings } from "../components/VaultSettings";
 import { canChooseOwnComputer } from "../lib/computer-sandbox";
@@ -431,7 +432,10 @@ export function SettingsOverlay({
                     />
                   ) : null}
                   {section === "organization" ? (
-                    <OrganizationSettingsPanel onBusyChange={setVoiceBusy} />
+                    <div className="space-y-8">
+                      <OrganizationSettingsPanel onBusyChange={setVoiceBusy} />
+                      <ServiceCredentialsSettings />
+                    </div>
                   ) : null}
                   {section === "confirmations" ? <ApprovalRulesSettings scope="account" /> : null}
                   {section === "vault" ? <VaultSettings scope="account" /> : null}
