@@ -124,7 +124,9 @@ function createDeps(
       },
     ),
     update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-      if (overrides.identityUpdateError) throw overrides.identityUpdateError;
+      // The injected failure stands in for the bot-switch write's unique
+      // rejection; the streak refresh writes other fields and succeeds.
+      if (overrides.identityUpdateError && "botId" in data) throw overrides.identityUpdateError;
       if (identity) Object.assign(identity, data);
       return identity;
     }),
