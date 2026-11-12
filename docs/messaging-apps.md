@@ -35,6 +35,15 @@ apps, the way it answers a group chat.
 
 A [routine](./routines.md) can also start from a **Slack message**.
 
+## Telegram owner allowlist
+
+A Telegram bot answers anyone who messages it once they link. To lock a deployment's Telegram
+bots to the owner, an admin can list the owner's Telegram user ID (or IDs, comma-separated) under
+**Owner Telegram user IDs** in **Settings → Organization → Service keys**. With a list saved, the
+bots silently ignore everyone else — messages, commands and button taps alike. Leave the field
+empty to allow any linked account. To find your Telegram user ID, message **@userinfobot** on
+Telegram. Changes apply after a restart, like the other service keys.
+
 ## Group chats
 
 Add your bot to a group or channel in the chat app. The invite appears under **Requests** in

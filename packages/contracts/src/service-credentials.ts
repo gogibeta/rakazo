@@ -33,8 +33,26 @@ export const ServiceCredentialsStatusSchema = z.object({
   whatsappPhoneNumberId: z.boolean(),
   whatsappAppSecret: z.boolean(),
   whatsappVerifyToken: z.boolean(),
+  /** Owner Telegram user IDs (not a secret, so unlike the keys it is returned in full). */
+  telegramOwnerUserIds: z.array(z.string()),
 });
 export type ServiceCredentialsStatus = z.infer<typeof ServiceCredentialsStatusSchema>;
+
+/**
+ * Parses the owner Telegram user ID list (comma-separated, as typed in
+ * Settings or stored on the deployment record) into clean numeric IDs.
+ * Entries that are not plain numbers are dropped rather than rejected, so a
+ * damaged stored value can never break the bots: it simply matches nobody
+ * it does not parse to.
+ */
+export function parseTelegramOwnerUserIds(value: string): string[] {
+  const ids: string[] = [];
+  for (const entry of value.split(",")) {
+    const id = entry.trim();
+    if (/^\d+$/.test(id) && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
 
 /** A blank value keeps the key already saved, so an admin never has to see it again. */
 const credentialValue = z.string().max(1024);
@@ -48,6 +66,16 @@ export const ServiceCredentialsUpdateSchema = z.object({
   whatsappPhoneNumberId: credentialValue.optional(),
   whatsappAppSecret: credentialValue.optional(),
   whatsappVerifyToken: credentialValue.optional(),
+  /**
+   * The owner Telegram user IDs as one comma-separated value. Unlike the
+   * keys above this is not a secret: it is stored in the clear, the status
+   * returns it, and an empty value turns the allowlist off.
+   */
+  telegramOwnerUserIds: z
+    .string()
+    .max(2048)
+    .regex(/^[\d,\s]*$/, "Telegram user IDs must be numbers separated by commas")
+    .optional(),
 });
 export type ServiceCredentialsUpdate = z.infer<typeof ServiceCredentialsUpdateSchema>;
 

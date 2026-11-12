@@ -41,6 +41,7 @@ import {
   installedMessaging,
   isMessagingSurfaceEnabled,
   loadServiceCredentials,
+  loadTelegramOwnerUserIds,
   mergeServiceCredentialsIntoMessagingEnv,
   messagingEnvFromProcess,
   messagingPlatformsFromEnv,
@@ -125,6 +126,8 @@ async function main() {
   prisma = withSecretPersistence(prisma, secrets);
   // Service keys the deployment owner saved in Settings; the matching env vars win.
   const serviceCredentials = await loadServiceCredentials(prisma, secrets);
+  // The Telegram owner allowlist saved in Settings; empty leaves the bots open.
+  const telegramOwnerUserIds = await loadTelegramOwnerUserIds(prisma);
   installSecurityEventStore(prisma);
   installAuditEventStore(prisma);
   const unreadableMasterKeys = await verifyContentKeys(prisma);
@@ -158,12 +161,13 @@ async function main() {
   const connectors = createConnectorRuntime(env, { prisma, secrets, events });
   // Never poll inbound here: Telegram allows a single getUpdates consumer,
   // and that is the API process, which owns the inbound sink.
-  const messagingPlatforms = messagingPlatformsFromEnv(
-    mergeServiceCredentialsIntoMessagingEnv(
+  const messagingPlatforms = messagingPlatformsFromEnv({
+    ...mergeServiceCredentialsIntoMessagingEnv(
       messagingEnvFromProcess(process.env),
       serviceCredentials,
     ),
-  ).filter((platform) => platform.provider !== "slack" || !process.env.SLACK_CLIENT_ID);
+    telegramOwnerUserIds,
+  }).filter((platform) => platform.provider !== "slack" || !process.env.SLACK_CLIENT_ID);
   const legacyMessaging = isMessagingSurfaceEnabled(messagingPlatforms, {
     deploymentModelConfigured: env.deploymentModelConfigured,
     openSignup: process.env.MESSAGING_OPEN_SIGNUP === "true",

@@ -50,6 +50,12 @@ export interface MessagingEnvironmentValues {
   telegramWebhookSecret?: string | undefined;
   /** Extra named Telegram bots (TELEGRAM_BOT_TOKEN_<NAME>), e.g. one per space. */
   telegramBots?: TelegramBotCredentials[] | undefined;
+  /**
+   * Owner Telegram user IDs saved in Settings: when non-empty, every
+   * Telegram bot in the deployment ignores anyone else. Empty or unset
+   * leaves the bots open to any linked account.
+   */
+  telegramOwnerUserIds?: string[] | undefined;
   larkAppId?: string | undefined;
   larkAppSecret?: string | undefined;
   larkVerificationToken?: string | undefined;
@@ -358,6 +364,7 @@ export function messagingPlatformsFromEnv(
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
       ...telegramCommandHooks(env.telegramBotToken),
+      ...telegramOwnerGate(env.telegramOwnerUserIds),
       isPermanentSendError: isTelegramBlocked,
     });
   }
@@ -388,6 +395,7 @@ export function messagingPlatformsFromEnv(
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
       ...telegramCommandHooks(bot.botToken),
+      ...telegramOwnerGate(env.telegramOwnerUserIds),
       isPermanentSendError: isTelegramBlocked,
     });
   }
@@ -669,6 +677,18 @@ function telegramAdapter(
     // owns the inbound sink, and Telegram allows one getUpdates per bot.
     mode: options.pollInboundMessages ? "auto" : "webhook",
   });
+}
+
+/**
+ * The owner lock shared by every Telegram bot mount: when the deployment
+ * has an owner allowlist, only those Telegram user IDs may reach any of
+ * its bots — it is a property of the deployment, not of one bot. No
+ * allowlist, no hook, and senders flow exactly as before.
+ */
+function telegramOwnerGate(ownerUserIds: readonly string[] | undefined) {
+  if (!ownerUserIds?.length) return {};
+  const allowed = new Set(ownerUserIds);
+  return { acceptsSender: (senderId: string) => allowed.has(senderId) };
 }
 
 /**

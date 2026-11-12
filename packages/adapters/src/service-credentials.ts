@@ -1,6 +1,6 @@
 import type { SecretStore } from "@rakazo/adapter-kit";
 import type { ServiceCredentialKey, StoredServiceCredentials } from "@rakazo/contracts";
-import { SERVICE_CREDENTIAL_KEYS } from "@rakazo/contracts";
+import { parseTelegramOwnerUserIds, SERVICE_CREDENTIAL_KEYS } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { runAsSystem } from "@rakazo/db";
 import type { MessagingEnvironmentValues } from "./messaging-platforms.js";
@@ -48,6 +48,26 @@ export async function loadServiceCredentials(
     );
   } catch {
     return {};
+  }
+}
+
+/**
+ * The owner Telegram user IDs an admin saved in Settings, as clean numeric
+ * IDs. Reads forgive like the credentials above: an unreadable or damaged
+ * value parses to the IDs it can, so it never takes the bots down and never
+ * crashes ingress. An empty list means the allowlist is off.
+ */
+export async function loadTelegramOwnerUserIds(prisma: PrismaClient): Promise<string[]> {
+  try {
+    const row = await runAsSystem("read the deployment's Telegram owner allowlist", () =>
+      prisma.deploymentSettings.findUnique({
+        where: { id: "default" },
+        select: { telegramOwnerUserIds: true },
+      }),
+    );
+    return parseTelegramOwnerUserIds(row?.telegramOwnerUserIds ?? "");
+  } catch {
+    return [];
   }
 }
 

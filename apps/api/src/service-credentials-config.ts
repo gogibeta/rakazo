@@ -1,13 +1,18 @@
 import type { SecretStore } from "@rakazo/adapter-kit";
-import { DEPLOYMENT_SERVICE_CREDENTIALS_RECORD, loadServiceCredentials } from "@rakazo/adapters";
+import {
+  DEPLOYMENT_SERVICE_CREDENTIALS_RECORD,
+  loadServiceCredentials,
+  loadTelegramOwnerUserIds,
+} from "@rakazo/adapters";
 import type {
   Actor,
+  ServiceCredentialKey,
   ServiceCredentialsClear,
   ServiceCredentialsStatus,
   ServiceCredentialsUpdate,
   StoredServiceCredentials,
 } from "@rakazo/contracts";
-import { SERVICE_CREDENTIAL_KEYS } from "@rakazo/contracts";
+import { parseTelegramOwnerUserIds, SERVICE_CREDENTIAL_KEYS } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { Prisma, runAsSystem, withTransactionRetry } from "@rakazo/db";
 import { requireAdmin } from "./admins.js";
@@ -20,10 +25,21 @@ export interface ServiceCredentialsConfigDeps {
 }
 
 /** Which keys are saved. The values themselves never leave the server. */
-function statusOf(credentials: StoredServiceCredentials): ServiceCredentialsStatus {
-  const status = {} as Record<keyof ServiceCredentialsStatus, boolean>;
+function keyStatusOf(credentials: StoredServiceCredentials): Record<ServiceCredentialKey, boolean> {
+  const status = {} as Record<ServiceCredentialKey, boolean>;
   for (const key of SERVICE_CREDENTIAL_KEYS) status[key] = Boolean(credentials[key]);
   return status;
+}
+
+/** The full settings view: which keys are set, plus the owner allowlist (not a secret). */
+async function statusOf(
+  deps: ServiceCredentialsConfigDeps,
+  credentials: StoredServiceCredentials,
+): Promise<ServiceCredentialsStatus> {
+  return {
+    ...keyStatusOf(credentials),
+    telegramOwnerUserIds: await loadTelegramOwnerUserIds(deps.prisma),
+  };
 }
 
 export async function getServiceCredentials(
@@ -31,7 +47,7 @@ export async function getServiceCredentials(
   actor: Actor,
 ): Promise<ServiceCredentialsStatus> {
   await requireAdmin(deps, actor.userId);
-  return statusOf(await loadServiceCredentials(deps.prisma, deps.secrets));
+  return statusOf(deps, await loadServiceCredentials(deps.prisma, deps.secrets));
 }
 
 export async function updateServiceCredentials(
@@ -48,7 +64,12 @@ export async function updateServiceCredentials(
     if (value) next[key] = value;
   }
   await storeServiceCredentials(deps, actor, next);
-  return statusOf(next);
+  // The allowlist is not a key: it is stored in the clear, and a present
+  // field replaces it — an empty one turns the allowlist off.
+  if (input.telegramOwnerUserIds !== undefined) {
+    await storeTelegramOwnerUserIds(deps, parseTelegramOwnerUserIds(input.telegramOwnerUserIds));
+  }
+  return statusOf(deps, next);
 }
 
 export async function clearServiceCredentials(
@@ -61,7 +82,22 @@ export async function clearServiceCredentials(
   const next: StoredServiceCredentials = { ...current };
   for (const key of input.keys) delete next[key];
   await storeServiceCredentials(deps, actor, next);
-  return statusOf(next);
+  return statusOf(deps, next);
+}
+
+/** Saves the owner allowlist on the deployment record, normalized to clean numeric IDs. */
+async function storeTelegramOwnerUserIds(
+  deps: ServiceCredentialsConfigDeps,
+  ownerUserIds: string[],
+): Promise<void> {
+  const value = ownerUserIds.join(",");
+  await runAsSystem("an admin saves the Telegram owner allowlist", () =>
+    deps.prisma.deploymentSettings.upsert({
+      where: { id: "default" },
+      create: { id: "default", telegramOwnerUserIds: value },
+      update: { telegramOwnerUserIds: value },
+    }),
+  );
 }
 
 async function storeServiceCredentials(

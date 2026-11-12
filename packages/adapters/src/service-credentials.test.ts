@@ -3,6 +3,7 @@ import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import {
   loadServiceCredentials,
+  loadTelegramOwnerUserIds,
   mergeServiceCredentialsIntoMessagingEnv,
   parseServiceCredentials,
 } from "./service-credentials.js";
@@ -102,5 +103,41 @@ describe("mergeServiceCredentialsIntoMessagingEnv", () => {
 
   it("ignores blank saved values", () => {
     expect(mergeServiceCredentialsIntoMessagingEnv({}, { telegramBotToken: "   " })).toEqual({});
+  });
+});
+
+describe("loadTelegramOwnerUserIds", () => {
+  function makePrisma(row: { telegramOwnerUserIds: string } | null, fail = false) {
+    return {
+      deploymentSettings: {
+        findUnique: vi.fn(async () => {
+          if (fail) throw new Error("database unavailable");
+          return row;
+        }),
+      },
+    } as unknown as PrismaClient;
+  }
+
+  it("reads the saved IDs", async () => {
+    await expect(
+      loadTelegramOwnerUserIds(makePrisma({ telegramOwnerUserIds: "123456789, 987654321" })),
+    ).resolves.toEqual(["123456789", "987654321"]);
+  });
+
+  it("returns no IDs when nothing is saved", async () => {
+    await expect(loadTelegramOwnerUserIds(makePrisma(null))).resolves.toEqual([]);
+    await expect(
+      loadTelegramOwnerUserIds(makePrisma({ telegramOwnerUserIds: "" })),
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps only the entries a damaged value parses to", async () => {
+    await expect(
+      loadTelegramOwnerUserIds(makePrisma({ telegramOwnerUserIds: "abc, 123, ,45x" })),
+    ).resolves.toEqual(["123"]);
+  });
+
+  it("returns no IDs when the record cannot be read, so the bots stay up", async () => {
+    await expect(loadTelegramOwnerUserIds(makePrisma(null, true))).resolves.toEqual([]);
   });
 });

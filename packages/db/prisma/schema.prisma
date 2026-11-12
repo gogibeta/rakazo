@@ -781,6 +781,9 @@ model DeploymentSettings {
   computerProviderCipher          String?
   /// Service keys an admin saved in Settings, encrypted as one record owned by the deployment.
   serviceCredentialsCipher        String?
+  /// Telegram user IDs allowed to reach the deployment's Telegram bots, comma-separated.
+  /// Not a secret; empty means any linked account may use the bots.
+  telegramOwnerUserIds            String   @default("")
   createdAt                       DateTime @default(now())
   updatedAt                       DateTime @updatedAt
 

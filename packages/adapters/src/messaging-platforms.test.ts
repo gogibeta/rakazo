@@ -136,6 +136,30 @@ describe("messagingPlatformsFromEnv", () => {
     expect(platforms[1]!.capabilities.groups).toBe(true);
   });
 
+  it("gates every Telegram bot on the owner allowlist when one is saved", () => {
+    const platforms = messagingPlatformsFromEnv({
+      telegramBotToken: "tg-token",
+      telegramWebhookSecret: "tg-webhook-secret",
+      telegramBots: [{ name: "work", botToken: "tg-work", webhookSecret: "tg-work-secret" }],
+      telegramOwnerUserIds: ["123", "456"],
+    });
+    expect(platforms.map((platform) => platform.provider)).toEqual(["telegram", "telegram-work"]);
+    for (const platform of platforms) {
+      expect(platform.acceptsSender?.("123")).toBe(true);
+      expect(platform.acceptsSender?.("456")).toBe(true);
+      expect(platform.acceptsSender?.("789")).toBe(false);
+    }
+  });
+
+  it("leaves Telegram ungated when no owner allowlist is saved", () => {
+    const [telegram] = messagingPlatformsFromEnv({
+      telegramBotToken: "tg-token",
+      telegramWebhookSecret: "tg-webhook-secret",
+      telegramOwnerUserIds: [],
+    });
+    expect(telegram?.acceptsSender).toBeUndefined();
+  });
+
   it("declares button and file support per platform", () => {
     const capabilities = Object.fromEntries(
       messagingPlatformsFromEnv(fullEnv).map((platform) => [

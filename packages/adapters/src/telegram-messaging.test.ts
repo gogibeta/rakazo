@@ -699,3 +699,141 @@ describe("Telegram redelivery", () => {
     },
   );
 });
+
+describe("Telegram owner allowlist", () => {
+  const OWNER = 123;
+  const STRANGER = 555;
+
+  function createGatedSurface(ownerUserIds?: string[]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const method = new URL(input).pathname.split("/").at(-1);
+        if (method === "getMe") {
+          return Response.json({
+            ok: true,
+            result: { id: 999, is_bot: true, username: "testbot" },
+          });
+        }
+        if (method === "answerCallbackQuery") return Response.json({ ok: true, result: true });
+        throw new Error(`Unexpected Telegram method: ${method}`);
+      }),
+    );
+    // Mount the production platform entries so the gate wiring itself is under test.
+    const surface = new ChatSdkMessagingSurface(
+      messagingPlatformsFromEnv({
+        telegramBotToken: "home-token",
+        telegramWebhookSecret: "home-secret",
+        telegramBots: [{ name: "work", botToken: "work-token", webhookSecret: "work-secret" }],
+        ...(ownerUserIds ? { telegramOwnerUserIds: ownerUserIds } : {}),
+      } satisfies MessagingEnvironmentValues),
+    );
+    const inbound: MessagingInboundEvent[] = [];
+    surface.onInbound(async (event) => {
+      inbound.push(event);
+    });
+    return { surface, inbound };
+  }
+
+  const webhook = (secret: string, update: unknown) =>
+    new Request("https://rakazo.test/api/v1/messaging/webhook/x", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": secret,
+      },
+      body: JSON.stringify(update),
+    });
+
+  const directMessage = (senderId: number, text: string, updateId: number) => ({
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: 1_700_000_000,
+      chat: { id: senderId, type: "private", first_name: "Sender" },
+      from: { id: senderId, is_bot: false, first_name: "Sender" },
+      text,
+    },
+  });
+
+  const buttonTap = (senderId: number, updateId: number) => ({
+    update_id: updateId,
+    callback_query: {
+      id: `tap-${updateId}`,
+      from: { id: senderId, is_bot: false, first_name: "Sender" },
+      message: {
+        message_id: 9,
+        date: 1_700_000_000,
+        chat: { id: senderId, type: "private" },
+        from: { id: 999, is_bot: true, first_name: "Test Bot" },
+        text: "Approve?",
+      },
+      chat_instance: "instance-1",
+      data: "ask:0",
+    },
+  });
+
+  it("delivers the owner's messages and silently drops everyone else's", async () => {
+    const { surface, inbound } = createGatedSurface([String(OWNER)]);
+
+    expect(
+      (
+        await surface.handleWebhook(
+          "telegram",
+          webhook("home-secret", directMessage(OWNER, "hi", 1)),
+        )
+      )?.status,
+    ).toBe(200);
+    expect(
+      (
+        await surface.handleWebhook(
+          "telegram",
+          webhook("home-secret", directMessage(STRANGER, "let me in", 2)),
+        )
+      )?.status,
+    ).toBe(200);
+
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]).toMatchObject({ type: "message", from: String(OWNER), content: "hi" });
+  });
+
+  it("drops a stranger's button tap and delivers the owner's", async () => {
+    const { surface, inbound } = createGatedSurface([String(OWNER)]);
+
+    await surface.handleWebhook("telegram", webhook("home-secret", buttonTap(STRANGER, 1)));
+    expect(inbound).toEqual([]);
+
+    await surface.handleWebhook("telegram", webhook("home-secret", buttonTap(OWNER, 2)));
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]).toMatchObject({ type: "action", from: String(OWNER) });
+  });
+
+  it("applies the same allowlist to named bots", async () => {
+    const { surface, inbound } = createGatedSurface([String(OWNER)]);
+
+    await surface.handleWebhook(
+      "telegram-work",
+      webhook("work-secret", directMessage(STRANGER, "hi work", 1)),
+    );
+    expect(inbound).toEqual([]);
+
+    await surface.handleWebhook(
+      "telegram-work",
+      webhook("work-secret", directMessage(OWNER, "hi work", 2)),
+    );
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]).toMatchObject({ provider: "telegram-work", from: String(OWNER) });
+  });
+
+  it("leaves every sender alone when no allowlist is saved", async () => {
+    const { surface, inbound } = createGatedSurface(undefined);
+
+    await surface.handleWebhook(
+      "telegram",
+      webhook("home-secret", directMessage(STRANGER, "hi", 1)),
+    );
+
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]).toMatchObject({ type: "message", from: String(STRANGER) });
+  });
+});
