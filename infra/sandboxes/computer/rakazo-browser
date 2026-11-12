@@ -435,6 +435,18 @@ fi
 # This container has no GPU. --disable-gpu keeps Chromium from probing one.
 # WebGL still needs SwiftShader: --disable-software-rasterizer blocks it, and
 # current Chromium allows that fallback only with --enable-unsafe-swiftshader.
+# --test-type is deliberately absent: it marks every launch as an automation
+# test run, which tells pages this is not a person's browser. It also used to
+# hide the unsupported-flag warning that --no-sandbox draws; the managed
+# policy (browser-policy.json, CommandLineFlagSecurityWarningsEnabled) turns
+# that warning off instead, so it cannot eat the top of the screen and shift
+# the page the tools measure. Remote debugging switches Chromium's
+# AutomationControlled feature on, which makes navigator.webdriver read
+# true, so --disable-blink-features switches it back off. --no-sandbox
+# stays: Chromium's sandbox needs user namespaces or a setuid helper the
+# outer container runtime does not always grant, and a browser that cannot
+# start in some deployments is worse than one running without its sandbox
+# inside the already-isolated computer.
 # The account's language arrives as LANGUAGE, which Chrome on Linux reads for its
 # own language (it ignores --lang). For the languages pages see, it reads LANGUAGE
 # only when it creates a profile and keeps that profile's list afterwards, so a
@@ -452,7 +464,7 @@ case "$language" in
     LANGUAGE_FLAGS="--accept-lang=$languages"
     ;;
 esac
-FLAGS="--test-type --no-sandbox --disable-dev-shm-usage --disable-gpu --enable-unsafe-swiftshader $LANGUAGE_FLAGS --no-first-run --no-default-browser-check --disable-session-crashed-bubble --hide-crash-restore-bubble --password-store=basic --restore-last-session --start-maximized --remote-debugging-address=127.0.0.1 --remote-debugging-port=$DEBUG_PORT"
+FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --enable-unsafe-swiftshader --disable-blink-features=AutomationControlled $LANGUAGE_FLAGS --no-first-run --no-default-browser-check --disable-session-crashed-bubble --hide-crash-restore-bubble --password-store=basic --restore-last-session --start-maximized --remote-debugging-address=127.0.0.1 --remote-debugging-port=$DEBUG_PORT"
 if [ "$USER_DATA_DIR_SET" -eq 0 ]; then
   exec "$BIN" $FLAGS --user-data-dir="$PROFILE" "$@"
 fi
