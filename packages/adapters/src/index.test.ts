@@ -285,5 +285,18 @@ describe("builtin tools", () => {
         .filter((name) => serviceNames.includes(name));
     expect(services({})).toEqual([]);
     expect(services({ paidServicesEnabled: true })).toEqual(serviceNames);
+    const documentNames = [
+      "document_parse",
+      "document_extract",
+      "document_classify",
+      "document_split",
+      "document_locate",
+    ];
+    const documents = (extra: Partial<Parameters<typeof selectBuiltinToolsForRun>[0]>) =>
+      selectBuiltinToolsForRun({ ...options, ...extra })
+        .map((tool) => tool.name)
+        .filter((name) => documentNames.includes(name));
+    expect(documents({})).toEqual([]);
+    expect(documents({ documentsEnabled: true })).toEqual(documentNames);
   });
 });

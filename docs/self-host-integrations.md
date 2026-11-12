@@ -37,6 +37,14 @@ instead of the LLM checker. Without the key nothing changes: the tool is not off
 Auto Review keeps its previous checker. The tool sends the state and questions it is given
 to Nace, so do not use it for content that must stay on your own network.
 
+The same Nace key also gives bots document tools: `document_parse` reads a workspace file
+(PDF, Office document, spreadsheet, image, email or text) as Markdown, `document_extract`
+fills named fields from one, `document_classify` labels one against classes the bot
+defines, `document_split` cuts a multi-document file into its documents, and
+`document_locate` finds where quoted text appears in one. Each call uploads the file to
+Nace's document service, waits for the job, and deletes the upload afterwards; the tools
+are not offered without the key.
+
 To combine [TinyFish](https://docs.tinyfish.ai) with the keyless default, set
 `WEB_PROVIDER=tinyfish-ddg` and restart both the API and worker. Search then merges TinyFish's
 live, browser-rendered results with the DuckDuckGo results (TinyFish first, duplicates removed),

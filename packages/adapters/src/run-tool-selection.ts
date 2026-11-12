@@ -46,6 +46,15 @@ export const READ_ONLY_AGENT_TOOLS = new Set([
 const EMAIL_INBOX_TOOL_NAMES = new Set(["read_email", "delete_email"]);
 const PAID_SERVICE_TOOL_NAMES = new Set(["service_search", "service_call"]);
 
+/** The document tools, offered only when a document provider is configured. */
+const DOCUMENT_TOOL_NAMES = new Set([
+  "document_parse",
+  "document_extract",
+  "document_classify",
+  "document_split",
+  "document_locate",
+]);
+
 /** Offered only to a user who connected a wallet. */
 const PURCHASE_TOOL_NAMES = new Set(["request_purchase", "purchase_status", "paid_request"]);
 
@@ -116,6 +125,8 @@ export function selectBuiltinToolsForRun(options: {
   paidServicesEnabled?: boolean;
   /** The deployment configured a decision provider (the `decide` tool). */
   decisionsEnabled?: boolean;
+  /** The deployment configured a document provider (the document tools). */
+  documentsEnabled?: boolean;
   messagingChannelRun: boolean;
   /** Hanging up is only offered to a turn the caller spoke on a live call. */
   voiceCall?: boolean;
@@ -175,6 +186,7 @@ export function selectBuiltinToolsForRun(options: {
       (options.mediaVideoEnabled || tool.name !== "generate_video") &&
       (options.paidServicesEnabled || !PAID_SERVICE_TOOL_NAMES.has(tool.name)) &&
       (options.decisionsEnabled || tool.name !== "decide") &&
+      (options.documentsEnabled || !DOCUMENT_TOOL_NAMES.has(tool.name)) &&
       (options.ticketBoardEnabled ||
         (tool.name !== "board_tickets" && !tool.name.startsWith("ticket_"))) &&
       (!isBackgroundRunTrigger(options.trigger) ||

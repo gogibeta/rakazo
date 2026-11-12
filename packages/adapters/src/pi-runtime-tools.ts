@@ -268,6 +268,11 @@ export function describeToolActivity(
   if (toolName === "service_search") return `Finding a service: ${detail(record.query)}`;
   if (toolName === "service_call") return `Using service: ${detail(record.service)}`;
   if (toolName === "decide") return "Asking the decision model";
+  if (toolName === "document_parse") return `Reading document: ${detail(record.path)}`;
+  if (toolName === "document_extract") return `Extracting fields: ${detail(record.path)}`;
+  if (toolName === "document_classify") return `Classifying document: ${detail(record.path)}`;
+  if (toolName === "document_split") return `Splitting document: ${detail(record.path)}`;
+  if (toolName === "document_locate") return `Locating text: ${detail(record.path)}`;
   if (toolName === "skill_read")
     return record.file
       ? `Reading ${detail(record.file)} from ${detail(record.name)}`
