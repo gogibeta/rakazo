@@ -1127,6 +1127,19 @@ describe("built-in public compatible host", () => {
       assertAllowedOpenAiCompatibleUrl("https://other.test", { allowPublic: true }).hostname,
     ).toBe("other.test");
   });
+  it("allows the other built-in preset hosts the same way", () => {
+    for (const url of ["https://discovery-api.intern-ai.org.cn/v1", "https://api.mosi.cn/v1"]) {
+      expect(assertAllowedOpenAiCompatibleUrl(url, { allowPublic: false }).href).toBe(url);
+    }
+    for (const url of [
+      "http://discovery-api.intern-ai.org.cn/v1",
+      "https://discovery-api.intern-ai.org.cn:8443/v1",
+      "https://evil.api.mosi.cn/v1",
+      "https://api.mosi.cn.evil.test/v1",
+    ]) {
+      expect(() => assertAllowedOpenAiCompatibleUrl(url, { allowPublic: false })).toThrow();
+    }
+  });
   it("still rejects a private DNS answer for the built-in host", async () => {
     const safeFetch = createOpenAiCompatibleFetch(
       undefined,

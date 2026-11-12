@@ -3,6 +3,8 @@ import {
   assertAllowedOpenAiCompatibleRequestUrl,
   assertAllowedOpenAiCompatibleUrl,
   assertHttpsForKeyedOpenAiCompatibleUrl,
+  COMPATIBLE_ENDPOINT_PRESETS,
+  compatibleEndpointPreset,
   normalizeOpenAiCompatibleBaseUrl,
   openAiCompatAllowPublicHosts,
   PRIVATE_MODEL_ENDPOINT_MESSAGE,
@@ -208,6 +210,21 @@ describe("assertHttpsForKeyedOpenAiCompatibleUrl", () => {
     const url = assertAllowedOpenAiCompatibleUrl("http://api.example.com/v1");
     expect(() => assertHttpsForKeyedOpenAiCompatibleUrl(url, undefined)).not.toThrow();
     expect(() => assertHttpsForKeyedOpenAiCompatibleUrl(url, "  ")).not.toThrow();
+  });
+});
+
+describe("compatible endpoint presets", () => {
+  it("offers the hosted services by name", () => {
+    expect(COMPATIBLE_ENDPOINT_PRESETS).toEqual([
+      { name: "Ollama Cloud", baseUrl: "https://ollama.com/v1" },
+      { name: "Intern InkStone", baseUrl: "https://discovery-api.intern-ai.org.cn/v1" },
+      { name: "MOSS", baseUrl: "https://api.mosi.cn/v1" },
+    ]);
+    expect(compatibleEndpointPreset("https://api.mosi.cn/v1")?.name).toBe("MOSS");
+    expect(compatibleEndpointPreset("https://discovery-api.intern-ai.org.cn/v1")?.name).toBe(
+      "Intern InkStone",
+    );
+    expect(compatibleEndpointPreset("https://other.test/v1")).toBeUndefined();
   });
 });
 

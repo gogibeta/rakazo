@@ -109,6 +109,10 @@ leave Rakazo through this URL. Leave `RAKAZO_LOCAL_MODELS` blank to disable the 
 
 In **Settings → Models**, choose **Ollama Cloud**, paste an API key from ollama.com, then **Find models**. This uses an OpenAI-compatible connection with no environment configuration, and stays available when `RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC=0`.
 
+## Intern InkStone and MOSS
+
+In **Settings → Models**, choose **Intern InkStone** (key from the TokenPlan page at discovery.intern-ai.org.cn, under Personal Center → TokenPlan → API Key) or **MOSS** (key from platform.moss.cn), paste the API key, then **Find models**. Both work the same way as Ollama Cloud, and each can be connected alongside the others; a bot's main model and fallbacks can mix providers.
+
 ## OpenAI-compatible connections
 
 Each user can also connect their own OpenAI-compatible endpoint from **Connect a model** /
