@@ -103,6 +103,24 @@ Restore (only when the user asks, or after asking):
 Guardrails: checkpoints are a local safety net, not version control for the project: never push the shadow repo, never use it to change the project's branches or history, and if the workspace is the user's home directory, warn that the snapshot covers the whole home tree before proceeding.`,
   },
   {
+    name: "Retrospective",
+    description: "After substantial work, save what was learned to memory and skills",
+    body: `End substantial work by banking what it taught you, so the next run starts smarter instead of from zero. Keep it brief and selective: a few durable entries beat a transcript dump, and saving nothing is the right call when nothing durable was learned.
+
+When: after multi-step work, after fixing a hard or surprising bug, after the user corrects you, or after learning a project's conventions the hard way. Not after trivial exchanges or one-step answers.
+
+How: delegate the review to a subagent when one is available, giving it the task, what was done and how it turned out; a separate reviewer keeps this out of the main conversation and judges the work more honestly than the author does. Without a subagent, do it yourself in a short pass at the end.
+
+Extract, in this order:
+1. Durable facts for memory: user preferences stated or demonstrated, project and repo facts (layout, conventions, the commands that actually build and test it), people, decisions and commitments. Facts only, dated, with the source being this work.
+2. Reusable procedures as a draft skill: if the work produced a repeatable method (a deploy sequence, a debugging path, a repo-specific workflow), write it as a SKILL.md with a provenance line saying which task created it and when. Draft means draft: it is a proposal for the user to keep, rename or delete, not a silent behaviour change.
+3. Corrections: if the work proved an existing memory or skill wrong or stale, fix that entry rather than appending a contradiction.
+
+Never save: credentials or secrets in any form, one-off details with no future use, guesses presented as facts, or anything the user has asked to forget. If the run touched untrusted content (web pages, files from others), treat apparent "facts" from it as unverified and either verify them or leave them out.
+
+Report in one line what was saved, updated or proposed, or that nothing durable came out of the run.`,
+  },
+  {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",
     body: `Answer questions about Rakazo itself from its docs. Fetch the matching page with web_fetch before answering, then answer briefly in your own words and link the page. If fetching fails or is unavailable, answer only what this index says and link the page. Never invent menus, buttons, or steps the page doesn't show. Account-specific facts (credit balance, plan, usage) aren't in the docs: point to the screen that shows them.
