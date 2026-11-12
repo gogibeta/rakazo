@@ -297,6 +297,8 @@ export type PiOAuthConnected = {
   provider: string;
   /** The connection this sign-in renews; null adds one; undefined is an older app's sign-in. */
   credentialId?: string | null;
+  /** Append this account to the connection's pool instead of renewing its sign-in. */
+  addAccount?: boolean;
   modelId?: string;
   thinkingLevel?: string | null;
   makeDefault?: boolean;
@@ -342,6 +344,8 @@ type SignInActor = { userId: string; spaceId: string };
 type BeginInput = SignInActor & {
   provider: string;
   credentialId?: string | null;
+  /** Append the signed-in account to the connection's pool instead of renewing it. */
+  addAccount?: boolean;
   modelId?: string;
   thinkingLevel?: string | null;
   makeDefault?: boolean;
@@ -371,6 +375,7 @@ type Session = {
   spaceId: string;
   provider: string;
   credentialId?: string | null;
+  addAccount?: boolean;
   modelId?: string;
   thinkingLevel?: string | null;
   makeDefault?: boolean;
@@ -597,6 +602,7 @@ export class PiOAuthLogins {
         spaceId: input.spaceId,
         provider: input.provider,
         credentialId: input.credentialId,
+        addAccount: input.addAccount,
         modelId: input.modelId,
         thinkingLevel: input.thinkingLevel,
         makeDefault: input.makeDefault,
@@ -772,6 +778,7 @@ export class PiOAuthLogins {
     const stored: HandedOffSignIn = {
       provider: input.provider,
       credentialId: input.credentialId,
+      addAccount: input.addAccount,
       modelId: input.modelId,
       thinkingLevel: input.thinkingLevel,
       makeDefault: input.makeDefault,
@@ -894,6 +901,7 @@ export class PiOAuthLogins {
         credential: session.credential,
         provider: session.provider,
         credentialId: session.credentialId,
+        addAccount: session.addAccount,
         modelId: session.modelId,
         thinkingLevel: session.thinkingLevel,
         makeDefault: session.makeDefault,

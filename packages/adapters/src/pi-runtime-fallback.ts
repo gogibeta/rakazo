@@ -383,6 +383,7 @@ export function fallbackAwareModelStream(
               choice.provider,
               choice.id,
               choice.connectionId,
+              choice.keyId,
             )
           : (choice as AgentRunRequest["model"]);
         if (signalAborted()) return undefined;

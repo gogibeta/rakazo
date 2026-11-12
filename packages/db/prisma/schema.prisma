@@ -64,6 +64,7 @@ model User {
   accessGrants                AccessGrant[]
   invitations                 Invitation[]
   modelCredentials            UserModelCredential[]
+  modelCredentialKeys         UserModelCredentialKey[]
   proxies                     UserProxy[]
   voiceCredentials            UserVoiceCredential[]
   paymentWallet               PaymentWallet?
@@ -859,10 +860,35 @@ model UserModelCredential {
   roleChoices SpaceModelRoleChoice[]
   userPreferences UserModelPreference[]
   userRoleChoices UserModelRoleChoice[]
+  keys        UserModelCredentialKey[]
 
   @@unique([id, userId])
   @@index([userId, provider, updatedAt])
   @@map("user_model_credentials")
+}
+
+/// One key or signed-in account pooled under a model connection. The secret
+/// plaintext lives in the secrets table like the connection's own; the entry
+/// whose secretId equals the connection's secretId is the active one, and runs
+/// try entries in order (active first, then by position) before any model
+/// fallback. A person's own, in every Space, as user_model_credentials.
+model UserModelCredentialKey {
+  id           String              @id @default(cuid())
+  credentialId String
+  credential   UserModelCredential @relation(fields: [credentialId, userId], references: [id, userId], onDelete: Cascade)
+  userId       String
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label        String              @default("")
+  secretId     String
+  position     Int
+  lastFailedAt DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@unique([credentialId, secretId])
+  @@index([credentialId, position])
+  @@index([userId])
+  @@map("user_model_credential_keys")
 }
 
 /// A named proxy a person saved for their bots' web traffic. The password is

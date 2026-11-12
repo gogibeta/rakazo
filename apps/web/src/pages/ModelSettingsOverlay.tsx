@@ -28,6 +28,7 @@ import type { ModelRoleConnectIntent } from "./ModelRoleSettings";
 import { ModelRoleSettings, useModelRole } from "./ModelRoleSettings";
 import { CompatibleModelFields } from "./model-settings/compatible-model-fields";
 import { CompatibleKeyControls, ConnectionControls } from "./model-settings/connection-controls";
+import { ConnectionKeysSection } from "./model-settings/connection-keys";
 import { ConnectionNameField, ProvidersSection } from "./model-settings/providers-section";
 import type { ConnectableProvider } from "./model-settings/role-model-picker";
 import { SpaceBotsModelButton } from "./model-settings/space-bots-model";
@@ -286,6 +287,7 @@ export function ModelSettingsOverlay({
           />
         ) : null}
         {connection}
+        {connected && credential?.keys?.length ? <ConnectionKeysSection {...model} /> : null}
       </fieldset>
     </div>
   );

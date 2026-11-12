@@ -266,11 +266,16 @@ export function acceptedReasoningEfforts(
   return levels;
 }
 
-type ModelTarget = Pick<AgentRunRequest["model"], "provider" | "id" | "connectionId">;
+type ModelTarget = Pick<AgentRunRequest["model"], "provider" | "id" | "connectionId" | "keyId">;
 
 /** A model on one connection: the same model on another account is another backup. */
 export function modelTargetKey(target: ModelTarget): string {
-  return JSON.stringify([target.provider, target.id, target.connectionId ?? null]);
+  return JSON.stringify([
+    target.provider,
+    target.id,
+    target.connectionId ?? null,
+    target.keyId ?? null,
+  ]);
 }
 
 export function sameModelTarget(left: ModelTarget, right: ModelTarget): boolean {

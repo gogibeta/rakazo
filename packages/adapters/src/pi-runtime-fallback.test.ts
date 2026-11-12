@@ -1357,7 +1357,12 @@ describe("Pi runtime ordered model fallback", () => {
 
     const events = await run(input);
 
-    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(backupA.provider, backupA.id);
+    expect(input.onModelChange).toHaveBeenCalledExactlyOnceWith(
+      backupA.provider,
+      backupA.id,
+      undefined,
+      undefined,
+    );
     expect(events.filter((event) => event.type === "progress")).toEqual([]);
   });
 
@@ -2424,11 +2429,13 @@ describe("Pi runtime ordered model fallback", () => {
       backupA.provider,
       backupA.id,
       undefined,
+      undefined,
     );
     expect(resolveFallbackModel).toHaveBeenNthCalledWith(
       2,
       backupB.provider,
       backupB.id,
+      undefined,
       undefined,
     );
     expect(requestKeys).toEqual(["backup-only-key"]);
@@ -2467,9 +2474,79 @@ describe("Pi runtime ordered model fallback", () => {
       primary.provider,
       primary.id,
       "work",
+      undefined,
     );
     expect(requestKeys.at(-1)).toBe("fake-work-key");
     expect(JSON.stringify(events)).toContain("from work");
+  });
+
+  describe("pooled keys of one connection", () => {
+    function pooledInput(failure: string) {
+      const input = request();
+      input.model = {
+        ...input.model,
+        apiKey: "key-one",
+        connectionId: "conn-1",
+        keyId: "key-1",
+      };
+      input.fallbackModels = [
+        { provider: primary.provider, id: primary.id, connectionId: "conn-1", keyId: "key-2" },
+      ];
+      const resolveFallbackModel = vi.fn(
+        async (provider: string, id: string, connectionId?: string, keyId?: string) => ({
+          provider,
+          id,
+          connectionId,
+          keyId,
+          apiKey: "key-two",
+        }),
+      );
+      input.resolveFallbackModel = resolveFallbackModel;
+      const onModelChange = vi.fn(async () => undefined);
+      input.onModelChange = onModelChange;
+      const requestKeys: Array<string | undefined> = [];
+      providerState.stream.mockImplementation(
+        (target: Model<"openai-completions">, _context: unknown, options?: { apiKey?: string }) => {
+          requestKeys.push(options?.apiKey);
+          return options?.apiKey === "key-one"
+            ? stream(target, message(target, [], "error", failure))
+            : stream(target, message(target, [{ type: "text", text: "second key" }], "stop"));
+        },
+      );
+      return { input, resolveFallbackModel, onModelChange, requestKeys };
+    }
+
+    it.each(["401 Unauthorized: invalid_api_key", "429 usage limit reached"])(
+      "completes on the connection's next key after a pooled failure: %s",
+      async (failure) => {
+        const { input, resolveFallbackModel, onModelChange, requestKeys } = pooledInput(failure);
+        const events = await run(input);
+        expect(events.at(-1)).toEqual({ type: "done", text: "second key" });
+        expect(requestKeys).toEqual(["key-one", "key-two"]);
+        expect(resolveFallbackModel).toHaveBeenCalledExactlyOnceWith(
+          primary.provider,
+          primary.id,
+          "conn-1",
+          "key-2",
+        );
+        expect(onModelChange).toHaveBeenCalledWith(
+          primary.provider,
+          primary.id,
+          undefined,
+          "key-2",
+        );
+        expect(providerState.delay).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not burn the next key on a non-auth request error", async () => {
+      const { input, resolveFallbackModel, requestKeys } = pooledInput(
+        "400 invalid_request_error: Invalid parameter: credits must be a positive integer.",
+      );
+      await expect(run(input)).rejects.toThrow();
+      expect(requestKeys).toEqual(["key-one"]);
+      expect(resolveFallbackModel).not.toHaveBeenCalled();
+    });
   });
 });
 

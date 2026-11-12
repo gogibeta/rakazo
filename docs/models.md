@@ -22,6 +22,17 @@ for connection options, separate API billing, and provider restrictions.
 > On rakazo.com you can skip this and choose **Use Rakazo credits**, which includes monthly model
 > credits. See [Account and billing](./account.md).
 
+## Multiple keys and accounts
+
+A connection can hold more than one key or account. Open a connected provider under
+**Providers** and use **Keys and accounts** to add another API key, or **Add account** to sign
+in a second subscription account. Runs start on the active key — the one marked **Active**,
+which is the last one that worked — and if the provider rejects it or it hits a limit, the run
+moves to the next key in the list before any fallback model is tried. A key that failed shows
+**Last failed**; an account whose sign-in was rejected shows **Reconnect required** until it is
+signed in again. Removing a key takes it out of the rotation; a connection always keeps at
+least one.
+
 ## Main model and fallbacks
 
 **Main model** is what every bot uses unless you choose otherwise. Choose **Add fallback** to list

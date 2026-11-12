@@ -5639,6 +5639,178 @@ describe("model credential persistence", () => {
     );
   });
 
+  it("adds a key to a connection's pool and removes it again", async () => {
+    const { deps, handler } = persistDeps();
+    const credentialRow = {
+      id: "cred-1",
+      userId: actor.userId,
+      provider: "anthropic",
+      label: "Anthropic",
+      secretId: "secret-1",
+      supportsImages: false,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    const secretRows = new Map<string, { id: string; ciphertext: string }>([
+      ["secret-1", { id: "secret-1", ciphertext: "cipher-1" }],
+    ]);
+    const plaintextByCipher = new Map([
+      ["cipher-1", "sk-old-key"],
+      ["cipher-2", "sk-new-key"],
+    ]);
+    const keyRows: Array<Record<string, unknown>> = [
+      {
+        id: "key-1",
+        credentialId: "cred-1",
+        userId: actor.userId,
+        label: "",
+        secretId: "secret-1",
+        position: 0,
+        lastFailedAt: null,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      },
+    ];
+    const secretFake = {
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string } }) => secretRows.get(where.id) ?? null,
+      ),
+      findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+        where.id.in.filter((id) => secretRows.has(id)).map((id) => secretRows.get(id)!),
+      ),
+      create: vi.fn(async ({ data }: { data: { id: string; ciphertext: string } }) => {
+        secretRows.set(data.id, { id: data.id, ciphertext: data.ciphertext });
+        return data;
+      }),
+      deleteMany: vi.fn(async ({ where }: { where: { id: string } }) => ({
+        count: secretRows.delete(where.id) ? 1 : 0,
+      })),
+    };
+    const keyFake = {
+      findMany: vi.fn(
+        async ({ where }: { where: { userId: string; credentialId: string | { in: string[] } } }) =>
+          keyRows
+            .filter(
+              (row) =>
+                row.userId === where.userId &&
+                (typeof where.credentialId === "string"
+                  ? row.credentialId === where.credentialId
+                  : where.credentialId.in.includes(row.credentialId as string)),
+            )
+            .sort((a, b) => (a.position as number) - (b.position as number)),
+      ),
+      findFirst: vi.fn(
+        async ({
+          where,
+          orderBy,
+        }: {
+          where: { id?: string; userId: string; credentialId: string };
+          orderBy?: Array<{ position?: string }>;
+        }) => {
+          const rows = keyRows.filter(
+            (row) =>
+              row.userId === where.userId &&
+              row.credentialId === where.credentialId &&
+              (!where.id || row.id === where.id),
+          );
+          rows.sort((a, b) =>
+            orderBy?.[0]?.position === "desc"
+              ? (b.position as number) - (a.position as number)
+              : (a.position as number) - (b.position as number),
+          );
+          return rows[0] ?? null;
+        },
+      ),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const row = {
+          id: "key-2",
+          lastFailedAt: null,
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+          ...data,
+        };
+        keyRows.push(row);
+        return row;
+      }),
+      delete: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const index = keyRows.findIndex((row) => row.id === where.id);
+        return keyRows.splice(index, 1)[0];
+      }),
+      update: vi.fn(
+        async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+          const row = keyRows.find((entry) => entry.id === where.id);
+          Object.assign(row ?? {}, data);
+          return row;
+        },
+      ),
+      updateMany: vi.fn(async () => ({ count: 0 })),
+      count: vi.fn(
+        async ({ where }: { where: { secretId: string } }) =>
+          keyRows.filter((row) => row.secretId === where.secretId).length,
+      ),
+    };
+    const credentialsFake = deps.prisma.userModelCredential as unknown as Record<
+      string,
+      ReturnType<typeof vi.fn>
+    >;
+    credentialsFake.findFirst.mockResolvedValue(credentialRow);
+    Object.assign(credentialsFake, {
+      count: vi.fn(async () => 0),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    });
+    const tx = {
+      userModelCredential: deps.prisma.userModelCredential,
+      userModelPreference: deps.prisma.userModelPreference,
+      secret: secretFake,
+      userModelCredentialKey: keyFake,
+    };
+    Object.assign(deps.prisma, {
+      secret: secretFake,
+      userModelCredentialKey: keyFake,
+      userVoiceCredential: { count: vi.fn(async () => 0) },
+      $transaction: vi.fn(async (fn: (client: typeof tx) => unknown) => fn(tx)),
+    });
+    Object.assign(deps.secrets, {
+      put: vi.fn(async () => ({ id: "secret-2", ciphertext: "cipher-2" })),
+      load: vi.fn(async (ciphertext: string) => plaintextByCipher.get(ciphertext)),
+    });
+    Object.assign(deps, {
+      modelConnectionFetch: vi.fn(async () => new Response(null, { status: 200 })),
+    });
+
+    const added = await call(handler, "models/addCredentialKey", {
+      credentialId: "cred-1",
+      apiKey: "sk-new-key",
+      label: "Spare",
+    });
+    expect(added.status).toBe(200);
+    const addedBody = (await added.json()) as {
+      json: { keys: Array<{ id: string; label: string; active: boolean }> };
+    };
+    expect(addedBody.json.keys.map(({ id, label, active }) => ({ id, label, active }))).toEqual([
+      { id: "key-1", label: "Key 1", active: true },
+      { id: "key-2", label: "Spare", active: false },
+    ]);
+    // No secret value ever leaves through the RPC.
+    expect(JSON.stringify(addedBody)).not.toContain("sk-new-key");
+    expect(JSON.stringify(addedBody)).not.toContain("sk-old-key");
+
+    const removed = await call(handler, "models/removeCredentialKey", {
+      credentialId: "cred-1",
+      keyId: "key-2",
+    });
+    expect(removed.status).toBe(200);
+    const removedBody = (await removed.json()) as { json: { keys: Array<{ id: string }> } };
+    expect(removedBody.json.keys.map(({ id }) => id)).toEqual(["key-1"]);
+    expect(secretRows.has("secret-2")).toBe(false);
+
+    const last = await call(handler, "models/removeCredentialKey", {
+      credentialId: "cred-1",
+      keyId: "key-1",
+    });
+    expect(last.status).toBe(400);
+  });
+
   it("checks the chosen model with the new key before saving it", async () => {
     const { deps, handler } = persistDeps();
     const check = vi.fn(async () => {

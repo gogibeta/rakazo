@@ -543,6 +543,23 @@ export const appContract = {
     backups: oc.output(z.array(ModelBackupChoiceSchema)),
     setBackups: oc.input(ModelBackupListSchema).output(z.object({ ok: z.literal(true) })),
     connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),
+    /** Add one API key to a connection's pool; runs rotate across the pool. */
+    addCredentialKey: oc
+      .input(
+        z.object({
+          credentialId: Id,
+          label: z.string().trim().max(80).optional(),
+          // Carries provider endpoint routing for gateways that use it.
+          accountId: z.string().trim().max(256).optional(),
+          gatewayId: z.string().trim().max(256).optional(),
+          apiKey: z.string().trim().min(1).max(8_192),
+        }),
+      )
+      .output(ModelCredentialSchema),
+    /** Remove one key or account from a connection's pool. */
+    removeCredentialKey: oc
+      .input(z.object({ credentialId: Id, keyId: Id }))
+      .output(ModelCredentialSchema),
     probeOpenAiCompatible: oc
       .input(
         z.object({
@@ -569,6 +586,8 @@ export const appContract = {
           label: z.string().optional(),
           /** Signs an existing connection in again; null adds another, as connect does. */
           credentialId: ModelConnectionTargetSchema,
+          /** Append the signed-in account to the connection's pool instead of replacing its sign-in. */
+          addAccount: z.boolean().optional(),
           modelId: z.string().optional(),
           thinkingLevel: ThinkingLevelSchema.nullable().optional(),
           makeDefault: z.boolean().optional(),

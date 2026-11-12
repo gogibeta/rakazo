@@ -487,12 +487,30 @@ export function useModelSettings(onClose: () => void, scope: SettingsScope) {
     });
   }
 
+  /** Sign in another account of the provider into this connection's pool. */
+  function beginAddAccountSignIn() {
+    if (!selected || !credential) return;
+    setNotice(null);
+    oauthChoiceRef.current = {
+      choice: { provider: selected.provider, modelId: selected.id },
+      intent: null,
+    };
+    void startSubscriptionSignIn({
+      provider: selected.provider,
+      credentialId: credential.id,
+      addAccount: true,
+      modelId: selected.id,
+      label: selected.providerName ?? selected.provider,
+    });
+  }
+
   return {
     ...form,
     intentRef,
     refresh,
     savedHeaderEndpointMatches,
     acceptsKey,
+    beginAddAccountSignIn,
     beginSelectedSubscriptionSignIn,
     busy,
     cancelOAuthAttempt,

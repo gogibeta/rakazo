@@ -502,7 +502,12 @@ export class PiAgentRuntime implements AgentRuntime {
             ...withLeadingUser(contextPolicyFor(target).prepareContext(ctx, target.model)),
           }),
           onSwitch: async (target) => {
-            await request.onModelChange?.(target.config.provider, target.config.id);
+            await request.onModelChange?.(
+              target.config.provider,
+              target.config.id,
+              undefined,
+              target.config.keyId,
+            );
             activeStreamTarget = target;
             contextPolicy = contextPolicyFor(target);
             host.activeModel = target;
