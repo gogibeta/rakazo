@@ -178,8 +178,10 @@ function createDeps(overrides: {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     routine: {
-      findUnique: vi.fn(
-        async () => overrides.routine ?? { name: "Morning digest", deliverResultToChat: true },
+      findUnique: vi.fn(async () =>
+        overrides.routine === undefined
+          ? { name: "Morning digest", deliverResultToChat: true }
+          : overrides.routine,
       ),
     },
     message: {
