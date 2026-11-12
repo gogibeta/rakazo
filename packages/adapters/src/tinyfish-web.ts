@@ -8,6 +8,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { z } from "zod";
 import { combineSignals } from "./connector-safety.js";
+import { fetchThroughProxy } from "./proxy-dispatcher.js";
 import { clampMaxChars, clampMaxResults, clampOffset, pageWindow } from "./web-limits.js";
 import type { ResolveHostname } from "./web-ssrf.js";
 import { assertSafeWebUrl } from "./web-ssrf.js";
@@ -47,6 +48,8 @@ export type TinyFishWebOptions = {
   apiKey?: string;
   searchTimeoutMs?: number;
   fetchTimeoutMs?: number;
+  /** Route this provider's own API calls through this proxy. */
+  proxyUrl?: string;
 };
 
 /**
@@ -62,7 +65,8 @@ export class TinyFishWebProvider implements WebProvider {
   private readonly fetchTimeoutMs: number;
 
   constructor(options: TinyFishWebOptions = {}) {
-    this.fetchImpl = options.fetch ?? globalThis.fetch;
+    this.fetchImpl =
+      options.fetch ?? (options.proxyUrl ? fetchThroughProxy(options.proxyUrl) : globalThis.fetch);
     this.resolveHostname = options.resolveHostname;
     this.apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY?.trim();
     this.searchTimeoutMs = options.searchTimeoutMs ?? 20_000;

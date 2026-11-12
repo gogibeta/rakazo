@@ -34,6 +34,12 @@ export interface SafeWebFetchOptions {
   /** Refuse any hop, redirects included, whose port is not listed. */
   allowedPorts?: readonly number[];
   /**
+   * Route this request through one chosen proxy instead of the environment's.
+   * The checked tunneling still applies: the proxy is handed the validated
+   * address, never the hostname.
+   */
+  proxyUrl?: string;
+  /**
    * Test seam for dispatcher teardown. Defaults to `dispatcher.close()`.
    * Always raced against the shared operation deadline.
    */
@@ -184,10 +190,16 @@ async function withSafeEgress<T>(
   const resolve = options.resolveHostname ?? defaultResolveHostname;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const baseFetch = fetchPairedWithDispatcher(options.fetch);
-  const dispatcher = createCheckedProxyDispatcher(resolve, (addresses, hostname) => {
-    if (isBlockedHostname(hostname)) throw new Error("URL targets a private or internal host");
-    assertPublicAddresses(addresses);
-  });
+  const dispatcher = createCheckedProxyDispatcher(
+    resolve,
+    (addresses, hostname) => {
+      if (isBlockedHostname(hostname)) throw new Error("URL targets a private or internal host");
+      assertPublicAddresses(addresses);
+    },
+    undefined,
+    undefined,
+    options.proxyUrl,
+  );
   // One deadline for the whole redirect chain + body read + cleanup, not per hop.
   const signal = combineSignals(options.signal, AbortSignal.timeout(timeoutMs));
   const cleanup =

@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
 import { PlanUsage } from "../components/PlanUsage";
+import { ProxiesSettings } from "../components/ProxiesSettings";
 import { ServiceCredentialsSettings } from "../components/ServiceCredentialsSettings";
 import { SETTINGS_CONTENT_WIDTH, SettingsGroup, SettingsRow } from "../components/SettingsRows";
 import { VaultSettings } from "../components/VaultSettings";
@@ -438,6 +439,7 @@ export function SettingsOverlay({
                   ) : null}
                   {section === "confirmations" ? <ApprovalRulesSettings scope="account" /> : null}
                   {section === "vault" ? <VaultSettings scope="account" /> : null}
+                  {section === "proxies" ? <ProxiesSettings /> : null}
                   {section === "messaging" && messagingEnabled ? <MessagingSettingsPanel /> : null}
                   {section === "wallet" && paymentWalletProvider ? (
                     <PaymentWalletSettingsPanel provider={paymentWalletProvider} />

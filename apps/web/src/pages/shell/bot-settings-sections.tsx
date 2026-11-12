@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { ComputerMode, ReplyMode, ThinkingLevel } from "@rakazo/contracts";
+import type { ComputerMode, ProxySummary, ReplyMode, ThinkingLevel } from "@rakazo/contracts";
 import {
   BOT_COMPUTER_MODES,
   BOT_DESCRIPTION_MAX_LENGTH,
@@ -191,6 +191,49 @@ export function ModelSection({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** The proxy this bot's web traffic uses; its own connection until the owner picks one. */
+export function ProxySection({
+  ids,
+  proxies,
+  proxyId,
+  onProxyChange,
+}: {
+  ids: string;
+  proxies: ProxySummary[];
+  proxyId: string | null;
+  onProxyChange: (proxyId: string | null) => void;
+}) {
+  const { t } = useLingui();
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between text-label font-medium text-muted-foreground pe-1">
+        <Trans>Proxy</Trans>
+      </div>
+      <div className="rounded-xl bg-muted/50 p-4">
+        <label
+          htmlFor={`${ids}-proxy`}
+          className="flex min-h-11 items-center justify-between gap-3 text-body text-foreground"
+        >
+          <Trans>Web traffic</Trans>
+          <NativeSelect
+            id={`${ids}-proxy`}
+            className="max-w-2/3"
+            value={proxyId ?? ""}
+            onChange={(event) => onProxyChange(event.target.value || null)}
+          >
+            <NativeSelectOption value="">{t`Own connection`}</NativeSelectOption>
+            {proxies.map((proxy) => (
+              <NativeSelectOption key={proxy.id} value={proxy.id}>
+                {proxy.name}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </label>
+      </div>
+    </section>
   );
 }
 

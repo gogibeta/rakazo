@@ -43,6 +43,7 @@ export const AnalyticsBotSetting = z.enum([
   "fleet_management",
   "reply_mode",
   "tools",
+  "proxy",
 ]);
 export const AnalyticsTrigger = RunTriggerSchema;
 /** A coarse failure class; "other" covers everything without a known kind. Never the error text. */

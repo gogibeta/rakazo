@@ -6,6 +6,7 @@ import {
   Cpu,
   CreditCard,
   Gauge,
+  Globe,
   KeyRound,
   MessageCircle,
   Monitor,
@@ -50,6 +51,12 @@ export function useSettingsNavItems(available: {
       label: t`Vault`,
       icon: KeyRound,
       description: t`Logins and keys your bots can use.`,
+    },
+    {
+      id: "proxies",
+      label: t`Proxies`,
+      icon: Globe,
+      description: t`Connections your bots can browse through.`,
     },
     ...(available.wallet
       ? [
