@@ -55,13 +55,13 @@ describe("TinyFishWebProvider", () => {
               url: "https://example.com/page",
               final_url: "https://example.com/page",
               title: "Page",
-              text: "hello world, rendered",
+              text: `hello ${"rendered ".repeat(500)}`,
             },
           ],
           errors: [],
         }),
     });
-    const page = await provider.fetch({ url: "https://example.com/page", maxChars: 5 }, ctx);
+    const page = await provider.fetch({ url: "https://example.com/page", maxChars: 100 }, ctx);
     expect(page.title).toBe("Page");
     expect(page.text).toContain("hello");
     expect(page.truncated).toBe(true);
