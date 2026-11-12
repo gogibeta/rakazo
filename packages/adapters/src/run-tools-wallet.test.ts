@@ -169,7 +169,7 @@ describe("browser_act types a saved wallet only where the user approved it", () 
 describe("list_wallets", () => {
   it("shows names, chains and addresses only", async () => {
     const { prisma } = await walletStore();
-    const result = await walletTools.list_wallets(
+    const result = await walletTools.list_wallets!(
       { deps: { prisma }, run: { userId: "u" } } as never,
       {} as never,
     );
