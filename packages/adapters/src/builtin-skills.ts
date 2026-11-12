@@ -59,6 +59,30 @@ const SKILLS: Array<{ name: string; description: string; body: string }> = [
 4. Synthesize a verdict: ship, ship after fixes, or do not ship. List the confirmed findings ordered by severity, each with its location and failure scenario, then any open questions. If nothing survived verification, say so plainly instead of inventing nitpicks.`,
   },
   {
+    name: "Code Change",
+    description: "Make a code change end-to-end: onboard the repo, edit, test, self-review",
+    body: `Make the change the way a careful engineer on this codebase would. Work in the project's own way, prove the result with its own checks, and leave nothing unverified behind a confident report.
+
+1. Onboard before editing: find the repo root, then read its rules first (AGENTS.md, CLAUDE.md, README, contributing docs) and its manifest (package.json or equivalent) for the test, typecheck, lint and format commands it defines. Skim the files you will touch and their neighbours so the change matches existing patterns, naming and helpers. Note any uncommitted work already in the tree: never overwrite, reformat or "fix" unrelated changes.
+2. State a brief plan before the first edit: what will change, in which files, and how you will verify it. If the task is ambiguous in a way that changes the approach, ask one focused question; otherwise proceed.
+3. Edit small: one logical change at a time. Reuse existing utilities and components instead of adding parallel ones. No speculative abstractions, no unrelated refactors, no drive-by formatting. If you spot a separate problem, note it in the report instead of fixing it silently.
+4. Verify with the project's own commands after editing: the targeted tests for what you touched, then the broader suite plus typecheck/lint/format when the project defines them. A red check means the work is not done: fix it, or narrow the change, but never finish on a failing check without saying exactly which one fails and why.
+5. Review your own diff before reporting (read the full git diff): check scope (everything in it serves the task), secrets or credentials, debug output, commented-out code, and TODOs you introduced.
+6. Report plainly: what changed and where, which checks you ran and their actual results, and anything you could not verify.`,
+  },
+  {
+    name: "Debug",
+    description: "Systematic debugging: reproduce, find the root cause, fix, prove it",
+    body: `Debug by evidence, not by guessing. No fix is attempted before the failure is reproduced and understood.
+
+1. Reproduce first: get the exact failing command, input or steps and capture the actual error, output or behaviour. If you cannot reproduce it, say what you tried and what you would need (logs, environment, input) instead of theorising.
+2. Read the failure literally: the full error, stack trace and relevant logs, then trace the code path they point at. Most "mysteries" are the error message already saying what is wrong.
+3. Hypothesise one cause at a time and test each with the smallest possible probe: a narrower test case, a log line, a binary search over recent changes (git log / git bisect), or toggling one input. Record what each probe ruled in or out; change one variable per probe.
+4. Fix the root cause, not the symptom: no retries, sleeps, broad catches or special cases that merely hide the failure. Keep the fix as small as the cause allows and in the layer where the cause lives.
+5. Prove it: re-run the original reproduction and show it passing, run the surrounding test suite, and where the project has tests, add or adjust a regression test that fails without your fix and passes with it.
+6. Report the root cause in one or two sentences, the fix, and the evidence from step 5. If the cause turned out to be environmental or external, say so and show the evidence rather than changing code anyway.`,
+  },
+  {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",
     body: `Answer questions about Rakazo itself from its docs. Fetch the matching page with web_fetch before answering, then answer briefly in your own words and link the page. If fetching fails or is unavailable, answer only what this index says and link the page. Never invent menus, buttons, or steps the page doesn't show. Account-specific facts (credit balance, plan, usage) aren't in the docs: point to the screen that shows them.
