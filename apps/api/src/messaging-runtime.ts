@@ -19,7 +19,7 @@ import { getLogger } from "@rakazo/logging";
 import type { Hono } from "hono";
 import { storeInboundAttachment } from "./artifacts.js";
 import type { AppEnv } from "./env.js";
-import { createMessagingInboundHandler } from "./messaging-inbound.js";
+import { createMessagingInboundHandler, messagingMessageForAction } from "./messaging-inbound.js";
 import { createMessagingReceipts } from "./messaging-receipts.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
 import { TeamChatBridge } from "./team-chat-bridge.js";
@@ -273,31 +273,34 @@ export async function startMessagingRuntime({
     }
   }
   const handleInbound = async (event: MessagingInboundEvent) => {
-    if (event.type !== "message") {
+    if (event.type === "status") {
       await applyMessagingOutboundStatus(prisma, event);
       return;
     }
-    if (event.installationBotId && !event.isDirect) {
-      if (!event.installationId || !event.workspaceId) return;
+    // A button tap is the person's answer to a message the bot sent; from
+    // here it flows exactly like their next message in that conversation.
+    const message = event.type === "action" ? messagingMessageForAction(event) : event;
+    if (message.installationBotId && !message.isDirect) {
+      if (!message.installationId || !message.workspaceId) return;
       const installation = {
-        id: event.installationId,
-        botId: event.installationBotId,
-        workspaceId: event.workspaceId,
+        id: message.installationId,
+        botId: message.installationBotId,
+        workspaceId: message.workspaceId,
       };
-      await handleTeamChatInbound(await installedBridge(installation), event);
+      await handleTeamChatInbound(await installedBridge(installation), message);
       return;
     }
-    if (!event.installationBotId && prefersTeamChatSurface(event, env.teamChatBotId)) {
+    if (!message.installationBotId && prefersTeamChatSurface(message, env.teamChatBotId)) {
       const bridge = teamChatBridge;
       if (bridge) {
-        await handleTeamChatInbound(bridge, event);
+        await handleTeamChatInbound(bridge, message);
         return;
       }
       // Bridge is still starting (or retrying). Do not fall through to the
       // personal-line inbound path — that bypasses externalMessage ownership
       // and can wake routines for unlinked TeamChat senders.
       if (teamChatInitTask) {
-        const pending = pendingTeamChatInbound.enqueue(event);
+        const pending = pendingTeamChatInbound.enqueue(message);
         if (!pending) {
           throw new Error("Team chat inbound buffer is full");
         }
@@ -306,7 +309,7 @@ export async function startMessagingRuntime({
       }
       throw new Error("Team chat bridge is unavailable");
     }
-    await inbound(event);
+    await inbound(message);
   };
   messaging.onInbound((event) => runAsSystem("messaging inbound", () => handleInbound(event)));
   mountMessagingWebhookRoutes(app, { messaging });

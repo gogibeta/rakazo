@@ -943,6 +943,14 @@ export interface MessagingCapabilities {
   receipt: MessagingReceipt | null;
   /** Sends image and file attachments. Absent means replies go out as text only. */
   files?: boolean;
+  /**
+   * Renders a send's `actions` as native buttons and reports taps back as
+   * inbound action events. Absent means the actions degrade to a numbered
+   * list in the message text, answerable by an ordinary reply.
+   */
+  actions?: boolean;
+  /** Native button cap when `actions` is set; actions past it join the numbered list. */
+  maxActions?: number;
 }
 
 /** One messaging platform behind the chat surface (sendblue, slack, …). */
@@ -961,6 +969,40 @@ export interface MessagingSendRequest {
   idempotencyKey?: string;
   /** A file to post as this message; only sent to platforms with the `files` capability. */
   attachment?: MessagingOutboundAttachment;
+  /**
+   * Card frame for the message on platforms with the `actions` capability;
+   * on the others the title leads the message text instead. Ignored when an
+   * attachment is sent.
+   */
+  card?: MessagingCard;
+  /**
+   * Buttons offered under the message; a tap returns as an inbound action
+   * event carrying the action's `id`. Platforms without the `actions`
+   * capability — and any action past a platform's `maxActions` — are listed
+   * as a numbered list in the message text instead, so every choice stays
+   * reachable by an ordinary reply. Ignored when an attachment is sent.
+   */
+  actions?: MessagingAction[];
+}
+
+/** A card frame for an outbound message: a title over the message text. */
+export interface MessagingCard {
+  title?: string;
+  /** Card text; defaults to the send's `body`. */
+  body?: string;
+}
+
+/** One tappable choice on an outbound message. */
+export interface MessagingAction {
+  /**
+   * Stable id a tap reports back. Keep it short: some platforms carry it in
+   * a size-capped callback payload (Telegram's is 64 bytes in total).
+   */
+  id: string;
+  label: string;
+  style?: "primary" | "danger" | "default";
+  /** Payload a tap returns alongside the id, when the id alone is not the answer. */
+  value?: string;
 }
 
 /** An outbound file, already read from the artifact store. */
@@ -1079,7 +1121,42 @@ export interface MessagingOutboundStatus {
   status: string;
 }
 
-export type MessagingInboundEvent = MessagingInboundMessage | MessagingOutboundStatus;
+/**
+ * A tap on a button the surface sent. The tap is the person's answer to
+ * that message's actions; hosts route it through the same inbound path as
+ * a message whose text is the chosen action.
+ */
+export interface MessagingInboundAction {
+  type: "action";
+  provider: string;
+  /** Replay-safe handle for the tap, unique per tapped message and action. */
+  handle: string;
+  /** Opaque conversation id — the thread the tapped message was sent to. */
+  threadId: string;
+  /** True for a 1:1 conversation with the deployment's line/bot. */
+  isDirect: boolean;
+  /** Sender address within the provider (E.164, Slack user id, …). */
+  from: string;
+  /** Sender display name when the platform provides one. */
+  fromLabel: string | null;
+  /** The tapped action's id, as sent. */
+  actionId: string;
+  /** The tapped action's payload, when the send set one. */
+  value?: string;
+  /** Provider id of the message that carried the actions. */
+  messageId: string;
+  /** Team-room workspace/team id when the platform reports one (Slack team_id, …). */
+  workspaceId?: string;
+  /** Trusted installation owner, attached only after webhook verification. */
+  installationId?: string;
+  installationSpaceId?: string;
+  installationBotId?: string;
+}
+
+export type MessagingInboundEvent =
+  | MessagingInboundMessage
+  | MessagingInboundAction
+  | MessagingOutboundStatus;
 
 export interface WebSearchCapabilities {
   search: boolean;

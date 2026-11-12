@@ -1,5 +1,6 @@
 import type {
   AdapterContext,
+  MessagingInboundAction,
   MessagingInboundEvent,
   MessagingInboundMessage,
   MessagingInstallation,
@@ -30,7 +31,7 @@ const inbound: MessagingInboundMessage = {
   participants: [],
   channelName: null,
 };
-function fixture() {
+function fixture(event: MessagingInboundEvent = inbound) {
   const installations = new Map<string, MessagingInstallation>(
     ["a", "b"].map((id) => [
       id,
@@ -82,7 +83,7 @@ function fixture() {
         sink = callback;
       },
       handleWebhook: async () => {
-        await sink?.(inbound);
+        await sink?.(event);
         return new Response(null, { status: 200 });
       },
       sendToThread: (request) => sends(credential, request),
@@ -139,6 +140,38 @@ describe("installed messaging isolation", () => {
         threadId: "slack~b:C1:1.001",
         installationSpaceId: "space-b",
         installationBotId: "bot-b",
+      },
+    ]);
+  });
+
+  it("scopes button taps from an installed workspace like its messages", async () => {
+    const tap: MessagingInboundAction = {
+      type: "action",
+      provider: "slack",
+      handle: "1.001:approve",
+      threadId: "slack:C1:1.001",
+      isDirect: true,
+      from: "U1",
+      fromLabel: "Sender",
+      actionId: "approve",
+      messageId: "1.001",
+    };
+    const f = fixture(tap);
+    const events: MessagingInboundEvent[] = [];
+    f.messaging.onInbound(async (event) => {
+      events.push(event);
+    });
+    await f.messaging.handleWebhook("slack", webhook("Ta"));
+    expect(events).toMatchObject([
+      {
+        type: "action",
+        from: "Ta:U1",
+        handle: "Ta:1.001:approve",
+        messageId: "Ta:1.001",
+        threadId: "slack~a:C1:1.001",
+        installationSpaceId: "space-a",
+        installationBotId: "bot-a",
+        actionId: "approve",
       },
     ]);
   });

@@ -273,7 +273,7 @@ export function messagingPlatformsFromEnv(
     });
     platforms.push({
       provider: "slack",
-      capabilities: { direct: true, groups: true, receipt: "reaction" },
+      capabilities: { direct: true, groups: true, receipt: "reaction", files: true, actions: true },
       adapter,
       enrichTeamRoom: enrichSlackTeamRoom,
       redeliveryKeys: slackRedeliveryKeys,
@@ -310,7 +310,16 @@ export function messagingPlatformsFromEnv(
   ) {
     platforms.push({
       provider: "whatsapp",
-      capabilities: { direct: true, groups: false, receipt: null },
+      // Meta caps an interactive message at three reply buttons; the
+      // surface lists any further actions in the text instead.
+      capabilities: {
+        direct: true,
+        groups: false,
+        receipt: null,
+        files: true,
+        actions: true,
+        maxActions: 3,
+      },
       adapter: createWhatsAppAdapter({
         accessToken: env.whatsappAccessToken,
         phoneNumberId: env.whatsappPhoneNumberId,
@@ -331,7 +340,7 @@ export function messagingPlatformsFromEnv(
     const adapter = telegramAdapter(env.telegramBotToken, env.telegramWebhookSecret, options);
     platforms.push({
       provider: "telegram",
-      capabilities: { direct: true, groups: true, receipt: null, files: true },
+      capabilities: { direct: true, groups: true, receipt: null, files: true, actions: true },
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
       isPermanentSendError: isTelegramBlocked,
@@ -353,7 +362,7 @@ export function messagingPlatformsFromEnv(
     platforms.push({
       provider: `telegram-${bot.name}`,
       adapterName: "telegram",
-      capabilities: { direct: true, groups: true, receipt: null, files: true },
+      capabilities: { direct: true, groups: true, receipt: null, files: true, actions: true },
       ...withTelegramRedelivery(adapter),
       ...telegramGroupHooks(adapter),
       isPermanentSendError: isTelegramBlocked,
@@ -674,10 +683,14 @@ function telegramDepartures(
 /**
  * A forum topic (`is_topic_message`) is its own conversation; a plain reply's
  * message thread id is not, so it collapses onto the group. Business thread
- * ids (`telegram:biz:<id>:<chat>`) have four segments and pass through.
+ * ids (`telegram:biz:<id>:<chat>`) have four segments and pass through. A
+ * button tap's raw payload is the callback query, whose message carries the
+ * topic flag one level down.
  */
 function telegramGroupThreadId(threadId: string, raw: unknown): string {
-  if (asRecord(raw)?.is_topic_message === true) return threadId;
+  const record = asRecord(raw);
+  if (record?.is_topic_message === true || asRecord(record?.message)?.is_topic_message === true)
+    return threadId;
   const parts = threadId.split(":");
   return parts.length === 3 && parts[0] === "telegram" ? `${parts[0]}:${parts[1]}` : threadId;
 }

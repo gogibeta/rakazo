@@ -1,9 +1,11 @@
+import type { MessagingInboundAction } from "@rakazo/adapter-kit";
 import { ATTACHMENT_MAX_COUNT } from "@rakazo/contracts";
 import { SpaceDeletionInProgressError } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { MessagingInboundDeps } from "./messaging-inbound.js";
 import {
   createMessagingInboundHandler,
+  messagingMessageForAction,
   teamChatSenderCanWakeMessageRoutines,
   wakeMessageRoutines,
 } from "./messaging-inbound.js";
@@ -399,6 +401,73 @@ const groupEvent = {
   participants: ["+15551111111", "+15552222222"],
   content: "hi group",
 };
+
+describe("messagingMessageForAction", () => {
+  const tap: MessagingInboundAction = {
+    type: "action",
+    provider: "sendblue",
+    handle: "m-9:approve",
+    threadId: "sendblue:dm-1",
+    isDirect: true,
+    from: "+15551111111",
+    fromLabel: null,
+    actionId: "approve",
+    messageId: "m-9",
+  };
+
+  it("turns a tap into a message whose text is the chosen action id", () => {
+    expect(messagingMessageForAction(tap)).toEqual({
+      type: "message",
+      provider: "sendblue",
+      handle: "m-9:approve",
+      threadId: "sendblue:dm-1",
+      isDirect: true,
+      from: "+15551111111",
+      fromLabel: null,
+      channelName: null,
+      participants: [],
+      content: "approve",
+      mediaUrl: null,
+    });
+  });
+
+  it("prefers the action payload over its id and carries installation scoping", () => {
+    expect(
+      messagingMessageForAction({
+        ...tap,
+        value: "Book the flight",
+        workspaceId: "T1",
+        installationId: "inst-1",
+        installationSpaceId: "ws-9",
+        installationBotId: "bot-9",
+      }),
+    ).toMatchObject({
+      content: "Book the flight",
+      workspaceId: "T1",
+      installationId: "inst-1",
+      installationSpaceId: "ws-9",
+      installationBotId: "bot-9",
+    });
+  });
+
+  it("delivers a tap through the DM path as the sender's message", async () => {
+    const deps = createDeps();
+    const handle = createMessagingInboundHandler(deps);
+    await handle(messagingMessageForAction({ ...tap, value: "Book the flight" }));
+
+    expect(deps.sendUserMessage).toHaveBeenCalledWith({
+      spaceId: "ws-1",
+      threadId: "thread-1",
+      botId: "bot-1",
+      userId: "user-1",
+      authorUserId: "user-1",
+      blocks: [{ kind: "text", text: "Book the flight" }],
+      prompt: "Book the flight",
+      trigger: "messaging",
+      clientNonce: "messaging:sendblue:m-9:approve",
+    });
+  });
+});
 
 describe("createMessagingInboundHandler DM routing", () => {
   it("drops a message for a bot whose Space is being deleted instead of failing the delivery", async () => {
