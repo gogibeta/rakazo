@@ -56,6 +56,7 @@ import { organizationsRoutes } from "./routes/organizations.js";
 import { pagesRoutes } from "./routes/pages.js";
 import { paymentWalletRoutes } from "./routes/payment-wallet.js";
 import { routinesRoutes } from "./routes/routines.js";
+import { serviceCredentialsRoutes } from "./routes/service-credentials.js";
 import { spacesRoutes } from "./routes/spaces.js";
 import { spendingLimitRoutes } from "./routes/spending-limit.js";
 import { threadsRoutes } from "./routes/threads.js";
@@ -177,6 +178,7 @@ export function createRouter(deps: RouterDeps) {
     ...threadsRoutes(ctx),
     ...computerRoutes(ctx),
     ...computerProviderRoutes(ctx),
+    ...serviceCredentialsRoutes(ctx),
     ...memoryRoutes(ctx),
     ...routinesRoutes(ctx),
     ...boardsRoutes(ctx),

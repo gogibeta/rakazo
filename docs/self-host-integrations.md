@@ -47,6 +47,12 @@ Without the key the combined provider behaves exactly like the keyless default, 
 select before the key exists. This option sends search queries and requested page URLs to
 TinyFish, which retrieves pages on its servers.
 
+The TinyFish and Nace keys, and the Telegram and WhatsApp credentials from the messaging
+table below, can also be saved by an admin in Settings → Organization under "Service keys"
+instead of setting the environment variables. Saved keys are stored encrypted on the
+deployment, are read when the API and worker start, and a set environment variable always
+wins over the saved key.
+
 ## Self-hosted memory
 
 Supermemory and Honcho can run on your own network. In **Settings → Memory**, choose **Local**

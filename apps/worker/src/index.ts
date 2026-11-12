@@ -40,6 +40,8 @@ import {
   InMemoryJobQueue,
   installedMessaging,
   isMessagingSurfaceEnabled,
+  loadServiceCredentials,
+  mergeServiceCredentialsIntoMessagingEnv,
   messagingEnvFromProcess,
   messagingPlatformsFromEnv,
   PiAgentRuntime,
@@ -121,6 +123,8 @@ async function main() {
   if (secrets.describe().capabilities.degraded)
     logger.warn("Secret storage degraded; encrypted credentials remain available");
   prisma = withSecretPersistence(prisma, secrets);
+  // Service keys the deployment owner saved in Settings; the matching env vars win.
+  const serviceCredentials = await loadServiceCredentials(prisma, secrets);
   installSecurityEventStore(prisma);
   installAuditEventStore(prisma);
   const unreadableMasterKeys = await verifyContentKeys(prisma);
@@ -134,6 +138,8 @@ async function main() {
     runSecretWriter: createRunSecretWriter(secrets),
   });
   const env = runRuntimeEnvFromProcess(process.env);
+  env.tinyfishApiKey = serviceCredentials.tinyfishApiKey;
+  env.naceApiKey = serviceCredentials.naceApiKey;
   const boardEvents = createBoardEvents(realtime);
   const runtime =
     process.env.AGENT_RUNTIME === "scripted"
@@ -152,9 +158,12 @@ async function main() {
   const connectors = createConnectorRuntime(env, { prisma, secrets, events });
   // Never poll inbound here: Telegram allows a single getUpdates consumer,
   // and that is the API process, which owns the inbound sink.
-  const messagingPlatforms = messagingPlatformsFromEnv(messagingEnvFromProcess(process.env)).filter(
-    (platform) => platform.provider !== "slack" || !process.env.SLACK_CLIENT_ID,
-  );
+  const messagingPlatforms = messagingPlatformsFromEnv(
+    mergeServiceCredentialsIntoMessagingEnv(
+      messagingEnvFromProcess(process.env),
+      serviceCredentials,
+    ),
+  ).filter((platform) => platform.provider !== "slack" || !process.env.SLACK_CLIENT_ID);
   const legacyMessaging = isMessagingSurfaceEnabled(messagingPlatforms, {
     deploymentModelConfigured: env.deploymentModelConfigured,
     openSignup: process.env.MESSAGING_OPEN_SIGNUP === "true",

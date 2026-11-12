@@ -45,6 +45,7 @@ export * from "./runs.js";
 export * from "./search.js";
 export * from "./security-events.js";
 export * from "./server-headers.js";
+export * from "./service-credentials.js";
 export * from "./settings-scope.js";
 export * from "./space-availability.js";
 export * from "./terminal.js";

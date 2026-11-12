@@ -777,6 +777,8 @@ model DeploymentSettings {
   computerProvider                String?
   /// That provider's encrypted connection settings, owned by the deployment rather than a user.
   computerProviderCipher          String?
+  /// Service keys an admin saved in Settings, encrypted as one record owned by the deployment.
+  serviceCredentialsCipher        String?
   createdAt                       DateTime @default(now())
   updatedAt                       DateTime @updatedAt
 

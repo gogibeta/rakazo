@@ -206,6 +206,11 @@ import {
 } from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
 import { SecurityEventListInputSchema, SecurityEventSchema } from "./security-events.js";
+import {
+  ServiceCredentialsClearSchema,
+  ServiceCredentialsStatusSchema,
+  ServiceCredentialsUpdateSchema,
+} from "./service-credentials.js";
 import { SettingsScopeSchema, SpaceSettingSchema, settingsScopeInput } from "./settings-scope.js";
 import { SpaceAvailabilitySchema } from "./space-availability.js";
 
@@ -475,6 +480,12 @@ export const appContract = {
       get: oc.output(ComputerProviderSettingsSchema),
       update: oc.input(ComputerProviderUpdateSchema).output(ComputerProviderSettingsSchema),
     },
+  },
+  /** Admin-saved service keys for the deployment; only which keys are set is ever returned. */
+  serviceCredentials: {
+    get: oc.output(ServiceCredentialsStatusSchema),
+    update: oc.input(ServiceCredentialsUpdateSchema).output(ServiceCredentialsStatusSchema),
+    clear: oc.input(ServiceCredentialsClearSchema).output(ServiceCredentialsStatusSchema),
   },
   /** Redacted diagnostics report for the signed-in user, safe to copy and share for support. */
   diagnostics: {
