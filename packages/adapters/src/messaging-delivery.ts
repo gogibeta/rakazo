@@ -279,11 +279,11 @@ type ActivityMessage = { blocks: unknown; clientNonce?: string | null };
  * One evolving message per run on platforms that can edit: opened by the
  * progress mirror, refreshed in place as the run's steps accumulate, and
  * finalized by the end-of-run mirror. The outbox row is the whole state —
- * its body is always the newest summary, so a burst of progress mirrors
- * inside the edit interval stores one pending edit instead of queueing
- * several, and a stale summary is never sent after a newer one exists.
- * Platforms without the `edits` capability never get a row: their only
- * channel message stays the end-of-run delivery.
+ * its body is the summary the platform currently shows, and the next one
+ * is recomputed from the run's messages at every mirror, so a burst inside
+ * the edit interval queues nothing and a stale summary is never sent after
+ * a newer one exists. Platforms without the `edits` capability never get a
+ * row: their only channel message stays the end-of-run delivery.
  */
 async function mirrorRunActivity(
   deps: MessagingDeliveryDeps,
@@ -350,19 +350,13 @@ async function mirrorRunActivity(
     await reopenActivityRow(deps, existing.id, body);
     return;
   }
-  // Posted: the platform shows an older summary. Inside the edit interval
-  // only the stored body moves; the drain is handed the row again by a later
-  // mirror, so a burst collapses into at most one edit per interval.
-  if (existing.body === body && !final) return;
-  if (!final && Date.now() - updatedAtMs < MESSAGING_ACTIVITY_EDIT_INTERVAL_MS) {
-    if (existing.body !== body) {
-      await deps.prisma.messagingOutbound.update({
-        where: { id: existing.id },
-        data: { body },
-      });
-    }
-    return;
-  }
+  // Posted: the platform shows the stored body. Inside the edit interval
+  // the row is left untouched — the summary is recomputed from the run's
+  // messages at every mirror, so nothing is lost: the first mirror past
+  // the interval reopens the row with the then-latest body, and a burst
+  // collapses into at most one edit per interval.
+  if (existing.body === body) return;
+  if (!final && Date.now() - updatedAtMs < MESSAGING_ACTIVITY_EDIT_INTERVAL_MS) return;
   await reopenActivityRow(deps, existing.id, body);
 }
 

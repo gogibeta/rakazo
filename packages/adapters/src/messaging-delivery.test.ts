@@ -2627,14 +2627,14 @@ describe("run activity messages", () => {
     expect(String(activity?.body)).toContain("Reading the search results");
     expect(String(activity?.body)).toMatch(/Working for 2m 0\d+s/);
 
-    // A burst of new steps inside the edit interval updates the stored body
-    // only: no edit reaches the platform yet.
+    // A burst of new steps inside the edit interval queues nothing: no edit
+    // reaches the platform yet, and the row keeps the body already shown.
     messages.push(stepsMessage("m-steps-2", ["Drafting the answer"]));
     await mirrorMessagingProgress(deps, "run-1");
     await deliverMessagingOutbound(deps, {}, context);
     expect(deps.editMessage).not.toHaveBeenCalled();
     expect(deps.sendToThread).toHaveBeenCalledTimes(1);
-    expect(String(activity?.body)).toContain("Drafting the answer");
+    expect(String(activity?.body)).not.toContain("Drafting the answer");
 
     // Once the interval has passed, the next mirror produces exactly one
     // edit carrying the latest body.
