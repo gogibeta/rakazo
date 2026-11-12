@@ -83,6 +83,25 @@ const SKILLS: Array<{ name: string; description: string; body: string }> = [
 6. Report the root cause in one or two sentences, the fix, and the evidence from step 5. If the cause turned out to be environmental or external, say so and show the evidence rather than changing code anyway.`,
   },
   {
+    name: "Checkpoints",
+    description: "Snapshot a workspace before edits and restore it if things go wrong",
+    body: `Give coding work an undo button: snapshot the workspace into a shadow git repo before substantial edits, and restore from a snapshot when asked or when a change goes wrong. The project's own .git is never touched: every command below runs with GIT_DIR and GIT_WORK_TREE set, which redirects git to the shadow repo for that command only.
+
+Setup (once per workspace): let WS be the workspace's absolute path and GD be "$HOME/.rakazo/checkpoints/$(printf %s "$WS" | sha256sum | cut -c1-10)/gitdir". Create GD's parent directory, then with GIT_DIR=$GD and GIT_WORK_TREE=$WS exported: git init "$GD" if it does not exist, and set a local identity (user.name "Rakazo Checkpoints", user.email "checkpoints@rakazo.local") so commits never fail or leak into the user's git config.
+
+Snapshot: with the same environment, git add -A and git commit -m "checkpoint <label>" where the label says what is about to happen (for example "before auth refactor"). Report the commit's short SHA (git rev-parse --short HEAD). git add respects the workspace's .gitignore, so dependencies, build output and ignored secrets are not captured: say so when it matters, and never force-add ignored files.
+
+List: git log --oneline shows the snapshots for this workspace, newest first.
+
+Restore (only when the user asks, or after asking): 
+1. Take a safety snapshot of the current state first, labelled "safety before restore", and note its SHA: a restore is itself undoable.
+2. git restore --source=<target SHA> --worktree -- . puts back every file the target tracked.
+3. Files created after the target are still on disk: find them with git diff --name-only --diff-filter=A <target SHA> <safety SHA> and delete exactly those (they remain in the safety snapshot).
+4. Show git status against the shadow repo and the restored file contents for the key files, and report what was restored and what was removed.
+
+Guardrails: checkpoints are a local safety net, not version control for the project: never push the shadow repo, never use it to change the project's branches or history, and if the workspace is the user's home directory, warn that the snapshot covers the whole home tree before proceeding.`,
+  },
+  {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",
     body: `Answer questions about Rakazo itself from its docs. Fetch the matching page with web_fetch before answering, then answer briefly in your own words and link the page. If fetching fails or is unavailable, answer only what this index says and link the page. Never invent menus, buttons, or steps the page doesn't show. Account-specific facts (credit balance, plan, usage) aren't in the docs: point to the screen that shows them.
