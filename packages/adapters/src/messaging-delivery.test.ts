@@ -150,6 +150,8 @@ function createDeps(overrides: {
   /** Source messages the drain re-reads by id (ask rows check theirs live). */
   sourceMessages?: Record<string, unknown>;
   appOrigin?: string;
+  /** The routine a routine-triggered run belongs to; null once deleted. */
+  routine?: Record<string, unknown> | null;
 }) {
   const rows = [...(overrides.outboundRows ?? [])] as Array<Record<string, unknown>>;
   const { messaging, sendToThread, openDirectThread, editMessage } = createFakeSurface(
@@ -174,6 +176,13 @@ function createDeps(overrides: {
     run: {
       findUnique: vi.fn(async () => overrides.run ?? messagingRun),
       updateMany: vi.fn(async () => ({ count: 1 })),
+    },
+    routine: {
+      findUnique: vi.fn(async () =>
+        overrides.routine === undefined
+          ? { name: "Morning digest", deliverResultToChat: true }
+          : overrides.routine,
+      ),
     },
     message: {
       findUnique: vi.fn(
@@ -977,6 +986,123 @@ describe("deliverMessagingOutbound", () => {
     expect(deps.sendToThread).not.toHaveBeenCalled();
     expect(deps.rows[0]).toEqual(expect.objectContaining({ status: "sent" }));
     expect(deps.jobs.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe("deliverMessagingOutbound routine results", () => {
+  const routineRun = {
+    id: "run-1",
+    botId: "bot-1",
+    userId: "user-1",
+    trigger: "routine",
+    status: "completed",
+    error: null,
+    routineId: "routine-1",
+    sourceMessage: null,
+  };
+
+  it("sends a finished routine run's result to the owner's linked DM when the routine opted in", async () => {
+    const deps = createDeps({ run: routineRun, appOrigin: "https://app.example.com" });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledTimes(1);
+    expect(deps.sendToThread).toHaveBeenCalledWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Morning digest finished.\n\nHello from your bot\n\nView in Rakazo: https://app.example.com/app/bot-1",
+      },
+      context,
+    );
+    expect(deps.rows).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "routine:run-1",
+        kind: "dm",
+        identityId: "mi-1",
+        status: "sent",
+        sourceMessageId: null,
+      }),
+    ]);
+  });
+
+  it("sends the result only once when the run is mirrored again", async () => {
+    const deps = createDeps({ run: routineRun });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledTimes(1);
+    expect(deps.rows).toHaveLength(1);
+  });
+
+  it("sends nothing when the routine has not opted in", async () => {
+    const deps = createDeps({
+      run: routineRun,
+      routine: { name: "Morning digest", deliverResultToChat: false },
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.rows).toEqual([]);
+  });
+
+  it("reports a failed run with its error", async () => {
+    const deps = createDeps({
+      run: { ...routineRun, status: "failed", error: "The model refused the request." },
+      messages: [],
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledTimes(1);
+    expect(deps.rows[0]?.body).toBe(
+      "Morning digest failed.\n\nThe model refused the request.\n\nView it in the Rakazo app.",
+    );
+  });
+
+  it("sends nothing before the run is over, and never from the progress mirror", async () => {
+    const running = createDeps({ run: { ...routineRun, status: "running" } });
+    await deliverMessagingOutbound(running, { runId: "run-1" }, context);
+    expect(running.sendToThread).not.toHaveBeenCalled();
+    expect(running.rows).toEqual([]);
+
+    const progress = createDeps({ run: routineRun });
+    await mirrorMessagingProgress(progress, "run-1");
+    expect(progress.sendToThread).not.toHaveBeenCalled();
+    expect(progress.rows).toEqual([]);
+  });
+
+  it("sends nothing when the owner has no linked chat", async () => {
+    const deps = createDeps({ run: routineRun, identity: null });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.rows).toEqual([]);
+  });
+
+  it("keeps another member's routine run out of the linked person's DM", async () => {
+    const deps = createDeps({ run: { ...routineRun, userId: "user-2" } });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.rows).toEqual([]);
+  });
+
+  it("sends nothing to a WhatsApp identity, which cannot open a conversation proactively", async () => {
+    const deps = createDeps({ run: routineRun, identity: { provider: "whatsapp" } });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.rows).toEqual([]);
+  });
+
+  it("sends nothing when the routine is gone or the run is not tied to one", async () => {
+    const deleted = createDeps({ run: routineRun, routine: null });
+    await deliverMessagingOutbound(deleted, { runId: "run-1" }, context);
+    expect(deleted.sendToThread).not.toHaveBeenCalled();
+    expect(deleted.rows).toEqual([]);
+
+    const unlinked = createDeps({ run: { ...routineRun, routineId: null } });
+    await deliverMessagingOutbound(unlinked, { runId: "run-1" }, context);
+    expect(unlinked.sendToThread).not.toHaveBeenCalled();
+    expect(unlinked.rows).toEqual([]);
   });
 });
 

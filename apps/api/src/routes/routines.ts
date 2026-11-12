@@ -270,6 +270,7 @@ export function routinesRoutes(ctx: RouterContext) {
               notify: input.notify,
               webhookEnabled: input.webhookEnabled,
               githubEnabled: input.githubEnabled,
+              deliverResultToChat: input.deliverResultToChat,
               messageProvider: input.messageProvider,
               emailSenders: input.emailSenders,
               ...(touchesModel ? { modelProvider, modelId, thinkingLevel } : {}),

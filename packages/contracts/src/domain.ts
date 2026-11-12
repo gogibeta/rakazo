@@ -575,6 +575,8 @@ export const RoutineSchema = z.object({
   notify: z.boolean(),
   webhookEnabled: z.boolean(),
   githubEnabled: z.boolean(),
+  /** Opt-in chat delivery of each finished run's result; absent on older servers. */
+  deliverResultToChat: z.boolean().default(false),
   messageProvider: z
     .string()
     .min(1)
@@ -611,6 +613,7 @@ export const CreateRoutineInput = z
     active: z.boolean().default(false),
     webhookEnabled: z.boolean().default(false),
     githubEnabled: z.boolean().default(false),
+    deliverResultToChat: z.boolean().default(false),
     messageProvider: z
       .string()
       .min(1)

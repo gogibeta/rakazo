@@ -1532,6 +1532,8 @@ model Routine {
   notify         Boolean   @default(true)
   webhookEnabled Boolean   @default(false)
   githubEnabled  Boolean   @default(false)
+  /// Opt-in: a finished run's result also goes to the owner's linked chat app.
+  deliverResultToChat Boolean @default(false)
   messageProvider String?
   /// Email trigger: whose authenticated mail starts it ("owner" or "domain"); null without one.
   emailSenders   String?

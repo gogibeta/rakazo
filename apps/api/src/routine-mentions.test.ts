@@ -23,6 +23,7 @@ const routine = (botId: string, id: string) => ({
   notify: true,
   webhookEnabled: false,
   githubEnabled: false,
+  deliverResultToChat: false,
   messageProvider: null,
   modelProvider: null,
   modelId: null,

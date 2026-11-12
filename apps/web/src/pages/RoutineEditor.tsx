@@ -142,6 +142,18 @@ export function RoutineEditor({
         </div>
       </div>
 
+      <label
+        htmlFor={`${fieldId}-chat-delivery`}
+        className="mb-5 flex items-center gap-2.5 text-body text-foreground/75"
+      >
+        <Switch
+          id={`${fieldId}-chat-delivery`}
+          checked={draft.deliverResultToChat}
+          onCheckedChange={(deliverResultToChat) => onChange({ ...draft, deliverResultToChat })}
+        />
+        <Trans>Send results to my chat apps</Trans>
+      </label>
+
       {draft.active && scheduleDelayed ? (
         <p role="status" className="mb-5 text-body text-warning">
           <Trans>Schedule delayed</Trans>

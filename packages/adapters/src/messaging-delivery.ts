@@ -163,7 +163,11 @@ async function mirrorRun(
     }
   } else if (progress || run.trigger !== "bot_message") {
     // Mirror inbound messaging runs and, once they end, delegated bot_message replies only.
-    // Do not push in-app user/routine runs out to the linked chat.
+    // Do not push in-app user runs out to the linked chat; a finished routine
+    // run is the one exception, and only when its routine opted in.
+    if (!progress && run.trigger === "routine") {
+      await mirrorRoutineResult(deps, run);
+    }
     return;
   }
 
@@ -257,6 +261,87 @@ async function mirrorRun(
     await insertOutboundRows(deps.prisma, { identityId: identity.id }, rows);
   }
   await mirrorRunActivity(deps, run, identity, messages, !progress);
+}
+
+/** Chat-sized cap for a routine result sent as one message. */
+const ROUTINE_RESULT_MAX_LENGTH = 2_000;
+
+/**
+ * A finished routine run's result for the owner's linked DM, queued as one
+ * outbox row the drain sends like any other DM. Only the end-of-run mirror
+ * calls this, and only for a run that is actually over: a run paused on a
+ * question or still going has no result yet, and its later mirrors queue
+ * nothing. The row's key is the run, so a re-mirror after a crash queues
+ * nothing twice. No identity for the bot, or an identity that belongs to
+ * someone else (a shared Space), means no delivery — the same guard as the
+ * bot_message mirror.
+ */
+async function mirrorRoutineResult(
+  deps: MessagingDeliveryDeps,
+  run: {
+    id: string;
+    botId: string;
+    userId: string;
+    status: string;
+    error: string | null;
+    routineId: string | null;
+  },
+): Promise<void> {
+  if (!run.routineId) return;
+  if (run.status !== "completed" && run.status !== "failed") return;
+  const routine = await deps.prisma.routine.findUnique({
+    where: { id: run.routineId },
+    select: { name: true, deliverResultToChat: true },
+  });
+  if (!routine?.deliverResultToChat) return;
+  const identity = await deps.prisma.messagingIdentity.findUnique({
+    where: { botId: run.botId },
+  });
+  if (!identity || identity.userId !== run.userId) return;
+  // A proactive WhatsApp message outside the 24-hour window needs a template
+  // this deployment does not have, so WhatsApp identities wait for that.
+  if (identity.provider === "whatsapp") return;
+  const messages = await deps.prisma.message.findMany({
+    where: { runId: run.id, role: "bot" },
+    orderBy: { seq: "asc" },
+  });
+  const linkedPages = linkedPageIds(messages);
+  const text = messages
+    .map((message) => extractText(message.blocks, linkedPages))
+    .filter((part) => part.length > 0)
+    .join("\n\n");
+  await insertOutboundRows(deps.prisma, { identityId: identity.id }, [
+    {
+      idempotencyKey: `routine:${run.id}`,
+      kind: "dm",
+      identityId: identity.id,
+      body: routineResultBody(deps, routine.name, run, text),
+      sourceMessageId: null,
+    },
+  ]);
+}
+
+/**
+ * The routine result as one chat message: how the run ended, what it
+ * produced, and the way back into the app. The middle is clipped first, so
+ * the status line and the link survive a long result.
+ */
+function routineResultBody(
+  deps: MessagingDeliveryDeps,
+  name: string,
+  run: { status: string; error: string | null; botId: string },
+  text: string,
+): string {
+  const head = run.status === "failed" ? `${name} failed.` : `${name} finished.`;
+  const link = appBotUrl(deps.appOrigin, run.botId);
+  const tail = link ? `View in Rakazo: ${link}` : "View it in the Rakazo app.";
+  const middle = [
+    ...(run.status === "failed" && run.error ? [run.error] : []),
+    ...(text ? [text] : []),
+  ].join("\n\n");
+  const budget = ROUTINE_RESULT_MAX_LENGTH - head.length - tail.length - 4;
+  const clipped = middle ? truncate(middle, Math.max(0, budget)) : "";
+  return [head, ...(clipped ? [clipped] : []), tail].join("\n\n");
 }
 
 /** Step lines an activity message shows; older steps collapse into a count. */
