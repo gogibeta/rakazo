@@ -49,13 +49,16 @@ To combine [TinyFish](https://docs.tinyfish.ai) with the keyless default, set
 `WEB_PROVIDER=tinyfish-ddg` and restart both the API and worker. Search then merges TinyFish's
 live, browser-rendered results with the DuckDuckGo results (TinyFish first, duplicates removed),
 and page reads prefer TinyFish's rendered extraction, falling back to local Readability when it
-fails. This needs a TinyFish API key: create one free at
-[agent.tinyfish.ai](https://agent.tinyfish.ai) and set `TINYFISH_API_KEY` on the API and worker.
-Without the key the combined provider behaves exactly like the keyless default, so it is safe to
-select before the key exists. This option sends search queries and requested page URLs to
-TinyFish, which retrieves pages on its servers.
+fails. The key saved in Settings (see "Service keys" below) is a [Monid](https://monid.ai) API
+key: search and page reads then run through Monid on TinyFish's free endpoints, so they cost
+nothing. A direct TinyFish API key (create one free at
+[agent.tinyfish.ai](https://agent.tinyfish.ai)) can be set as `TINYFISH_API_KEY` on the API and
+worker instead; the environment variable wins when both are set. Without any key the combined
+provider behaves exactly like the keyless default, so it is safe to select before the key exists.
+This option sends search queries and requested page URLs to TinyFish (through Monid when the
+saved key is used), which retrieves pages on its servers.
 
-The TinyFish and Nace keys, and the Telegram and WhatsApp credentials from the messaging
+The Monid and Nace keys, and the Telegram and WhatsApp credentials from the messaging
 table below, can also be saved by an admin in Settings → Organization under "Service keys"
 instead of setting the environment variables. Saved keys are stored encrypted on the
 deployment, are read when the API and worker start, and a set environment variable always

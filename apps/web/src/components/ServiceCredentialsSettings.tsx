@@ -55,7 +55,7 @@ export function ServiceCredentialsSettings() {
   }
 
   const fields: Array<{ key: ServiceCredentialKey; label: string }> = [
-    { key: "tinyfishApiKey", label: t`TinyFish API key` },
+    { key: "tinyfishApiKey", label: t`Monid API key (TinyFish)` },
     { key: "naceApiKey", label: t`Nace API key` },
     { key: "telegramBotToken", label: t`Telegram bot token` },
     { key: "telegramWebhookSecret", label: t`Telegram webhook secret` },

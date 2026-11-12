@@ -5,6 +5,7 @@ import { FakeWebProvider } from "./fake-web.js";
 import { KeenableWebProvider } from "./keenable-web.js";
 import { keenableMcpFixture } from "./keenable-web.test-support.js";
 import { KeylessHttpWebProvider, parseDuckDuckGoResults } from "./keyless-http-web.js";
+import { MonidWebProvider } from "./monid-web.js";
 import { ParallelWebProvider } from "./parallel-web.js";
 import { parallelMcpFixture } from "./parallel-web.test-support.js";
 import { TinyFishWebProvider } from "./tinyfish-web.js";
@@ -71,6 +72,43 @@ describe("web provider conformance", () => {
     };
     await assertWebConformance(
       new TinyFishWebProvider({
+        apiKey: "test-key",
+        fetch: fetchMock,
+        resolveHostname: publicResolver,
+      }),
+    );
+  });
+  it("holds for TinyFish through Monid with an injected transport (offline)", async () => {
+    const fetchMock: typeof fetch = async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as { endpoint?: string };
+      const output =
+        request.endpoint === "/free/fetch"
+          ? {
+              results: [
+                {
+                  url: "https://example.test/page",
+                  final_url: "https://example.test/page",
+                  title: "Hit",
+                  text: "Rendered body text for conformance.",
+                },
+              ],
+              errors: [],
+            }
+          : {
+              results: [{ url: "https://example.test/page", title: "Hit", snippet: "Snippet" }],
+            };
+      return new Response(
+        JSON.stringify({
+          runId: "run-1",
+          status: "COMPLETED",
+          output,
+          providerResponse: { httpStatus: 200 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    await assertWebConformance(
+      new MonidWebProvider({
         apiKey: "test-key",
         fetch: fetchMock,
         resolveHostname: publicResolver,
