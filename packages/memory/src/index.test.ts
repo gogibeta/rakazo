@@ -1,6 +1,7 @@
 import type { AdapterContext } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownMemoryStore } from "./index.js";
+import { chunkContent } from "./ranking.js";
 
 const context: AdapterContext = {
   operationId: "read-memory",
@@ -163,11 +164,11 @@ describe("memory store contract shape", () => {
     });
   });
 
-  // Phase 2 acceptance test, skipped on purpose: ranking here is lexical, so
-  // it cannot know "budget" and "spend limit" are the same topic. Chunked
-  // retrieval with curated synonym expansion (memory phase 2) owns this case;
-  // unskip it there.
-  it.skip("finds a note by meaning: 'budget' matches text that only says 'spend limit'", async () => {
+  // Phase 2 acceptance test: the curated synonym list (synonyms.ts) names
+  // "budget" and "spend limit" as the same topic, so the chunk channel finds
+  // this note. Anything the list does not name still gets no expansion —
+  // ranking stays lexical, stemming plus fuzzy plus this fixed dictionary.
+  it("finds a note through a curated synonym: 'budget' matches text that only says 'spend limit'", async () => {
     const { store } = searchStore([
       {
         id: "memory-spend",
@@ -179,6 +180,106 @@ describe("memory store contract shape", () => {
     ]);
     const results = await store.search({ query: "budget", scope: "user" }, context);
     expect(results.map((result) => result.path)).toEqual(["spend.md"]);
+  });
+
+  it("ranks a synonym-only match below a direct hit on the same query", async () => {
+    const { store } = searchStore([
+      {
+        id: "memory-direct",
+        path: "direct.md",
+        content: "The budget is set for the year and the team follows it closely.",
+        revision: 1,
+        updatedAt: new Date("2026-08-16T10:00:00.000Z"),
+      },
+      {
+        id: "memory-synonym",
+        path: "synonym.md",
+        content: "Set a spend limit for travel and stick to it this year.",
+        revision: 1,
+        updatedAt: new Date("2026-08-16T11:00:00.000Z"),
+      },
+    ]);
+    const results = await store.search({ query: "budget", scope: "user" }, context);
+    expect(results.map((result) => result.path)).toEqual(["direct.md", "synonym.md"]);
+    expect(results[0]!.score).toBeGreaterThan(results[1]!.score);
+  });
+
+  it("tolerates a typo through trigram similarity, and only for near words", async () => {
+    const { store } = searchStore();
+    const results = await store.search({ query: "budjet", scope: "user" }, context);
+    expect(results.map((result) => result.path)).toEqual(["strong.md", "weak.md"]);
+    const { store: identifierOnly } = searchStore([searchDocs[2]!]);
+    await expect(
+      identifierOnly.search({ query: "budjet", scope: "user" }, context),
+    ).resolves.toEqual([]);
+  });
+
+  it("surfaces a long document whose one dense section carries the term", async () => {
+    // Six mentions sit in a short Costs section of a long planning note.
+    // Whole-document scoring dilutes them below the short memo's single
+    // mention; the best-chunk score is what lifts the note back on top.
+    const filler = Array.from(
+      { length: 16 },
+      () =>
+        "The group talked about venues and catering and travel days and the draft agenda for the retreat.",
+    ).join(" ");
+    const { store } = searchStore([
+      {
+        id: "memory-long",
+        path: "long.md",
+        content:
+          `# Planning notes\n\n${filler}\n\n## Costs\n\n` +
+          "budget budget budget budget budget budget for the whole team this quarter." +
+          `\n\n## Wrap up\n\n${filler}`,
+        revision: 1,
+        updatedAt: new Date("2026-08-16T10:00:00.000Z"),
+      },
+      {
+        id: "memory-short",
+        path: "short.md",
+        content: "Budget is noted in this short memo for the team.",
+        revision: 1,
+        updatedAt: new Date("2026-08-16T11:00:00.000Z"),
+      },
+    ]);
+    const results = await store.search({ query: "budget", scope: "user" }, context);
+    expect(results.map((result) => result.path)).toEqual(["long.md", "short.md"]);
+  });
+
+  it("keeps every phase 1 result on the phase 1 fixtures (recall floor)", async () => {
+    // Expected orders are what the phase-1 scorer returned for these
+    // fixtures; the fused scorer must return the same documents, with the
+    // phase-1 winner still first and no widening on the strict queries.
+    const expectations: Array<[string, string[]]> = [
+      ["budget", ["strong.md", "weak.md"]],
+      ["budgets", ["strong.md", "weak.md"]],
+      ["budget review", ["strong.md", "weak.md"]],
+      ["quarterly budget", ["strong.md"]],
+      ["rkz-deploy-9f2", ["identifier.md"]],
+    ];
+    const { store } = searchStore();
+    for (const [query, paths] of expectations) {
+      const results = await store.search({ query, scope: "user" }, context);
+      expect(results.map((result) => result.path)).toEqual(paths);
+    }
+  });
+
+  it("lists the fixtures untouched for an empty search in phase 2 as well", async () => {
+    const { store } = searchStore();
+    const results = await store.search({ query: "   ", scope: "user" }, context);
+    expect(results.map((result) => result.path)).toEqual(["weak.md", "strong.md", "identifier.md"]);
+    expect(results.every((result) => result.score === 1)).toBe(true);
+  });
+
+  it("chunks on headings, and packs heading-less text by paragraphs under the cap", () => {
+    const headed = chunkContent("# Alpha\n\nfirst section\n\n## Beta\n\nsecond section");
+    expect(headed).toHaveLength(2);
+    expect(headed[0]).toContain("Alpha");
+    expect(headed[1]).toContain("Beta");
+    const paragraph = "word ".repeat(100).trim();
+    const packed = chunkContent(Array.from({ length: 6 }, () => paragraph).join("\n\n"));
+    expect(packed.length).toBeGreaterThan(1);
+    expect(packed.every((chunk) => chunk.length <= 1200)).toBe(true);
   });
 
   it("returns false for a missing user document without touching bot memory", async () => {

@@ -178,4 +178,27 @@ describePostgres("memory search (PostgreSQL)", () => {
     ]);
     expect(results.every((result) => result.score === 1)).toBe(true);
   });
+
+  it("tolerates a typo through trigram similarity", async () => {
+    const results = await search(context, "budjet", "user");
+    expect(results.map((result) => result.path)).toEqual(["strong.md", "weak.md"]);
+  });
+
+  it("finds a note through a curated synonym, below the direct hits, without leaking scopes", async () => {
+    await save(context, "spend.md", "Set a spend limit for travel and stick to it.");
+    try {
+      const results = await search(context, "budget", "user");
+      const synonym = results.find((result) => result.path === "spend.md");
+      const direct = results.find((result) => result.path === "strong.md");
+      expect(synonym).toBeDefined();
+      expect(direct).toBeDefined();
+      expect(synonym!.score).toBeLessThan(direct!.score);
+      const bot = await search(context, "budget", "bot");
+      expect(bot.map((result) => result.path)).toEqual(["bot-budget.md"]);
+    } finally {
+      await runAsSystem("memory search test", () =>
+        store.remove({ scope: "user", path: "spend.md" }, context),
+      );
+    }
+  });
 });
