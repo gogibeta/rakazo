@@ -4,6 +4,7 @@ import { SpaceDeletionInProgressError } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { MessagingInboundDeps } from "./messaging-inbound.js";
 import {
+  answerMessagingAskAction,
   createMessagingInboundHandler,
   messagingMessageForAction,
   teamChatSenderCanWakeMessageRoutines,
@@ -25,6 +26,19 @@ function createDeps(
     routines?: Array<{ id: string; name: string; prompt: string }>;
     storeAttachment?: MessagingInboundDeps["storeAttachment"];
     transcribe?: MessagingInboundDeps["transcribe"];
+    /** Bot messages carrying ask blocks, readable by id and by run. */
+    askMessages?: Array<{
+      id: string;
+      threadId?: string;
+      runId?: string | null;
+      role?: string;
+      blocks: unknown;
+    }>;
+    /** The thread's waiting_input run the text-answer path looks up, if any. */
+    waitingRunId?: string | null;
+    /** What the answer path reports; false means the app answered first. */
+    answerResult?: boolean;
+    webOrigin?: string;
   } = {},
 ) {
   const identity =
@@ -47,6 +61,7 @@ function createDeps(
   const sendUserMessage = vi.fn(
     async () => overrides.sendResult ?? { messageId: "msg-1", runId: "run-1", seq: 3 },
   );
+  const answerRunInput = vi.fn(async () => overrides.answerResult ?? true);
   const notify = vi.fn(async () => undefined);
   const enqueue = vi.fn(async () => undefined);
   const acknowledge = vi.fn<MessagingReceipts["acknowledge"]>();
@@ -132,10 +147,28 @@ function createDeps(
     bot: { findUnique: vi.fn(async () => ({ name: "Chief" })) },
     run: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => runs.get(where.id) ?? null),
+      findFirst: vi.fn(async () =>
+        overrides.waitingRunId ? { id: overrides.waitingRunId } : null,
+      ),
     },
     message: {
-      findMany: vi.fn(async ({ where }: { where: { runId: string } }) =>
-        botReplies.filter((reply) => reply.runId === where.runId).map(({ id }) => ({ id })),
+      findMany: vi.fn(async ({ where }: { where: { runId: string } }) => {
+        const asks = (overrides.askMessages ?? []).filter((m) => m.runId === where.runId);
+        if (asks.length) return asks;
+        return botReplies.filter((reply) => reply.runId === where.runId).map(({ id }) => ({ id }));
+      }),
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }) =>
+          (overrides.askMessages ?? []).find((m) => m.id === where.id) ?? null,
+      ),
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string; threadId?: string; role?: string } }) =>
+          (overrides.askMessages ?? []).find(
+            (m) =>
+              m.id === where.id &&
+              (where.threadId === undefined || (m.threadId ?? "thread-1") === where.threadId) &&
+              (where.role === undefined || (m.role ?? "bot") === where.role),
+          ) ?? null,
       ),
     },
     routine: { findMany: vi.fn(async () => overrides.routines ?? []) },
@@ -344,17 +377,19 @@ function createDeps(
   };
   return {
     prisma,
-    events: { sendUserMessage, notify },
+    events: { sendUserMessage, notify, answerRunInput },
     jobs: { enqueue },
     provision,
     openSignup: true,
     signupPolicy,
+    webOrigin: overrides.webOrigin,
     acknowledge,
     storeAttachment: overrides.storeAttachment,
     transcribe: overrides.transcribe,
     runs,
     botReplies,
     sendUserMessage,
+    answerRunInput,
     notify,
     enqueue,
     outboundRows,
@@ -364,6 +399,7 @@ function createDeps(
     linkCodes,
   } as unknown as MessagingInboundDeps & {
     sendUserMessage: ReturnType<typeof vi.fn>;
+    answerRunInput: ReturnType<typeof vi.fn>;
     notify: ReturnType<typeof vi.fn>;
     enqueue: ReturnType<typeof vi.fn>;
     acknowledge: typeof acknowledge;
@@ -3281,5 +3317,239 @@ describe("teamChatSenderCanWakeMessageRoutines", () => {
         senderIsBot: true,
       }),
     ).resolves.toBe(false);
+  });
+});
+
+describe("ask answers in chat", () => {
+  const approvalAsk = {
+    kind: "ask",
+    approvalEffectId: "effect-1",
+    text: "Send this email?",
+    status: "pending",
+    actions: [
+      { id: "allow", label: "Allow once" },
+      { id: "always", label: "Always allow this tool" },
+      { id: "deny", label: "Deny" },
+    ],
+  };
+  const choiceAsk = {
+    kind: "ask",
+    text: "Which flight should I book?",
+    status: "pending",
+    actions: [
+      { id: "morning", label: "Morning flight" },
+      { id: "evening", label: "Evening flight" },
+    ],
+  };
+  const secretAsk = {
+    kind: "ask",
+    text: "Code for example.com",
+    input: "secret",
+    status: "pending",
+  };
+  const askMessage = (blocks: unknown, extra?: Record<string, unknown>) => ({
+    id: "m-ask",
+    threadId: "thread-1",
+    runId: "run-1",
+    role: "bot",
+    blocks,
+    ...extra,
+  });
+  const askTap = (value: string, actionId = "ask"): MessagingInboundAction => ({
+    type: "action",
+    provider: "sendblue",
+    handle: `tap-${actionId}-${value}`,
+    threadId: "sendblue:dm-1",
+    isDirect: true,
+    from: "+15551111111",
+    fromLabel: null,
+    actionId,
+    value,
+    messageId: "m-ask",
+  });
+
+  it("answers an approval tap through the app answer path and confirms in chat", async () => {
+    const deps = createDeps({ askMessages: [askMessage([approvalAsk])] });
+
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:0"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).toHaveBeenCalledExactlyOnceWith({
+      spaceId: "ws-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      messageId: "m-ask",
+      answeredByUserId: "user-1",
+      answer: "allow",
+    });
+    expect(deps.enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "run.continue", payload: { runId: "run-1" } }),
+    );
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "ask-receipt:m-ask",
+        kind: "dm",
+        identityId: "mi-1",
+        body: "✓ Allow once",
+      }),
+    ]);
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("answers a choice tap with the tapped option", async () => {
+    const deps = createDeps({ askMessages: [askMessage([choiceAsk])] });
+
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:1"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ messageId: "m-ask", answer: "evening" }),
+    );
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({ idempotencyKey: "ask-receipt:m-ask", body: "✓ Evening flight" }),
+    ]);
+  });
+
+  it("reports a tap on an already-answered ask once, then stays silent", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([{ ...approvalAsk, status: "answered" }])],
+    });
+
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:0"))).resolves.toBe(true);
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:0"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).not.toHaveBeenCalled();
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "ask-receipt:m-ask",
+        body: "That question was already answered.",
+      }),
+    ]);
+  });
+
+  it("reports a tap that lost the race with the app, without re-answering", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([approvalAsk])],
+      answerResult: false,
+    });
+
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:2"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ answer: "deny" }),
+    );
+    expect(deps.enqueue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: "run.continue" }),
+    );
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "ask-receipt:m-ask",
+        body: "That question was already answered.",
+      }),
+    ]);
+  });
+
+  it("never answers a secret ask from a tap, only points at the app", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([secretAsk])],
+      webOrigin: "https://chat.example.com",
+    });
+
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:0"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).not.toHaveBeenCalled();
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "ask-receipt:m-ask",
+        body: "Code for example.com\n\nAnswer securely in Rakazo: https://chat.example.com/app/bot-1",
+      }),
+    ]);
+  });
+
+  it("leaves other actions and malformed ask values to the normal path", async () => {
+    const deps = createDeps({ askMessages: [askMessage([approvalAsk])] });
+
+    await expect(answerMessagingAskAction(deps, askTap("YES", "approve"))).resolves.toBe(false);
+    await expect(answerMessagingAskAction(deps, askTap("hello"))).resolves.toBe(false);
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:99"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).not.toHaveBeenCalled();
+    expect(deps.outboundRows).toEqual([]);
+  });
+
+  it("consumes an ask tap from an unlinked address without acting", async () => {
+    const deps = createDeps({ identity: null, askMessages: [askMessage([approvalAsk])] });
+
+    await expect(answerMessagingAskAction(deps, askTap("m-ask:0"))).resolves.toBe(true);
+
+    expect(deps.answerRunInput).not.toHaveBeenCalled();
+    expect(deps.outboundRows).toEqual([]);
+    expect(deps.provision).not.toHaveBeenCalled();
+  });
+
+  it("answers a choice question from a bare number in a DM", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([choiceAsk])],
+      waitingRunId: "run-1",
+    });
+    const handle = createMessagingInboundHandler(deps);
+
+    await handle({ ...dmEvent, content: "2" });
+
+    expect(deps.answerRunInput).toHaveBeenCalledExactlyOnceWith({
+      spaceId: "ws-1",
+      threadId: "thread-1",
+      runId: "run-1",
+      messageId: "m-ask",
+      answeredByUserId: "user-1",
+      answer: "evening",
+    });
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+    expect(deps.outboundRows).toEqual([
+      expect.objectContaining({ idempotencyKey: "ask-receipt:m-ask", body: "✓ Evening flight" }),
+    ]);
+  });
+
+  it("answers a choice question from the option's own words in a DM", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([choiceAsk])],
+      waitingRunId: "run-1",
+    });
+    const handle = createMessagingInboundHandler(deps);
+
+    await handle({ ...dmEvent, content: "Morning flight" });
+
+    expect(deps.answerRunInput).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ answer: "morning" }),
+    );
+    expect(deps.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("never answers an approval from DM text; the text stays a message", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([approvalAsk])],
+      waitingRunId: "run-1",
+    });
+    const handle = createMessagingInboundHandler(deps);
+
+    await handle({ ...dmEvent, content: "1" });
+
+    expect(deps.answerRunInput).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ blocks: [{ kind: "text", text: "1" }] }),
+    );
+  });
+
+  it("never answers a secret ask from DM text; the text stays a message", async () => {
+    const deps = createDeps({
+      askMessages: [askMessage([secretAsk])],
+      waitingRunId: "run-1",
+    });
+    const handle = createMessagingInboundHandler(deps);
+
+    await handle({ ...dmEvent, content: "123456" });
+
+    expect(deps.answerRunInput).not.toHaveBeenCalled();
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ blocks: [{ kind: "text", text: "123456" }] }),
+    );
   });
 });

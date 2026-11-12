@@ -19,7 +19,11 @@ import { getLogger } from "@rakazo/logging";
 import type { Hono } from "hono";
 import { storeInboundAttachment } from "./artifacts.js";
 import type { AppEnv } from "./env.js";
-import { createMessagingInboundHandler, messagingMessageForAction } from "./messaging-inbound.js";
+import {
+  answerMessagingAskAction,
+  createMessagingInboundHandler,
+  messagingMessageForAction,
+} from "./messaging-inbound.js";
 import { createMessagingReceipts } from "./messaging-receipts.js";
 import { mountMessagingWebhookRoutes } from "./messaging-webhook.js";
 import { TeamChatBridge } from "./team-chat-bridge.js";
@@ -77,6 +81,7 @@ export async function startMessagingRuntime({
     events,
     jobs,
     sandbox,
+    webOrigin: env.webOrigin,
     provision: (request, policyEnv) => provisionMessagingIdentity(prisma, request, policyEnv),
     openSignup: env.messagingOpenSignup,
     signupPolicy: {
@@ -277,6 +282,18 @@ export async function startMessagingRuntime({
       await applyMessagingOutboundStatus(prisma, event);
       return;
     }
+    // A tap on an ask card is the person's answer to a pending question, not
+    // a chat message: its payload names the question and the chosen option,
+    // so it resolves here, before any command-word or message routing can
+    // misread it. Ask cards only ever go to the personal line's DMs, never
+    // to an installed team-chat surface.
+    if (
+      event.type === "action" &&
+      event.isDirect &&
+      !event.installationId &&
+      (await answerMessagingAskAction(inboundDeps, event))
+    )
+      return;
     // A button tap is the person's answer to a message the bot sent; from
     // here it flows exactly like their next message in that conversation.
     const message = event.type === "action" ? messagingMessageForAction(event) : event;

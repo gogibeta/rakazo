@@ -136,6 +136,9 @@ function createDeps(overrides: {
   connectionStatus?: string | null;
   blockedBot?: string;
   artifacts?: Array<Record<string, unknown>>;
+  /** Source messages the drain re-reads by id (ask rows check theirs live). */
+  sourceMessages?: Record<string, unknown>;
+  appOrigin?: string;
 }) {
   const rows = [...(overrides.outboundRows ?? [])] as Array<Record<string, unknown>>;
   const { messaging, sendToThread, openDirectThread } = createFakeSurface(overrides.sendError);
@@ -159,7 +162,10 @@ function createDeps(overrides: {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     message: {
-      findUnique: vi.fn(async (): Promise<{ thread: { userId: string } } | null> => null),
+      findUnique: vi.fn(
+        async ({ where }: { where: { id: string } }): Promise<unknown> =>
+          overrides.sourceMessages?.[where.id] ?? null,
+      ),
       findMany: vi.fn(
         async () =>
           overrides.messages ?? [
@@ -295,6 +301,7 @@ function createDeps(overrides: {
     } as unknown as MessagingDeliveryDeps["events"],
     jobs: { enqueue: vi.fn(async () => undefined) },
     artifacts: { get: vi.fn(async (storageKey: string) => new TextEncoder().encode(storageKey)) },
+    appOrigin: overrides.appOrigin,
     sendToThread,
     openDirectThread,
     rows,
@@ -2333,5 +2340,219 @@ describe("drain lanes", () => {
       { threadId: "t-other", body: "later" },
       context,
     );
+  });
+});
+
+describe("deliverMessagingOutbound ask and takeover messages", () => {
+  const approvalAsk = {
+    kind: "ask",
+    approvalEffectId: "effect-1",
+    text: "Send this email?",
+    detail: "To: a@example.com",
+    status: "pending",
+    actions: [
+      { id: "allow", label: "Allow once" },
+      { id: "always", label: "Always allow this tool" },
+      { id: "deny", label: "Deny" },
+    ],
+  };
+  const choiceAsk = {
+    kind: "ask",
+    text: "Which flight should I book?",
+    status: "pending",
+    actions: [
+      { id: "morning", label: "Morning flight" },
+      { id: "evening", label: "Evening flight" },
+    ],
+  };
+  const secretAsk = {
+    kind: "ask",
+    text: "Code for example.com",
+    input: "secret",
+    status: "pending",
+  };
+  const textAsk = {
+    kind: "ask",
+    text: "What date should I book for?",
+    input: "text",
+    status: "pending",
+  };
+
+  it("sends an approval ask as a card with one button per option", async () => {
+    const deps = createDeps({
+      messages: [{ id: "m-ask", blocks: [approvalAsk] }],
+      sourceMessages: { "m-ask": { role: "bot", blocks: [approvalAsk] } },
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Send this email?\n\nTo: a@example.com",
+        actions: [
+          { id: "ask", label: "Allow once", value: "m-ask:0", style: "primary" },
+          { id: "ask", label: "Always allow this tool", value: "m-ask:1" },
+          { id: "ask", label: "Deny", value: "m-ask:2", style: "danger" },
+        ],
+      },
+      context,
+    );
+    expect(deps.rows).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "ask:m-ask",
+        kind: "dm",
+        identityId: "mi-1",
+        status: "sent",
+        providerHandle: "handle-out-1",
+        sourceMessageId: "m-ask",
+      }),
+    ]);
+  });
+
+  it("sends a choice ask with a neutral button per option", async () => {
+    const deps = createDeps({
+      messages: [{ id: "m-ask", blocks: [choiceAsk] }],
+      sourceMessages: { "m-ask": { role: "bot", blocks: [choiceAsk] } },
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Which flight should I book?",
+        actions: [
+          { id: "ask", label: "Morning flight", value: "m-ask:0" },
+          { id: "ask", label: "Evening flight", value: "m-ask:1" },
+        ],
+      },
+      context,
+    );
+  });
+
+  it("sends a secret ask as a link-only notice, never with actions", async () => {
+    const deps = createDeps({
+      messages: [{ id: "m-ask", blocks: [secretAsk] }],
+      sourceMessages: { "m-ask": { role: "bot", blocks: [secretAsk] } },
+      appOrigin: "https://chat.example.com",
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Code for example.com\n\nAnswer securely in Rakazo: https://chat.example.com/app/bot-1",
+      },
+      context,
+    );
+  });
+
+  it("sends a secret ask notice without a link when no origin is configured", async () => {
+    const deps = createDeps({
+      messages: [{ id: "m-ask", blocks: [secretAsk] }],
+      sourceMessages: { "m-ask": { role: "bot", blocks: [secretAsk] } },
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Code for example.com\n\nAnswer securely in the Rakazo app.",
+      },
+      context,
+    );
+  });
+
+  it("sends a free-text ask as a plain message with no actions", async () => {
+    const deps = createDeps({
+      messages: [{ id: "m-ask", blocks: [textAsk] }],
+      sourceMessages: { "m-ask": { role: "bot", blocks: [textAsk] } },
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      { threadId: "sendblue:dm-1", body: "What date should I book for?" },
+      context,
+    );
+  });
+
+  it("drops an ask row whose question was answered in the app before it sent", async () => {
+    const deps = createDeps({
+      outboundRows: [
+        {
+          id: "out-ask-1",
+          idempotencyKey: "ask:m-ask",
+          kind: "dm",
+          identityId: "mi-1",
+          body: "Send this email?\n\nTo: a@example.com",
+          sourceMessageId: "m-ask",
+          status: "pending",
+          createdAt: new Date(),
+        },
+      ],
+      sourceMessages: {
+        "m-ask": { role: "bot", blocks: [{ ...approvalAsk, status: "answered" }] },
+      },
+    });
+    await deliverMessagingOutbound(deps, {}, context);
+
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.rows[0]).toMatchObject({ idempotencyKey: "ask:m-ask", status: "failed" });
+  });
+
+  it("drops an ask row whose question was answered between mirroring and draining", async () => {
+    const sourceMessages: Record<string, unknown> = {
+      "m-ask": { role: "bot", blocks: [approvalAsk] },
+    };
+    const deps = createDeps({
+      messages: [{ id: "m-ask", blocks: [approvalAsk] }],
+      sourceMessages,
+    });
+    await mirrorMessagingOutbound(deps, "run-1");
+    expect(deps.rows).toHaveLength(1);
+
+    sourceMessages["m-ask"] = { role: "bot", blocks: [{ ...approvalAsk, status: "answered" }] };
+    await deliverMessagingOutbound(deps, {}, context);
+
+    expect(deps.sendToThread).not.toHaveBeenCalled();
+    expect(deps.rows[0]).toMatchObject({ idempotencyKey: "ask:m-ask", status: "failed" });
+  });
+
+  it("sends a takeover wait once, with the app link, across repeated mirrors", async () => {
+    const computer = {
+      kind: "computer",
+      state: "Needs you",
+      text: "Sign in to your bank to continue",
+    };
+    const deps = createDeps({
+      messages: [{ id: "m-comp", blocks: [computer] }],
+      appOrigin: "https://chat.example.com/",
+    });
+
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      {
+        threadId: "sendblue:dm-1",
+        body: "Sign in to your bank to continue\n\nTake control: https://chat.example.com/app/bot-1",
+      },
+      context,
+    );
+    expect(deps.rows.filter((row) => row.idempotencyKey === "takeover:m-comp")).toHaveLength(1);
+  });
+
+  it("mirrors a settled computer block as a plain status line, with no takeover row", async () => {
+    const computer = { kind: "computer", state: "Done", text: "Signed in" };
+    const deps = createDeps({
+      messages: [{ id: "m-comp", blocks: [computer] }],
+      appOrigin: "https://chat.example.com",
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(deps.sendToThread).toHaveBeenCalledExactlyOnceWith(
+      { threadId: "sendblue:dm-1", body: "Signed in" },
+      context,
+    );
+    expect(deps.rows.map((row) => row.idempotencyKey)).toEqual(["msg:m-comp"]);
   });
 });

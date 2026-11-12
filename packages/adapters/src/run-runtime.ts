@@ -64,6 +64,8 @@ export interface RunRuntimeEnv extends PipedreamEnvironmentValues {
   maxUploadSizeBytes: number;
   /** Only names a bot's address to it; the API receives the mail. */
   inboundEmailDomain: string | undefined;
+  /** The deployment's public web origin, for links in chat notices. */
+  webOrigin?: string | undefined;
   /** Service keys saved in Settings, resolved by the composition root; the env vars win. */
   tinyfishApiKey?: string | undefined;
   naceApiKey?: string | undefined;
@@ -95,6 +97,7 @@ export function runRuntimeEnvFromProcess(source: NodeJS.ProcessEnv): RunRuntimeE
     ...phoneCallSettings(source),
     maxUploadSizeBytes: uploadSizeFromEnv(source),
     inboundEmailDomain: source.INBOUND_EMAIL_DOMAIN?.trim().toLowerCase() || undefined,
+    webOrigin: source.WEB_ORIGIN?.trim() || undefined,
   };
 }
 
@@ -243,6 +246,7 @@ export function createRunRuntime(
     paymentWallet: deps.paymentWallet,
     mediaGeneration: deps.mediaGeneration,
     maxUploadSizeBytes: env.maxUploadSizeBytes,
+    appOrigin: env.webOrigin,
   });
   return { executor, jobHandlers };
 }

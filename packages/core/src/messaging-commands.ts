@@ -56,3 +56,25 @@ export function parseMessagingCommand(text: string): MessagingCommand | null {
   if (STOP_WORDS.has(bare)) return "stop";
   return null;
 }
+
+/**
+ * The action id every ask-card button carries. A pending question's options
+ * all share it; the value names the ask's message and the option's position
+ * (`<messageId>:<index>`), so a tap is unambiguous, can never collide with
+ * the owner command words above, and stays well inside the tightest
+ * platform callback budget (a 25-char message id plus a short index).
+ */
+export const MESSAGING_ASK_ACTION_ID = "ask";
+
+export function messagingAskActionValue(messageId: string, actionIndex: number): string {
+  return `${messageId}:${actionIndex}`;
+}
+
+export function parseMessagingAskActionValue(
+  value: string | undefined,
+): { messageId: string; actionIndex: number } | null {
+  if (!value) return null;
+  const match = /^([^:]+):(\d{1,3})$/.exec(value);
+  if (!match) return null;
+  return { messageId: match[1]!, actionIndex: Number(match[2]) };
+}
