@@ -24,6 +24,7 @@ import {
 import type { ThreadEvents } from "@rakazo/db";
 import {
   accountDeactivated,
+  activateModelCredentialKey,
   appendEventInTransaction,
   availableInSpace,
   cancelDeactivatedAccountRuns,
@@ -31,8 +32,11 @@ import {
   createPendingSteeringRun,
   effectiveMemoryScope,
   isPartialReplyClientNonce,
+  listModelCredentialKeys,
   loadRunHistoryMessages,
   loadRunTurnCheckpoint,
+  markModelCredentialKeyFailed,
+  orderModelCredentialKeysForUse,
   parseComputerMode,
   RunHistoryWriteError,
   readRunTimingFields,
@@ -1730,16 +1734,62 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
               (candidate.credentialId !== undefined &&
                 candidate.credentialId !== mainRunModel.connectionId)),
         );
-        const fallbackKey = (provider: string, modelId: string, credentialId?: string | null) =>
-          JSON.stringify([provider, modelId, credentialId ?? null]);
+        // The running connection's other pooled keys/accounts are the first
+        // backups: the same model on the next key, ahead of every configured
+        // backup model. The entry serving the run is the model itself, so it
+        // is not repeated. Best-effort: resolution still rotates on its own.
+        type FallbackCandidate = {
+          provider: string;
+          modelId: string;
+          credentialId?: string | undefined;
+          keyId?: string | undefined;
+          thinkingLevel?: AgentRunRequest["model"]["thinkingLevel"];
+        };
+        const poolFallbackModels: FallbackCandidate[] = [];
+        if (credential && mainRunModel.keyId && mainRunModel.connectionId === credential.id) {
+          try {
+            const entries = await listModelCredentialKeys(deps.prisma, {
+              userId: run.userId,
+              credentialId: credential.id,
+            });
+            for (const entry of orderModelCredentialKeysForUse(entries, credential.secretId)) {
+              if (entry.id === mainRunModel.keyId) continue;
+              poolFallbackModels.push({
+                provider: mainRunModel.provider,
+                modelId: mainRunModel.id,
+                credentialId: credential.id,
+                keyId: entry.id,
+                thinkingLevel: mainRunModel.thinkingLevel,
+              });
+            }
+          } catch {
+            poolFallbackModels.length = 0;
+          }
+        }
+        const runFallbackModels: FallbackCandidate[] = [...poolFallbackModels, ...fallbackModels];
+        const fallbackKey = (
+          provider: string,
+          modelId: string,
+          credentialId?: string | null,
+          keyId?: string | null,
+        ) => JSON.stringify([provider, modelId, credentialId ?? null, keyId ?? null]);
         const fallbackModelKeys = new Set(
-          fallbackModels.map((candidate) =>
-            fallbackKey(candidate.provider, candidate.modelId, candidate.credentialId),
+          runFallbackModels.map((candidate) =>
+            fallbackKey(
+              candidate.provider,
+              candidate.modelId,
+              candidate.credentialId,
+              candidate.keyId,
+            ),
           ),
         );
         const fallbackModelIds = new Set(
-          fallbackModels.map((candidate) => fallbackKey(candidate.provider, candidate.modelId)),
+          runFallbackModels.map((candidate) => fallbackKey(candidate.provider, candidate.modelId)),
         );
+        // Pool bookkeeping for the resolver below: which entry is serving now.
+        let poolKeyTried: string | undefined =
+          poolFallbackModels.length > 0 ? mainRunModel.keyId : undefined;
+        let poolAdvanceArmed = false;
         // Provider kind and model id only: custom endpoints are identified by kind, never host.
         const activeModel = { "model.provider": runModelProvider, "model.id": runModelId };
         // Shutdown must not finalize the attempt. The finally block queues the run
@@ -1862,38 +1912,62 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
               secrets: runSecrets,
               model: mainRunModel,
               computerModel,
-              fallbackModels: fallbackModels.map(({ provider, modelId, credentialId }) => ({
-                provider,
-                id: modelId,
-                ...(credentialId ? { connectionId: credentialId } : {}),
+              fallbackModels: runFallbackModels.map((candidate) => ({
+                provider: candidate.provider,
+                id: candidate.modelId,
+                ...(candidate.credentialId ? { connectionId: candidate.credentialId } : {}),
+                ...(candidate.keyId ? { keyId: candidate.keyId } : {}),
               })),
               resolveFallbackModel:
                 checkpointModelResolver || fallbackModelKeys.size
-                  ? async (provider, modelId, connectionId) => {
+                  ? async (provider, modelId, connectionId, keyId) => {
                       if (checkpointModelResolver?.has(provider, modelId, connectionId))
                         return checkpointModelResolver(provider, modelId, connectionId);
-                      const key = fallbackKey(provider, modelId, connectionId);
+                      const key = fallbackKey(provider, modelId, connectionId, keyId);
                       if (!fallbackModelKeys.has(key))
                         throw new Error("Backup model is not selected");
+                      // The runtime asks for the next candidate only after the
+                      // current one failed, so being asked for a different pool
+                      // entry (or past the pool, once it was entered) marks the
+                      // previously tried entry as failed. Best-effort: the mark
+                      // only orders the settings list and the next run's start.
+                      if (credential && connectionId === credential.id && keyId) {
+                        if (poolKeyTried && poolKeyTried !== keyId) {
+                          void markModelCredentialKeyFailed(deps.prisma, {
+                            userId: run.userId,
+                            keyId: poolKeyTried,
+                          }).catch(() => undefined);
+                        }
+                        poolKeyTried = keyId;
+                        poolAdvanceArmed = true;
+                      } else if (poolAdvanceArmed && poolKeyTried) {
+                        void markModelCredentialKeyFailed(deps.prisma, {
+                          userId: run.userId,
+                          keyId: poolKeyTried,
+                        }).catch(() => undefined);
+                        poolKeyTried = undefined;
+                      }
                       return resolveConnectedModel(
                         { userId: run.userId, spaceId: run.spaceId },
                         provider,
                         modelId,
                         (values) => runSecrets.push(...values),
                         true,
-                        fallbackModels.find(
+                        runFallbackModels.find(
                           (candidate) =>
                             fallbackKey(
                               candidate.provider,
                               candidate.modelId,
                               candidate.credentialId,
+                              candidate.keyId,
                             ) === key,
                         )?.thinkingLevel ?? null,
                         connectionId,
+                        keyId,
                       );
                     }
                   : undefined,
-              onModelChange: async (provider, modelId, computerMode) => {
+              onModelChange: async (provider, modelId, computerMode, keyId) => {
                 const roleModel =
                   [mainRunModel, computerModel].some(
                     (model) => model?.provider === provider && model.id === modelId,
@@ -1915,6 +1989,22 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                   if (updated.count !== 1) {
                     throw new Error("Run lease was lost before the backup model could be used");
                   }
+                }
+                // A pooled key of the run's own connection took over: make it
+                // the connection's active entry, so the next run starts on the
+                // key that worked (and its prompt cache stays warm).
+                if (
+                  keyId &&
+                  credential &&
+                  provider === mainRunModel.provider &&
+                  modelId === mainRunModel.id &&
+                  mainRunModel.connectionId === credential.id
+                ) {
+                  await activateModelCredentialKey(deps.prisma, {
+                    userId: run.userId,
+                    credentialId: credential.id,
+                    keyId,
+                  }).catch(() => undefined);
                 }
                 activeModel["model.provider"] = provider;
                 activeModel["model.id"] = modelId;

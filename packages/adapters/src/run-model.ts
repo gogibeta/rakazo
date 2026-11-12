@@ -5,8 +5,10 @@ import type {
   ModelCredentialFailedState,
   ModelCredentialRetireReason,
 } from "@rakazo/adapter-kit";
+import { SecretNotFoundError, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { OPENAI_COMPATIBLE_PROVIDER_ID } from "@rakazo/contracts";
 import { MISSING_MODEL_RUN_ERROR } from "@rakazo/core";
+import { listModelCredentialKeys, orderModelCredentialKeysForUse } from "@rakazo/db";
 import {
   CLOUDFLARE_AI_GATEWAY_CONFIG_MESSAGE,
   CLOUDFLARE_WORKERS_AI_PROVIDER_ID,
@@ -30,7 +32,12 @@ import {
 } from "./model-credit-observer.js";
 import { resolveMemberMainModel, selectConfiguredModel } from "./model-roles.js";
 import type { StoredModelSecret } from "./model-secret.js";
-import { parseModelSecret, secretValuesToRedact, serializeModelSecret } from "./model-secret.js";
+import {
+  CORRUPT_MODEL_SECRET_MESSAGE,
+  parseModelSecret,
+  secretValuesToRedact,
+  serializeModelSecret,
+} from "./model-secret.js";
 import {
   enabledOpenAiCompatibleModelIds,
   findConnectedModelCredential,
@@ -151,6 +158,65 @@ export async function modelCreditBillingEnabled(
   );
 }
 
+/**
+ * A failure that belongs to one pooled key/account, not to the connection or
+ * the deployment: the account is retired, its secret is gone or unreadable, or
+ * the provider does not offer the model to it. Store outages and database
+ * errors are not entry failures — rotating cannot fix them, so they surface.
+ */
+function isCredentialEntryFailure(error: unknown): boolean {
+  if (error instanceof SecretStoreUnavailableError) return false;
+  if (isRetiredModelCredentialError(error)) return true;
+  if (error instanceof UnavailableModelForAuthError) return true;
+  if (error instanceof SecretNotFoundError) return true;
+  return (
+    error instanceof Error &&
+    (error.message === "Connect that model provider again." ||
+      error.message === CORRUPT_MODEL_SECRET_MESSAGE)
+  );
+}
+
+/**
+ * Resolve a connection's key material through its credential pool. Runs try
+ * the active entry first (the last one that worked), then the rest in pool
+ * order, advancing only on failures that belong to the entry itself; an
+ * explicitly named entry resolves alone, because the runtime drives pool
+ * advancement at the model-call layer. Connections without pool rows (and any
+ * pool read failure) keep the single-credential path exactly as before.
+ */
+async function resolvePooledModelKeyMaterial(
+  args: Parameters<typeof resolveModelKeyMaterial>,
+): Promise<Awaited<ReturnType<typeof resolveModelKeyMaterial>>> {
+  const [deps, userId, , credential, , , , options] = args;
+  if (!credential) return resolveModelKeyMaterial(...args);
+  let entries: Awaited<ReturnType<typeof listModelCredentialKeys>>;
+  try {
+    entries = await listModelCredentialKeys(deps.prisma, {
+      userId,
+      credentialId: credential.id,
+    });
+  } catch {
+    return resolveModelKeyMaterial(...args);
+  }
+  if (entries.length === 0) return resolveModelKeyMaterial(...args);
+  const attempts = options?.keyId
+    ? entries.filter((entry) => entry.id === options.keyId)
+    : orderModelCredentialKeysForUse(entries, credential.secretId);
+  if (attempts.length === 0) throw new Error("Backup model credential is no longer available");
+  let lastError: unknown;
+  for (const entry of attempts) {
+    const attemptArgs = [...args] as Parameters<typeof resolveModelKeyMaterial>;
+    attemptArgs[7] = { ...options, keyEntry: { id: entry.id, secretId: entry.secretId } };
+    try {
+      return await resolveModelKeyMaterial(...attemptArgs);
+    } catch (error) {
+      if (options?.keyId || !isCredentialEntryFailure(error)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 export async function resolveModelKey(...args: Parameters<typeof resolveModelKeyMaterial>) {
   const [deps, userId, spaceId, , provider] = args;
   const billingEnabled = await modelCreditBillingEnabled(deps);
@@ -161,7 +227,7 @@ export async function resolveModelKey(...args: Parameters<typeof resolveModelKey
     args[7] = { ...args[7], requireStoredSecret: false };
   }
   const credential = args[3];
-  const material = await resolveModelKeyMaterial(...args);
+  const material = await resolvePooledModelKeyMaterial(args);
   const deployment = resolveDeploymentModel();
   // Local and compatible endpoints can intentionally be keyless. Host auth is
   // allowed only for the deployment provider that explicitly opted into it.
@@ -183,6 +249,32 @@ export async function resolveModelKey(...args: Parameters<typeof resolveModelKey
   return { ...material, apiKey: material.apiKey ?? runtimeKey, callObserver };
 }
 
+/**
+ * A pooled entry's secret carries auth material only; the connection's limits
+ * (output ceiling, cache capabilities, context window) come from the active
+ * entry's secret so every key in the pool serves the connection as configured.
+ */
+function overlayConnectionLimits<T extends StoredModelSecret>(
+  secret: T,
+  active: StoredModelSecret,
+): T {
+  if (secret.kind === "oauth") {
+    return {
+      ...secret,
+      ...(active.maxTokens !== undefined ? { maxTokens: active.maxTokens } : {}),
+    };
+  }
+  if (secret.kind === "api_key" && active.kind !== "oauth") {
+    return {
+      ...secret,
+      ...(active.maxTokens !== undefined ? { maxTokens: active.maxTokens } : {}),
+      cacheCapabilities: active.cacheCapabilities,
+      contextWindow: active.contextWindow,
+    };
+  }
+  return secret;
+}
+
 async function resolveModelKeyMaterial(
   deps: ExecutorDeps,
   userId: string,
@@ -197,8 +289,18 @@ async function resolveModelKeyMaterial(
   provider: string,
   modelId: string,
   registerSecrets?: (values: string[]) => void,
-  { requireStoredSecret = false }: { requireStoredSecret?: boolean } = {},
+  {
+    requireStoredSecret = false,
+    keyEntry,
+  }: {
+    requireStoredSecret?: boolean;
+    /** Resolve exactly this pool entry; consumed by the pool loop above. */
+    keyId?: string;
+    keyEntry?: { id: string; secretId: string } | null;
+  } = {},
 ): Promise<{
+  /** The pool entry that served this resolution, when the connection pools keys. */
+  keyId?: string;
   apiKey?: string;
   accountId?: string;
   gatewayId?: string;
@@ -226,11 +328,19 @@ async function resolveModelKeyMaterial(
   redact: string[];
 }> {
   if (credential) {
-    return withModelCredentialLock(credential.secretId, async () => {
+    // A pool entry resolves under its own secret: refresh, persist and retire
+    // all stay scoped to that entry, while the connection keeps pointing at
+    // the active one. Without an entry this is the connection's own secret.
+    const secretId = keyEntry?.secretId ?? credential.secretId;
+    const effectiveCredential = keyEntry
+      ? { ...credential, secretId, keyId: keyEntry.id }
+      : credential;
+    return withModelCredentialLock(secretId, async () => {
       const row = await deps.prisma.secret.findFirst({
-        where: { id: credential.secretId, userId, spaceId: null },
+        where: { id: secretId, userId, spaceId: null },
       });
       if (!row) {
+        if (keyEntry) throw new Error("Connect that model provider again.");
         if (await modelCreditBillingEnabled(deps))
           throw new Error("Connect that model provider again.");
         if (requireStoredSecret) throw new Error("Backup model credential is no longer available");
@@ -240,8 +350,32 @@ async function resolveModelKeyMaterial(
         cloudflareProviderEnv({ provider });
         return { apiKey: deploymentKeyFor(deps, provider), redact: [] };
       }
-      const plaintext = await deps.secretStore.load(row.ciphertext, row.id);
+      let plaintext = await deps.secretStore.load(row.ciphertext, row.id);
       registerSecrets?.(secretValuesToRedact(parseModelSecret(plaintext)));
+      // Pool entries hold auth material only. The connection's settings —
+      // endpoint config and limits — live on the active entry's secret, so a
+      // non-active entry borrows them: a compatible entry's key merges into
+      // the active secret's endpoint config, and limits overlay below. The
+      // active secret is only read here, never written, so it needs no lock.
+      let activeSecret: StoredModelSecret | undefined;
+      if (keyEntry && keyEntry.secretId !== credential.secretId) {
+        const activeRow = await deps.prisma.secret.findFirst({
+          where: { id: credential.secretId, userId, spaceId: null },
+        });
+        if (activeRow) {
+          try {
+            const activePlaintext = await deps.secretStore.load(activeRow.ciphertext, activeRow.id);
+            activeSecret = parseModelSecret(activePlaintext);
+            registerSecrets?.(secretValuesToRedact(activeSecret));
+          } catch {
+            activeSecret = undefined;
+          }
+        }
+        const entrySecret = parseModelSecret(plaintext);
+        if (entrySecret.kind === "api_key" && activeSecret?.kind === "openai_compatible") {
+          plaintext = serializeModelSecret({ ...activeSecret, apiKey: entrySecret.key });
+        }
+      }
       const persist = persistStoredModelSecret(
         deps.prisma,
         deps.secretStore,
@@ -252,15 +386,15 @@ async function resolveModelKeyMaterial(
         deps.prisma,
         deps.secretStore,
         { userId, spaceId },
-        credential,
-        parseModelSecret(plaintext).maxTokens,
+        effectiveCredential,
+        activeSecret?.maxTokens ?? parseModelSecret(plaintext).maxTokens,
       );
       const resolveAuth = () =>
         resolveStoredModelAuth(
           deps.prisma,
           deps.secretStore,
           { userId, spaceId },
-          credential,
+          effectiveCredential,
           plaintext,
           credential.provider,
         );
@@ -290,6 +424,12 @@ async function resolveModelKeyMaterial(
         liveCodex = await codexLiveModel(deps.codexCatalog, userId, resolved.secret, modelId, {
           waitMs: CODEX_LIVE_RUN_WAIT_MS,
         });
+      }
+      if (activeSecret && resolved.secret.kind !== "openai_compatible") {
+        resolved = {
+          ...resolved,
+          secret: overlayConnectionLimits(resolved.secret, activeSecret),
+        };
       }
       assertCompatibleModelEnabled(credential, resolved.secret, modelId);
       const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
@@ -341,9 +481,9 @@ async function resolveModelKeyMaterial(
         oauth,
         persistOAuth: oauth
           ? async (next) => {
-              await withModelCredentialLock(credential.secretId, async () => {
+              await withModelCredentialLock(secretId, async () => {
                 const currentRow = await deps.prisma.secret.findFirst({
-                  where: { id: credential.secretId, userId, spaceId: null },
+                  where: { id: secretId, userId, spaceId: null },
                 });
                 if (!currentRow) return;
                 const current = parseModelSecret(
@@ -375,12 +515,13 @@ async function resolveModelKeyMaterial(
               deps.prisma,
               deps.secretStore,
               { userId, spaceId },
-              credential,
+              effectiveCredential,
               credential.provider,
             )
           : undefined,
         retireOAuth: retire,
         ownCredential: true,
+        ...(keyEntry ? { keyId: keyEntry.id } : {}),
         redact: [...secretValuesToRedact(resolved.secret), resolved.apiKey].filter(
           (value): value is string => Boolean(value),
         ),
@@ -398,6 +539,7 @@ export function resolvedModelRunFields(
 ): Omit<AgentRunRequest["model"], "provider" | "id" | "connectionId" | "thinkingLevel"> {
   return {
     apiKey: resolved.oauth ? undefined : resolved.apiKey,
+    ...(resolved.keyId ? { keyId: resolved.keyId } : {}),
     callObserver: resolved.callObserver,
     ...(resolved.accountId ? { accountId: resolved.accountId } : {}),
     ...(resolved.gatewayId ? { gatewayId: resolved.gatewayId } : {}),
@@ -434,6 +576,8 @@ export async function resolveConnectedModelKey(
   registerSecrets?: (values: string[]) => void,
   requireStoredSecret = false,
   credentialId?: string,
+  /** Resolve one pooled key/account of the connection instead of the active one. */
+  keyId?: string,
 ) {
   const hostedProvider = (await modelCreditBillingEnabled(deps))
     ? resolveDeploymentModel().provider
@@ -464,7 +608,7 @@ export async function resolveConnectedModelKey(
     provider,
     modelId,
     registerSecrets,
-    { requireStoredSecret },
+    { requireStoredSecret, ...(keyId ? { keyId } : {}) },
   );
   return { credential, resolved };
 }
@@ -480,6 +624,8 @@ export async function resolveConnectedRunModel(
   thinkingLevel?: string | null,
   /** The connection a role row is pinned to. */
   credentialId?: string,
+  /** The pooled key/account of that connection to serve this resolution. */
+  keyId?: string,
 ): Promise<AgentRunRequest["model"]> {
   const { credential, resolved } = await resolveConnectedModelKey(
     deps,
@@ -489,6 +635,7 @@ export async function resolveConnectedRunModel(
     registerSecrets,
     requireStoredSecret,
     credentialId,
+    keyId,
   );
   return {
     provider,

@@ -5,7 +5,7 @@ import type {
   SecretStore,
 } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient } from "@rakazo/db";
-import { retireModelCredential } from "@rakazo/db";
+import { retireModelCredential, retireModelCredentialKey } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { advisoryLock } from "./advisory-lock.js";
 import { parseModelSecret, serializeModelSecret } from "./model-secret.js";
@@ -56,13 +56,14 @@ export async function withModelCredentialLock<T>(key: string, fn: () => Promise<
  * Retire callback for `resolveModelAuth`. `retireModelCredential` fences against
  * newer material; a confirmed failure swaps the rejected tokens for a reconnect
  * marker that keeps the connection's settings. Whichever stored copy ends up
- * unreferenced is deleted.
+ * unreferenced is deleted. With `keyId`, the fence is the pool entry instead:
+ * only that entry's secret is retired, never the connection's active one.
  */
 export function retireToReconnectMarker(
   prisma: Pick<PrismaClient, "$transaction" | "secret">,
   secretStore: Pick<SecretStore, "put" | "load" | "delete">,
   scope: { userId: string; spaceId: string },
-  credential: { id: string; secretId: string },
+  credential: { id: string; secretId: string; keyId?: string },
   maxTokens: number | undefined,
 ) {
   return async (
@@ -93,7 +94,7 @@ export function retireToReconnectMarker(
     );
     let replaced = false;
     try {
-      const retired = await retireModelCredential(prisma, {
+      const retireInput = {
         userId: scope.userId,
         credentialId: credential.id,
         secretId: credential.secretId,
@@ -104,7 +105,10 @@ export function retireToReconnectMarker(
               failed,
             )
           : undefined,
-      });
+      };
+      const retired = credential.keyId
+        ? await retireModelCredentialKey(prisma, { ...retireInput, keyId: credential.keyId })
+        : await retireModelCredential(prisma, retireInput);
       replaced = retired && previous !== undefined;
       return retired;
     } finally {
@@ -144,7 +148,7 @@ export async function resolveStoredModelAuth(
   prisma: Pick<PrismaClient, "$transaction" | "secret">,
   secretStore: Pick<SecretStore, "load" | "put" | "delete">,
   scope: { userId: string; spaceId: string },
-  credential: { id?: string; secretId: string },
+  credential: { id?: string; secretId: string; keyId?: string },
   plaintext: string,
   provider: string,
   opts: Pick<ResolveModelOpts, "oauth" | "signal" | "now"> = {},
@@ -208,7 +212,7 @@ export async function resolveStoredModelAuth(
           prisma,
           secretStore,
           scope,
-          { id: credential.id, secretId },
+          { id: credential.id, secretId, keyId: credential.keyId },
           failure.maxTokens,
         )(...failure.args)) === true;
     } catch (retireError) {
@@ -229,7 +233,7 @@ export function refreshStoredModelCredential(
   prisma: Pick<PrismaClient, "$transaction" | "secret">,
   secretStore: Pick<SecretStore, "load" | "put" | "delete">,
   scope: { userId: string; spaceId: string },
-  credential: { id: string; secretId: string },
+  credential: { id: string; secretId: string; keyId?: string },
   provider: string,
   opts?: Pick<ResolveModelOpts, "oauth">,
 ) {

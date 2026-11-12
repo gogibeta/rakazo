@@ -48,9 +48,13 @@ import { markExpectedFailure } from "@rakazo/logging/hono";
 import { mayUsePrivateEndpoint } from "../mcp-servers.js";
 import { firstModelConnectAnalytics } from "../model-connect-analytics.js";
 import {
+  addModelConnectionKey,
+  appendOAuthConnectionKey,
   modelConnectionTarget,
+  modelCredentialKeysDto,
   persistModelCredential,
   prepareAllowedThinkingLevels,
+  removeModelConnectionKey,
   throwIfAborted,
 } from "../model-credentials.js";
 import { assertCompatibleDefaultChange } from "../model-pins.js";
@@ -136,14 +140,18 @@ export function modelsRoutes(ctx: RouterContext) {
                   : {}),
               };
             };
+            const withKeys = async (listed: ReturnType<typeof dto>) => ({
+              ...listed,
+              keys: await modelCredentialKeysDto(deps, context.actor, row.id),
+            });
             const ciphertext = ciphertextById.get(row.secretId);
-            if (!ciphertext) return dto();
+            if (!ciphertext) return withKeys(dto());
             try {
-              return dto(await deps.secrets.load(ciphertext, row.secretId));
+              return withKeys(dto(await deps.secrets.load(ciphertext, row.secretId)));
             } catch (error) {
               if (error instanceof SecretStoreUnavailableError)
                 throw new ORPCError("SERVICE_UNAVAILABLE", { cause: error });
-              return dto();
+              return withKeys(dto());
             }
           }),
         );
@@ -210,12 +218,21 @@ export function modelsRoutes(ctx: RouterContext) {
         try {
           const saved = await connectModelCredential(context.actor, input, context.signal);
           record(input.provider, { name: "model_connected" });
-          return saved;
+          return {
+            ...saved,
+            keys: await modelCredentialKeysDto(deps, context.actor, saved.id),
+          };
         } catch (error) {
           record(input.provider, { name: "model_connect_failed", error });
           throw error;
         }
       }),
+      addCredentialKey: authed.models.addCredentialKey.handler(async ({ context, input }) =>
+        addModelConnectionKey(deps, context.actor, input, context.signal),
+      ),
+      removeCredentialKey: authed.models.removeCredentialKey.handler(async ({ context, input }) =>
+        removeModelConnectionKey(deps, context.actor, input),
+      ),
       probeOpenAiCompatible: authed.models.probeOpenAiCompatible.handler(
         async ({ context, input }) => {
           let apiKey = input.apiKey;
@@ -299,6 +316,12 @@ export function modelsRoutes(ctx: RouterContext) {
         }
       }),
       beginOAuth: authed.models.beginOAuth.handler(async ({ context, input }) => {
+        // Adding an account must name its connection: appending to whichever
+        // connection is newest would pool the account in the wrong place.
+        if (input.addAccount && !input.credentialId)
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Choose the connection to add the account to",
+          });
         // An older app's sign-in renews the provider's newest connection, bound now so a
         // disconnect of that connection retires it and it never lands on another one.
         const target = await modelConnectionTarget(
@@ -307,6 +330,8 @@ export function modelsRoutes(ctx: RouterContext) {
           input.provider,
           input.credentialId,
         );
+        if (input.addAccount && !target)
+          throw new ORPCError("NOT_FOUND", { message: "Connection not found" });
         const record = await firstModelConnectAnalytics(deps, context.actor, "oauth");
         record(input.provider, { name: "model_connect_started" });
         return deps.oauthLogins
@@ -315,6 +340,7 @@ export function modelsRoutes(ctx: RouterContext) {
             spaceId: context.actor.spaceId,
             provider: input.provider,
             credentialId: target?.id ?? null,
+            addAccount: input.addAccount,
             modelId: input.modelId,
             thinkingLevel: input.thinkingLevel,
             makeDefault: input.makeDefault,
@@ -364,13 +390,16 @@ export function modelsRoutes(ctx: RouterContext) {
         const result = await deps.oauthLogins
           .finish(input.loginId, context.actor, async (login) => {
             provider = login.provider;
+            // An add-account sign-in joins the connection's pool; the
+            // connection's own sign-in and models stay as they were.
+            if (login.addAccount) return appendOAuthConnectionKey(deps, context.actor, login);
             const target = await modelConnectionTarget(
               deps,
               context.actor,
               login.provider,
               login.credentialId,
             );
-            return persistModelCredential(
+            const saved = await persistModelCredential(
               deps,
               context.actor,
               {
@@ -390,6 +419,10 @@ export function modelsRoutes(ctx: RouterContext) {
               },
               codexCatalog,
             );
+            return {
+              ...saved,
+              keys: await modelCredentialKeysDto(deps, context.actor, saved.id),
+            };
           })
           .catch((error: unknown) => {
             record(provider, { name: "model_connect_failed", error });
@@ -645,6 +678,12 @@ export function modelsRoutes(ctx: RouterContext) {
                 },
               );
               if (existing.length === 0) return;
+              // The pool entries go with their connection (cascade); their
+              // secrets are collected first so each can be cleaned up too.
+              const poolKeys = await tx.userModelCredentialKey.findMany({
+                where: { userId: context.actor.userId, credentialId: { in: ids } },
+                select: { credentialId: true, secretId: true },
+              });
               // Credentials are account-wide, so disconnecting removes them from every Space.
               await tx.userModelCredential.deleteMany({
                 where: { userId: context.actor.userId, id: { in: ids } },
@@ -655,6 +694,13 @@ export function modelsRoutes(ctx: RouterContext) {
                   credentialId: row.id,
                   secretId: row.secretId,
                 });
+                for (const key of poolKeys.filter((entry) => entry.credentialId === row.id)) {
+                  await deleteUnreferencedCredentialSecret(tx, {
+                    credentialKind: "model",
+                    credentialId: row.id,
+                    secretId: key.secretId,
+                  });
+                }
               }
             },
             { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

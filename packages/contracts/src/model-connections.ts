@@ -84,6 +84,24 @@ export const ModelApiProtocolSchema = z.enum([
 ]);
 export type ModelApiProtocol = z.infer<typeof ModelApiProtocolSchema>;
 
+/**
+ * One key or signed-in account pooled under a connection. Status and labels
+ * only: no secret material ever crosses this schema.
+ */
+export const ModelCredentialKeySchema = z.object({
+  id: Id,
+  label: z.string(),
+  /** Stored secret kind of this entry. Absent when the secret could not be read. */
+  authKind: z.enum(["api_key", "oauth", "openai_compatible"]).optional(),
+  /** This entry is the one runs try first (the last one that worked). */
+  active: z.boolean(),
+  /** The subscription sign-in for this entry was rejected; sign in again to renew it. */
+  reconnectRequired: z.boolean().optional(),
+  /** When a run last failed over away from this entry, as an ISO timestamp. */
+  lastFailedAt: z.string().optional(),
+});
+export type ModelCredentialKey = z.infer<typeof ModelCredentialKeySchema>;
+
 export const ModelCredentialSchema = z.object({
   /** Computed space preference order; credentials themselves remain newest first. */
   preferenceRank: z.number().int().nonnegative().optional(),
@@ -118,6 +136,8 @@ export const ModelCredentialSchema = z.object({
    * owner has to sign in again. Model choices on this connection are kept.
    */
   reconnectRequired: z.boolean().optional(),
+  /** The connection's pooled keys and accounts, active first. */
+  keys: z.array(ModelCredentialKeySchema).optional(),
 });
 export type ModelCredential = z.infer<typeof ModelCredentialSchema>;
 

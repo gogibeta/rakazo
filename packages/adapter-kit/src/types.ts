@@ -502,6 +502,11 @@ export interface AgentRunModel {
   id: string;
   /** Opaque id of the stored connection serving it, so a model can fall back to another account. */
   connectionId?: string;
+  /**
+   * Opaque id of the pooled key/account of `connectionId` serving it. The same
+   * model on another pooled credential is a different fallback target.
+   */
+  keyId?: string;
   apiKey?: string;
   /** Cloudflare account id stored with a gateway BYOK credential. */
   accountId?: string;
@@ -599,16 +604,26 @@ export interface AgentRunRequest {
   /** Optional explicitly authenticated vision target for same-run computer mode. */
   computerModel?: AgentRunModel;
   /** Ordered, user-selected models eligible after provider unavailability. */
-  fallbackModels?: Array<Pick<AgentRunModel, "provider" | "id" | "connectionId">>;
+  fallbackModels?: Array<Pick<AgentRunModel, "provider" | "id" | "connectionId" | "keyId">>;
   /** Resolve one configured backup lazily so healthy primary turns do no extra auth work. */
   resolveFallbackModel?: (
     provider: string,
     modelId: string,
     connectionId?: string,
+    keyId?: string,
   ) => Promise<AgentRunModel>;
   /** Persist the selected backup against the active run lease before requesting it. */
-  /** `computerMode` is set when the switch enters computer mode rather than changing the run's model. */
-  onModelChange?: (provider: string, modelId: string, computerMode?: boolean) => Promise<void>;
+  /**
+   * `computerMode` is set when the switch enters computer mode rather than
+   * changing the run's model. `keyId` names the pooled credential of the
+   * connection that took over, when the switch stayed on the run's connection.
+   */
+  onModelChange?: (
+    provider: string,
+    modelId: string,
+    computerMode?: boolean,
+    keyId?: string,
+  ) => Promise<void>;
   /** Resolve an explicitly requested helper model within the active user and space scope. */
   resolveModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
   resumeFromCheckpoint?: string;

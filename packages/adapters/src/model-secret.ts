@@ -9,7 +9,7 @@ import {
   ThinkingLevelSchema,
 } from "@rakazo/contracts";
 
-const CORRUPT_MODEL_SECRET_MESSAGE =
+export const CORRUPT_MODEL_SECRET_MESSAGE =
   "Stored model credential is corrupt. Connect the provider again.";
 
 export type StoredModelLimits = ModelContextLimits;

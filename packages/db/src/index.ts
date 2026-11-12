@@ -40,6 +40,7 @@ export * from "./history-retrieval.js";
 export * from "./memory-config.js";
 export * from "./messages.js";
 export * from "./messaging.js";
+export * from "./model-credential-keys.js";
 export * from "./model-credentials.js";
 export * from "./model-credit-cap.js";
 export * from "./model-credits.js";

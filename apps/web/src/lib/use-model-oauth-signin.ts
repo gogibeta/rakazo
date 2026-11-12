@@ -10,6 +10,8 @@ export type ModelOAuthSignInBegin = {
   provider: string;
   /** The connection to sign in again; null adds another. */
   credentialId?: string | null;
+  /** Append the account to the connection's pool instead of signing it in again. */
+  addAccount?: boolean;
   modelId?: string;
   thinkingLevel?: ThinkingLevel | null;
   makeDefault?: boolean;
@@ -140,6 +142,7 @@ export function useModelOAuthSignIn(options: {
         {
           provider: begin.provider,
           ...(begin.credentialId !== undefined ? { credentialId: begin.credentialId } : {}),
+          ...(begin.addAccount ? { addAccount: true } : {}),
           modelId: begin.modelId,
           thinkingLevel: begin.thinkingLevel,
           makeDefault: begin.makeDefault,

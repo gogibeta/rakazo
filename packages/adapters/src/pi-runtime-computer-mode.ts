@@ -67,7 +67,9 @@ export async function restoreComputerModels(
         : undefined;
     if (
       !config ||
-      !sameModelTarget(config, selection) ||
+      // A saved selection names a connection, never one of its pooled keys:
+      // whichever key is active now still serves the pinned model.
+      !sameModelTarget({ ...config, keyId: undefined }, selection) ||
       computerSelection(config).auth !== selection.auth
     )
       throw new Error("Pinned computer mode model is unavailable");
