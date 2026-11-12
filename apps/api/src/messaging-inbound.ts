@@ -11,10 +11,15 @@ import { ATTACHMENT_MAX_COUNT, isAttachmentAudioMimeType } from "@rakazo/contrac
 import type { MessagingCommand } from "@rakazo/core";
 import {
   displayName,
+  isApprovalAskBlock,
+  isSecretAskBlock,
+  MESSAGING_ASK_ACTION_ID,
   messageBlockForArtifact,
   normalizeVoiceTranscript,
+  parseMessagingAskActionValue,
   parseMessagingCommand,
   promptTextForAttachments,
+  resolveAskChoice,
   sanitizeMessagingLabel,
 } from "@rakazo/core";
 import type {
@@ -53,8 +58,13 @@ import {
 
 export interface MessagingInboundDeps {
   prisma: PrismaClient;
-  events: Pick<ThreadEvents, "sendUserMessage" | "notify">;
+  events: Pick<ThreadEvents, "sendUserMessage" | "notify" | "answerRunInput">;
   jobs: Pick<JobPublisher, "enqueue">;
+  /**
+   * The deployment's public web origin, when known. Notices that must send
+   * the person into the app (a secret answer) deep-link from it.
+   */
+  webOrigin?: string;
   sandbox: SandboxProvider;
   provision: (
     request: MessagingIdentityRequest,
@@ -144,6 +154,195 @@ export function messagingMessageForAction(event: MessagingInboundAction): Messag
   };
 }
 
+type AskBlock = Extract<MessageBlock, { kind: "ask" }>;
+
+/** The first question in the message the bot is still waiting on, if any. */
+function pendingAskOf(blocks: unknown): AskBlock | null {
+  if (!Array.isArray(blocks)) return null;
+  for (const block of blocks as Array<MessageBlock | null>) {
+    if (block?.kind !== "ask") continue;
+    if (block.status !== "answered" && typeof block.text === "string") return block;
+  }
+  return null;
+}
+
+/**
+ * Answers a tap on an ask card the mirror sent to a chat app. Returns true
+ * when the tap was one of ours — fully handled here, answered or not — and
+ * false when it belongs to the normal message path. The tap names the ask's
+ * message and the chosen option, so it resolves directly, before any
+ * command-word or message routing can misread its payload. Resolution goes
+ * through the same answer path as the app: whichever surface answers first
+ * wins, and a later tap only earns a short "already answered" note.
+ */
+export async function answerMessagingAskAction(
+  deps: MessagingInboundDeps,
+  event: MessagingInboundAction,
+): Promise<boolean> {
+  if (event.actionId !== MESSAGING_ASK_ACTION_ID) return false;
+  const target = parseMessagingAskActionValue(event.value);
+  if (!target) return false;
+  try {
+    await resolveAskTap(deps, event, target);
+  } catch (error) {
+    if (!(error instanceof SpaceDeletionInProgressError)) throw error;
+    getLogger().info("messaging ask tap dropped", { reason: "space being deleted" });
+  }
+  return true;
+}
+
+async function resolveAskTap(
+  deps: MessagingInboundDeps,
+  event: MessagingInboundAction,
+  target: { messageId: string; actionIndex: number },
+): Promise<void> {
+  const identity = await deps.prisma.messagingIdentity.findUnique({
+    where: { provider_address: { provider: event.provider, address: event.from } },
+  });
+  // An unlinked address has no pending question to answer, and a tap never provisions.
+  if (!identity) return;
+  if (event.installationSpaceId && identity.spaceId !== event.installationSpaceId) return;
+  // A deactivated person's chat apps act for nobody.
+  if (await accountDeactivated(deps.prisma, identity.userId)) return;
+  // A tap is a reply like any other: it ends the consecutive-outbound streak
+  // and refreshes the conversation the receipts go back to.
+  await deps.prisma.messagingIdentity.update({
+    where: { id: identity.id },
+    data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
+  });
+  const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+  if (!thread) return;
+  const message = await deps.prisma.message.findFirst({
+    where: { id: target.messageId, threadId: thread.id, role: "bot" },
+    select: { id: true, runId: true, blocks: true },
+  });
+  if (!message?.runId) return;
+  const ask = pendingAskOf(message.blocks);
+  if (!ask) {
+    await writeAskReceipt(deps, identity, message.id, "That question was already answered.");
+    return;
+  }
+  if (isSecretAskBlock(ask)) {
+    // Secret asks carry no buttons, so this is unreachable in practice; if a
+    // payload ever names one, the answer still never happens in chat.
+    await writeAskReceipt(deps, identity, message.id, secretAskNotice(deps, identity.botId, ask));
+    return;
+  }
+  const action = ask.actions?.[target.actionIndex];
+  if (!action || typeof action.id !== "string" || typeof action.label !== "string") return;
+  await commitAskAnswer(deps, identity, {
+    threadId: thread.id,
+    runId: message.runId,
+    messageId: message.id,
+    answer: action.id,
+    label: action.label,
+  });
+}
+
+/**
+ * A plain-text answer to the bot's pending choice question: a bare number
+ * picks from the same numbered list the chat card showed, and an option's
+ * own words pick it too. Only choices — approvals and secrets are never
+ * answered from chat text, the same rule the app composer follows — and
+ * anything else stays an ordinary message to the bot.
+ */
+async function tryAnswerPendingChoiceFromText(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  threadId: string,
+  text: string,
+): Promise<boolean> {
+  const content = text.trim();
+  if (!content) return false;
+  const run = await deps.prisma.run.findFirst({
+    where: { threadId, userId: identity.userId, status: "waiting_input" },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!run) return false;
+  const messages = await deps.prisma.message.findMany({
+    where: { threadId, runId: run.id, role: "bot" },
+    orderBy: { seq: "desc" },
+    take: 50,
+    select: { id: true, blocks: true },
+  });
+  for (const message of messages) {
+    const ask = pendingAskOf(message.blocks);
+    if (!ask) continue;
+    // The newest waiting question decides, and only a choice can be answered here.
+    if (isApprovalAskBlock(ask) || isSecretAskBlock(ask) || !ask.actions?.length) return false;
+    const numbered = /^\d{1,3}$/.test(content) ? ask.actions[Number(content) - 1] : undefined;
+    const action = numbered ?? resolveAskChoice(content, ask.actions);
+    if (!action) return false;
+    await commitAskAnswer(deps, identity, {
+      threadId,
+      runId: run.id,
+      messageId: message.id,
+      answer: action.id,
+      label: action.label,
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Commits one chat answer through the app's own answer path and reports the
+ * outcome back into the conversation. A false from the answer path means
+ * the question was settled elsewhere first — never an error, never a
+ * second apply.
+ */
+async function commitAskAnswer(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  input: { threadId: string; runId: string; messageId: string; answer: string; label: string },
+): Promise<void> {
+  const answered = await deps.events.answerRunInput({
+    spaceId: identity.spaceId,
+    threadId: input.threadId,
+    runId: input.runId,
+    messageId: input.messageId,
+    answeredByUserId: identity.userId,
+    answer: input.answer,
+  });
+  if (!answered) {
+    await writeAskReceipt(deps, identity, input.messageId, "That question was already answered.");
+    return;
+  }
+  await deps.jobs.enqueue(runContinueJob(input.runId)).catch((error) => {
+    // The answer is durable; the reconciler repairs a missed immediate wake.
+    getLogger().error("messaging ask answer enqueue", error);
+  });
+  await writeAskReceipt(deps, identity, input.messageId, `✓ ${input.label}`);
+}
+
+/** The notice a secret request gets in chat: the question, then the way into the app. */
+function secretAskNotice(deps: MessagingInboundDeps, botId: string, ask: AskBlock): string {
+  return deps.webOrigin
+    ? `${ask.text}\n\nAnswer securely in Rakazo: ${deps.webOrigin}/app/${botId}`
+    : `${ask.text}\n\nAnswer securely in the Rakazo app.`;
+}
+
+/**
+ * One short follow-up per ask in the DM, keyed by the ask's message: the
+ * first outcome (an answer, a refusal, an already-answered note) is the one
+ * that lands, and repeat taps or redeliveries stay silent.
+ */
+async function writeAskReceipt(
+  deps: MessagingInboundDeps,
+  identity: { id: string },
+  messageId: string,
+  body: string,
+): Promise<void> {
+  const { count } = await deps.prisma.messagingOutbound.createMany({
+    data: [
+      { idempotencyKey: `ask-receipt:${messageId}`, kind: "dm", identityId: identity.id, body },
+    ],
+    skipDuplicates: true,
+  });
+  if (count > 0) await enqueueDeliverJob(deps);
+}
+
 /** A Space being deleted takes no messages; failing would only make the provider redeliver. */
 function droppedWhileDeleting(error: unknown): void {
   if (!(error instanceof SpaceDeletionInProgressError)) throw error;
@@ -219,6 +418,13 @@ async function handleDirectEvent(
       },
       deps.signupPolicy,
     );
+  }
+
+  // A bare number or an option's own words answers the bot's pending choice
+  // question instead of starting a new turn. Only a linked sender can have
+  // one waiting, and a message carrying media stays a message.
+  if (existing && attachments.length === 0 && !event.mediaUrl) {
+    if (await tryAnswerPendingChoiceFromText(deps, existing, ids.threadId, text)) return;
   }
 
   const stored = await storeInboundMedia(deps, ids, event);

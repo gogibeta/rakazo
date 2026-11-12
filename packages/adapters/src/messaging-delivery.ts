@@ -2,13 +2,23 @@ import type {
   AdapterContext,
   ArtifactStore,
   JobPublisher,
+  MessagingAction,
   MessagingOutboundAttachment,
   MessagingOutboundStatus,
   MessagingSurface,
 } from "@rakazo/adapter-kit";
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { botMessageHopExhausted, nextBotMessageHop, pageLinksAsTitles } from "@rakazo/core";
+import {
+  botMessageHopExhausted,
+  isApprovalAskBlock,
+  isSecretAskBlock,
+  MESSAGING_ASK_ACTION_ID,
+  messagingAskActionValue,
+  nextBotMessageHop,
+  pageLinksAsTitles,
+  TAKEOVER_COMPUTER_PENDING_STATE,
+} from "@rakazo/core";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   accountDeactivated,
@@ -21,6 +31,7 @@ import {
   THREAD_LOCK_TRANSACTION_OPTIONS,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { truncate } from "./approval-ask.js";
 import { MessagingSendError } from "./chat-sdk-surface.js";
 import { splitOutboundBody } from "./messaging-platforms.js";
 import { isUserProgressClientNonce } from "./user-progress.js";
@@ -66,6 +77,12 @@ export interface MessagingDeliveryDeps {
   events: Pick<ThreadEvents, "sendUserMessage" | "notify">;
   jobs: Pick<JobPublisher, "enqueue">;
   artifacts: Pick<ArtifactStore, "get">;
+  /**
+   * The deployment's public web origin (its WEB_ORIGIN), when known. Ask and
+   * takeover notices deep-link into the app from it; without it they still
+   * send, just without the link.
+   */
+  appOrigin?: string;
 }
 
 type IdentityRow = {
@@ -168,7 +185,14 @@ async function mirrorRun(
   // reply, so a concurrent DM mirror cannot interleave its parts.
   const linkedPages = linkedPageIds(messages);
   const rowsByMessage = messages.map((message) => {
-    const body = extractText(message.blocks, linkedPages);
+    // A computer waiting on its person travels as its own takeover notice
+    // (with the link that opens the app) instead of a plain status line.
+    const takeover = pendingTakeoverBlock(message.blocks);
+    const ask = pendingAskBlock(message.blocks);
+    const body = extractText(
+      takeover ? withoutBlock(message.blocks, takeover) : message.blocks,
+      linkedPages,
+    );
     const parts = body ? splitOutboundBody(identity.provider, body) : [];
     return [
       ...parts.map((part, index) => ({
@@ -185,6 +209,31 @@ async function mirrorRun(
         body: "",
         sourceMessageId: message.id,
       })),
+      ...(takeover
+        ? [
+            {
+              idempotencyKey: `takeover:${message.id}`,
+              kind: "dm",
+              identityId: identity.id,
+              body: takeoverNoticeBody(deps, run.botId, takeover),
+              sourceMessageId: message.id,
+            },
+          ]
+        : []),
+      // A question the run is paused on travels as its own ask row: the
+      // drain re-checks it is still pending and attaches the tappable
+      // options, so a question answered in the app never goes out stale.
+      ...(ask
+        ? [
+            {
+              idempotencyKey: `ask:${message.id}`,
+              kind: "dm",
+              identityId: identity.id,
+              body: askNoticeBody(deps, run.botId, ask),
+              sourceMessageId: message.id,
+            },
+          ]
+        : []),
     ];
   });
   // While the run is going, send its interim messages up to the first other message that sends
@@ -421,6 +470,138 @@ async function fanOutToPeers(
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+type AskBlock = Extract<MessageBlock, { kind: "ask" }>;
+type ComputerBlock = Extract<MessageBlock, { kind: "computer" }>;
+
+/** Chat-sized cap for a question or a takeover notice sent as one message. */
+const ASK_NOTICE_MAX_LENGTH = 2_000;
+
+/** The first question in the message the bot is still waiting on, if any. */
+function pendingAskBlock(blocks: unknown): AskBlock | null {
+  if (!Array.isArray(blocks)) return null;
+  for (const block of blocks as Array<MessageBlock | null>) {
+    if (block?.kind !== "ask") continue;
+    if (block.status !== "answered" && typeof block.text === "string") return block;
+  }
+  return null;
+}
+
+/** The message's computer block while it waits for its person, if any. */
+function pendingTakeoverBlock(blocks: unknown): ComputerBlock | null {
+  if (!Array.isArray(blocks)) return null;
+  for (const block of blocks as Array<MessageBlock | null>) {
+    if (block?.kind !== "computer") continue;
+    if (block.state === TAKEOVER_COMPUTER_PENDING_STATE) return block;
+  }
+  return null;
+}
+
+function withoutBlock(blocks: unknown, excluded: ComputerBlock): unknown {
+  if (!Array.isArray(blocks)) return blocks;
+  return blocks.filter((block) => block !== excluded);
+}
+
+/** The app's page for one bot, or null when no public origin is configured. */
+function appBotUrl(appOrigin: string | undefined, botId: string): string | null {
+  if (!appOrigin) return null;
+  try {
+    const url = new URL(appOrigin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return `${url.origin}/app/${botId}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The body an ask row carries. Approvals and choices show the question (and
+ * its detail); their options ride as actions at send time instead. A secret
+ * request is never answerable in chat, so its row is only a notice pointing
+ * at the app, where the value goes into the masked card.
+ */
+function askNoticeBody(deps: MessagingDeliveryDeps, botId: string, ask: AskBlock): string {
+  if (isSecretAskBlock(ask)) {
+    const link = appBotUrl(deps.appOrigin, botId);
+    return truncate(
+      link
+        ? `${ask.text}\n\nAnswer securely in Rakazo: ${link}`
+        : `${ask.text}\n\nAnswer securely in the Rakazo app.`,
+      ASK_NOTICE_MAX_LENGTH,
+    );
+  }
+  return truncate(ask.detail ? `${ask.text}\n\n${ask.detail}` : ask.text, ASK_NOTICE_MAX_LENGTH);
+}
+
+/** A takeover wait as a chat notice: what the bot is waiting on, plus the way in. */
+function takeoverNoticeBody(
+  deps: MessagingDeliveryDeps,
+  botId: string,
+  block: ComputerBlock,
+): string {
+  const waiting = block.text || block.state;
+  const link = appBotUrl(deps.appOrigin, botId);
+  return truncate(
+    link ? `${waiting}\n\nTake control: ${link}` : `${waiting}\n\nTake control in the Rakazo app.`,
+    ASK_NOTICE_MAX_LENGTH,
+  );
+}
+
+/**
+ * The tappable options for a pending ask, one per option in order. Every
+ * option shares the ask action id and carries the ask's message plus its own
+ * position as the value, so a tap names exactly one pending question.
+ * Approvals mark Allow primary and Deny danger; choices stay neutral.
+ * Secret requests and free-text questions get no actions at all.
+ */
+function askActionsFor(ask: AskBlock, messageId: string): MessagingAction[] | undefined {
+  if (isSecretAskBlock(ask) || !ask.actions?.length) return undefined;
+  const approval = isApprovalAskBlock(ask);
+  return ask.actions.map((action, index) => ({
+    id: MESSAGING_ASK_ACTION_ID,
+    label: action.label,
+    value: messagingAskActionValue(messageId, index),
+    ...(approval && action.id === "allow" ? { style: "primary" as const } : {}),
+    ...(approval && action.id === "deny" ? { style: "danger" as const } : {}),
+  }));
+}
+
+/**
+ * Sends one ask row. The question is re-read at send time: answered in the
+ * app (or gone) before the drain reached it, the row is dropped instead of
+ * posting a stale card — the same live re-check the connect invites do.
+ * A live question sends with its options attached; a secret or free-text
+ * question sends as the plain notice its row already carries.
+ */
+async function deliverAskRow(
+  deps: MessagingDeliveryDeps,
+  context: AdapterContext,
+  row: MessagingOutboundRow,
+  threadId: string,
+): Promise<"sent" | "skipped"> {
+  const message = await deps.prisma.message.findUnique({
+    where: { id: row.sourceMessageId! },
+    select: { role: true, blocks: true },
+  });
+  const ask = message && message.role === "bot" ? pendingAskBlock(message.blocks) : null;
+  if (!ask) {
+    await deps.prisma.messagingOutbound.update({
+      where: { id: row.id },
+      data: { status: "failed" },
+    });
+    return "skipped";
+  }
+  const actions = askActionsFor(ask, row.sourceMessageId!);
+  const sent = await deps.messaging.sendToThread(
+    { threadId, body: row.body, ...(actions ? { actions } : {}) },
+    context,
+  );
+  await deps.prisma.messagingOutbound.updateMany({
+    where: { id: row.id },
+    data: { providerHandle: sent.handle },
+  });
+  return "sent";
 }
 
 /** `connect:{requesterBotId}:{targetBotId}` — agent-connection approval DMs. */
@@ -674,6 +855,16 @@ async function deliverRow(
         context,
       );
       if (result === "delivered") {
+        accepted = true;
+        await deps.prisma.messagingIdentity.update({
+          where: { id: identity.id },
+          data: { outboundSinceInbound: { increment: 1 } },
+        });
+      }
+      return true;
+    }
+    if (row.idempotencyKey.startsWith("ask:") && row.sourceMessageId) {
+      if ((await deliverAskRow(deps, context, row, threadId)) === "sent") {
         accepted = true;
         await deps.prisma.messagingIdentity.update({
           where: { id: identity.id },

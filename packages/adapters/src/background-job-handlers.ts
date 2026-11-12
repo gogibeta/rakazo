@@ -82,6 +82,8 @@ export function createBackgroundJobHandlers(deps: {
   notifications?: ExpoPushProvider;
   mediaGeneration?: MediaGenerationProvider;
   maxUploadSizeBytes?: number;
+  /** The deployment's public web origin, for links in chat notices. */
+  appOrigin?: string;
 }): BackgroundJobHandlers {
   const messagingDeps = deps.messaging
     ? {
@@ -90,6 +92,7 @@ export function createBackgroundJobHandlers(deps: {
         events: deps.events,
         jobs: deps.jobs,
         artifacts: deps.artifacts,
+        appOrigin: deps.appOrigin,
       }
     : undefined;
   // The outbox holds every Space's pending sends, so draining it is cross-tenant.
