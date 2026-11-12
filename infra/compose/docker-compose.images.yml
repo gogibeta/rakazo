@@ -39,6 +39,8 @@ x-app-environment: &app-environment # Runtime
   WAKEUP_DRIVER: graphile
   AGENT_RUNTIME: pi
   API_URL: ${API_URL:-http://127.0.0.1:5173}
+  # The deployment's public origin; chat notices deep-link into the app from it.
+  WEB_ORIGIN: ${WEB_ORIGIN:-http://127.0.0.1:5173}
   MAX_UPLOAD_SIZE_MB:
   MAX_ATTACHMENTS_PER_MESSAGE:
   RAKAZO_UPDATE_RESTART_SUPERVISOR:
@@ -466,7 +468,6 @@ services:
       API_PORT:
       BETTER_AUTH_SECRET:
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://127.0.0.1:5173}
-      WEB_ORIGIN: ${WEB_ORIGIN:-http://127.0.0.1:5173}
       RAKAZO_EXTRA_AUTH_ORIGINS:
       AUTH_PASSWORD_ENABLED: ${AUTH_PASSWORD_ENABLED:-true}
       AUTH_BREACHED_PASSWORD_CHECK_ENABLED: ${AUTH_BREACHED_PASSWORD_CHECK_ENABLED:-false}
