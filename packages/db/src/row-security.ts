@@ -123,6 +123,8 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
   "UserModelCredentialKey",
   "UserVoiceCredential",
   "UserProxy",
+  "UserWallet",
+  "UserWalletUse",
   "TrustedLinkSite",
   "FeedbackReport",
   "PaymentWallet",
