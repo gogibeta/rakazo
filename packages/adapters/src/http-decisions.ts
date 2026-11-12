@@ -31,10 +31,10 @@ const responseSchema = z.object({
     .optional(),
 });
 
-/** Two implementations of the same decision protocol; endpoint and auth never come from model output. */
+/** Implementations of the same decision protocol; endpoint and auth never come from model output. */
 export class HttpDecisionProvider implements DecisionProvider {
   constructor(
-    private readonly provider: "openrouter" | "typesafe",
+    private readonly provider: "openrouter" | "typesafe" | "nace",
     private readonly options: DecisionProviderOptions,
   ) {
     if (!options.apiKey.trim()) throw new DecisionProviderError("authentication");
@@ -72,7 +72,9 @@ export class HttpDecisionProvider implements DecisionProvider {
       const response = await (this.options.fetch ?? fetch)(
         this.provider === "openrouter"
           ? "https://openrouter.ai/api/alpha/decisions"
-          : "https://api.typesafe.ai/v1/systemone",
+          : this.provider === "nace"
+            ? "https://console.nace.ai/v1/systemone"
+            : "https://api.typesafe.ai/v1/systemone",
         {
           method: "POST",
           redirect: "error",

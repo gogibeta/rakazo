@@ -6,6 +6,7 @@ import { executeCloudAgentTool } from "./cloud-agent-service.js";
 import { collectLogIds } from "./composio-connector.js";
 import { connectApp } from "./connect-app.js";
 import { redactConnectorPayload, sanitizeConnectorError } from "./connector-safety.js";
+import { decisionFromTool } from "./decision-tools.js";
 import { mcpAppViewArguments, mcpAppViewResult } from "./mcp-app.js";
 import { addMcpServerFromTool } from "./mcp-server-tool.js";
 import { serviceCallFromTool, serviceSearchFromTool } from "./paid-service-tools.js";
@@ -165,6 +166,11 @@ export const integrationTools: ToolHandlers = {
     const { context } = ctx;
     const { args } = call;
     return call.finish(await webFetchFromTool(ctx.providers.web, context, args));
+  },
+  async decide(ctx, call) {
+    const decisions = ctx.providers.decisions;
+    if (!decisions) return call.finish({ error: "Decision model is unavailable." });
+    return call.finish(await decisionFromTool(decisions, ctx.context, call.args));
   },
   async service_search(ctx, call) {
     const provider = ctx.providers.paidServices;

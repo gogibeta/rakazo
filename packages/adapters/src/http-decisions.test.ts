@@ -32,89 +32,94 @@ const response = (choice = "pass") =>
     }),
   );
 
-describe.each(["openrouter", "typesafe"] as const)("%s decision conformance", (provider) => {
-  it("translates requests, validates choices, and reports paid usage", async () => {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response());
-    const onUsage = vi.fn();
-    const beforeCall = vi.fn().mockResolvedValue("reservation");
-    const afterCall = vi.fn();
-    const result = await new HttpDecisionProvider(provider, {
-      apiKey: "fake-key",
-      fetch: fetchMock,
-      onUsage,
-      callObserver: { beforeCall, afterCall },
-    }).decide(request, context);
-    expect(result.answers.decision).toEqual({ type: "choice", choice: "pass", confidence: 0.9 });
-    expect(fetchMock).toHaveBeenCalledWith(
-      provider === "openrouter"
-        ? "https://openrouter.ai/api/alpha/decisions"
-        : "https://api.typesafe.ai/v1/systemone",
-      expect.objectContaining({
-        redirect: "error",
-        body: JSON.stringify(request),
-        signal: context.signal,
-      }),
-    );
-    expect(onUsage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider,
-        model: request.model,
-        callId: expect.any(String),
-        costSource: "provider-reported",
-        costUsd: 0.0000042,
-      }),
-    );
-    expect(afterCall).toHaveBeenCalledWith(
-      "reservation",
-      expect.objectContaining({ costUsd: 0.0000042 }),
-    );
-    if (provider === "openrouter")
-      expect(beforeCall).toHaveBeenCalledWith(
-        expect.objectContaining({ maxCostUsd: expect.any(Number) }),
-      );
-  });
-  it("rejects unknown answers while retaining provider costs", async () => {
-    const onUsage = vi.fn();
-    await expect(
-      new HttpDecisionProvider(provider, {
-        apiKey: "fake-key",
-        fetch: async () => response("unknown"),
-        onUsage,
-      }).decide(request, context),
-    ).rejects.toMatchObject({ kind: "invalid_response" });
-    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ costUsd: 0.0000042 }));
-  });
-  it("releases reservations on explicit provider rejection without exposing response bodies", async () => {
-    const afterCall = vi.fn();
-    await expect(
-      new HttpDecisionProvider(provider, {
-        apiKey: "fake-key",
-        fetch: async () => new Response("fake-key", { status: 401 }),
-        callObserver: { beforeCall: () => "reservation", afterCall },
-      }).decide(request, context),
-    ).rejects.toMatchObject({ kind: "authentication" });
-    expect(afterCall).toHaveBeenCalledWith(
-      "reservation",
-      expect.objectContaining({ costUsd: 0, usageSource: "provider-rejected" }),
-    );
-  });
-  it("does not call a provider when reservation fails", async () => {
-    const fetchMock = vi.fn();
-    await expect(
-      new HttpDecisionProvider(provider, {
+describe.each(["openrouter", "typesafe", "nace"] as const)(
+  "%s decision conformance",
+  (provider) => {
+    it("translates requests, validates choices, and reports paid usage", async () => {
+      const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response());
+      const onUsage = vi.fn();
+      const beforeCall = vi.fn().mockResolvedValue("reservation");
+      const afterCall = vi.fn();
+      const result = await new HttpDecisionProvider(provider, {
         apiKey: "fake-key",
         fetch: fetchMock,
-        callObserver: {
-          beforeCall: () => {
-            throw new Error("Credits unavailable");
+        onUsage,
+        callObserver: { beforeCall, afterCall },
+      }).decide(request, context);
+      expect(result.answers.decision).toEqual({ type: "choice", choice: "pass", confidence: 0.9 });
+      expect(fetchMock).toHaveBeenCalledWith(
+        provider === "openrouter"
+          ? "https://openrouter.ai/api/alpha/decisions"
+          : provider === "nace"
+            ? "https://console.nace.ai/v1/systemone"
+            : "https://api.typesafe.ai/v1/systemone",
+        expect.objectContaining({
+          redirect: "error",
+          body: JSON.stringify(request),
+          signal: context.signal,
+        }),
+      );
+      expect(onUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider,
+          model: request.model,
+          callId: expect.any(String),
+          costSource: "provider-reported",
+          costUsd: 0.0000042,
+        }),
+      );
+      expect(afterCall).toHaveBeenCalledWith(
+        "reservation",
+        expect.objectContaining({ costUsd: 0.0000042 }),
+      );
+      if (provider === "openrouter")
+        expect(beforeCall).toHaveBeenCalledWith(
+          expect.objectContaining({ maxCostUsd: expect.any(Number) }),
+        );
+    });
+    it("rejects unknown answers while retaining provider costs", async () => {
+      const onUsage = vi.fn();
+      await expect(
+        new HttpDecisionProvider(provider, {
+          apiKey: "fake-key",
+          fetch: async () => response("unknown"),
+          onUsage,
+        }).decide(request, context),
+      ).rejects.toMatchObject({ kind: "invalid_response" });
+      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ costUsd: 0.0000042 }));
+    });
+    it("releases reservations on explicit provider rejection without exposing response bodies", async () => {
+      const afterCall = vi.fn();
+      await expect(
+        new HttpDecisionProvider(provider, {
+          apiKey: "fake-key",
+          fetch: async () => new Response("fake-key", { status: 401 }),
+          callObserver: { beforeCall: () => "reservation", afterCall },
+        }).decide(request, context),
+      ).rejects.toMatchObject({ kind: "authentication" });
+      expect(afterCall).toHaveBeenCalledWith(
+        "reservation",
+        expect.objectContaining({ costUsd: 0, usageSource: "provider-rejected" }),
+      );
+    });
+    it("does not call a provider when reservation fails", async () => {
+      const fetchMock = vi.fn();
+      await expect(
+        new HttpDecisionProvider(provider, {
+          apiKey: "fake-key",
+          fetch: fetchMock,
+          callObserver: {
+            beforeCall: () => {
+              throw new Error("Credits unavailable");
+            },
+            afterCall: vi.fn(),
           },
-          afterCall: vi.fn(),
-        },
-      }).decide(request, context),
-    ).rejects.toThrow("Credits unavailable");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-});
+        }).decide(request, context),
+      ).rejects.toThrow("Credits unavailable");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  },
+);
 
 describe("decision provider failures", () => {
   it("keeps a full prompt count for an aborted request", async () => {

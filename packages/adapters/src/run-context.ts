@@ -31,6 +31,7 @@ import type { loadBotMessageContext } from "./bot-messages.js";
 import { partitionTools } from "./builtin-tool-bridge.js";
 import type { ComputerExecutionLease } from "./computer-lifecycle.js";
 import type { UnchangedVisualStreak } from "./computer-tools.js";
+import type { ConfiguredDecision } from "./configured-decision.js";
 import type { selectRunConnections } from "./connection-context.js";
 import type { ExecutorDeps } from "./executor-deps.js";
 import type { FleetRun } from "./fleet-tools.js";
@@ -264,6 +265,7 @@ export interface RunProviders {
   web: WebProvider;
   mediaGeneration: MediaGenerationProvider | undefined;
   paidServices: PaidServiceProvider | undefined;
+  decisions: ConfiguredDecision | undefined;
   browser: BrowserProvider;
   cloudAgent: ExecutorDeps["cloudAgent"];
 }
