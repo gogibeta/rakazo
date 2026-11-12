@@ -88,6 +88,11 @@ export const POPULAR_MODEL_PROVIDER_IDS = [
   "openai",
   "openrouter",
   "google",
+  // The compatible provider and its hosted presets (Ollama Cloud, Intern
+  // InkStone, MOSS) lead the long tail: they are how most self-hosted and
+  // regional providers get connected, and burying them alphabetically among
+  // fifty providers makes them effectively undiscoverable.
+  "openai-compatible",
 ] as const;
 
 const DEFAULT_PROVIDER_COUNT = POPULAR_MODEL_PROVIDER_IDS.length;

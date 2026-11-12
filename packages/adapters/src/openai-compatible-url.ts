@@ -13,11 +13,17 @@ import {
 
 export { normalizeOpenAiCompatibleBaseUrl, OPENAI_COMPATIBLE_PROVIDER_ID };
 
-const BUILT_IN_PUBLIC_MODEL_HOSTS = new Set(["ollama.com"]);
+const BUILT_IN_PUBLIC_MODEL_HOSTS = new Set([
+  "ollama.com",
+  "discovery-api.intern-ai.org.cn",
+  "api.mosi.cn",
+]);
 
 /** Hosted compatible services the catalog offers by name. Each one needs a key. */
 export const COMPATIBLE_ENDPOINT_PRESETS: CompatibleEndpointPreset[] = [
   { name: "Ollama Cloud", baseUrl: "https://ollama.com/v1" },
+  { name: "Intern InkStone", baseUrl: "https://discovery-api.intern-ai.org.cn/v1" },
+  { name: "MOSS", baseUrl: "https://api.mosi.cn/v1" },
 ];
 
 export function compatibleEndpointPreset(baseUrl: string | undefined) {

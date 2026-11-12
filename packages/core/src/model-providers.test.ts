@@ -34,6 +34,8 @@ describe("popularModelProvidersFirst", () => {
       { id: "azure", name: "Azure OpenAI" },
       { id: "google", name: "Google" },
       { id: "openai-compatible", name: "Ollama Cloud" },
+      { id: "openai-compatible", name: "Intern InkStone" },
+      { id: "openai-compatible", name: "MOSS" },
       { id: "groq", name: "Groq" },
       { id: "openrouter", name: "OpenRouter" },
       { id: "openai-codex", name: "ChatGPT" },
@@ -48,10 +50,12 @@ describe("popularModelProvidersFirst", () => {
       "ChatGPT",
       "OpenRouter",
       "Google",
-      "Azure OpenAI",
-      "Groq",
+      "Intern InkStone",
+      "MOSS",
       "Ollama Cloud",
       "OpenAI-compatible",
+      "Azure OpenAI",
+      "Groq",
     ]);
   });
 });
