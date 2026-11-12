@@ -167,6 +167,7 @@ function RoutineShot() {
     schedules: [preset],
     webhookEnabled: false,
     githubEnabled: false,
+    deliverResultToChat: false,
     messageProvider: null,
     emailSenders: null,
     active: true,
