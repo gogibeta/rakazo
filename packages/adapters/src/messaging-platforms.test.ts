@@ -134,6 +134,26 @@ describe("messagingPlatformsFromEnv", () => {
     expect(platforms[1]!.capabilities.groups).toBe(true);
   });
 
+  it("declares button and file support per platform", () => {
+    const capabilities = Object.fromEntries(
+      messagingPlatformsFromEnv(fullEnv).map((platform) => [
+        platform.provider,
+        platform.capabilities,
+      ]),
+    );
+    // Telegram renders inline keyboards and has always taken files.
+    expect(capabilities.telegram).toMatchObject({ files: true, actions: true });
+    // Slack renders Block Kit buttons and uploads files; its in-repo
+    // descriptor simply never claimed either.
+    expect(capabilities.slack).toMatchObject({ files: true, actions: true });
+    // WhatsApp renders reply buttons up to Meta's three-button cap.
+    expect(capabilities.whatsapp).toMatchObject({ files: true, actions: true, maxActions: 3 });
+    // Platforms whose adapters never report a tap keep the text fallback.
+    expect(capabilities.sendblue?.actions).toBeUndefined();
+    expect(capabilities.lark?.actions).toBeUndefined();
+    expect(capabilities.photon?.actions).toBeUndefined();
+  });
+
   it("reads named Telegram bots from TELEGRAM_BOT_TOKEN_<NAME> pairs", () => {
     expect(
       telegramBotsFromEnv({
@@ -376,13 +396,27 @@ describe("messagingPlatformsFromEnv", () => {
       platforms.map((platform) => [platform.provider, platform.capabilities]),
     );
     expect(capabilities.sendblue).toEqual({ direct: true, groups: true, receipt: "typing" });
-    expect(capabilities.slack).toEqual({ direct: true, groups: true, receipt: "reaction" });
-    expect(capabilities.whatsapp).toEqual({ direct: true, groups: false, receipt: null });
+    expect(capabilities.slack).toEqual({
+      direct: true,
+      groups: true,
+      receipt: "reaction",
+      files: true,
+      actions: true,
+    });
+    expect(capabilities.whatsapp).toEqual({
+      direct: true,
+      groups: false,
+      receipt: null,
+      files: true,
+      actions: true,
+      maxActions: 3,
+    });
     expect(capabilities.telegram).toEqual({
       direct: true,
       groups: true,
       receipt: null,
       files: true,
+      actions: true,
     });
     expect(capabilities.lark).toEqual({ direct: true, groups: false, receipt: null });
     expect(capabilities.photon).toEqual({ direct: true, groups: false, receipt: "typing" });

@@ -903,27 +903,100 @@ function linkedPageIds(messages: readonly { blocks: unknown }[]): Set<string> {
   return ids;
 }
 
+/** The block fields the text mirror reads, beyond text and page blocks. */
+type RenderableBlock = {
+  kind?: unknown;
+  text?: unknown;
+  pageId?: unknown;
+  title?: unknown;
+  lines?: unknown;
+  steps?: unknown;
+  state?: unknown;
+  name?: unknown;
+  data?: unknown;
+};
+
 /**
  * The text other channels get. A page card cannot travel, so a page the reply does not name goes
- * as its title.
+ * as its title. Structured blocks travel as compact text: a card as its
+ * key/value lines, steps as one line each, a computer block as its status
+ * text, a chart as its name over a small table of its data.
  */
 function extractText(blocks: unknown, linkedPages: ReadonlySet<string>): string {
   if (!Array.isArray(blocks)) return "";
   return blocks
-    .flatMap(
-      (block: { kind?: unknown; text?: unknown; pageId?: unknown; title?: unknown } | null) => {
-        if (block?.kind === "text" && typeof block.text === "string")
-          return [pageLinksAsTitles(block.text)];
-        if (
-          block?.kind === "page" &&
-          typeof block.title === "string" &&
-          typeof block.pageId === "string" &&
-          !linkedPages.has(block.pageId)
-        )
-          return [block.title];
-        return [];
-      },
-    )
+    .flatMap((block: RenderableBlock | null) => {
+      if (block?.kind === "text" && typeof block.text === "string")
+        return [pageLinksAsTitles(block.text)];
+      if (
+        block?.kind === "page" &&
+        typeof block.title === "string" &&
+        typeof block.pageId === "string" &&
+        !linkedPages.has(block.pageId)
+      )
+        return [block.title];
+      if (block?.kind === "card") return cardLines(block.lines);
+      if (block?.kind === "steps") return stepLines(block.steps);
+      if (block?.kind === "computer") {
+        const line = typeof block.text === "string" && block.text ? block.text : block.state;
+        return typeof line === "string" && line ? [line] : [];
+      }
+      if (block?.kind === "chart") return chartLines(block);
+      return [];
+    })
     .join("\n")
     .trim();
+}
+
+/** A card block as one "key: value" line per entry. */
+function cardLines(lines: unknown): string[] {
+  if (!Array.isArray(lines)) return [];
+  const rendered = lines.flatMap((line: { k?: unknown; v?: unknown } | null) =>
+    typeof line?.k === "string" && typeof line?.v === "string" ? [`${line.k}: ${line.v}`] : [],
+  );
+  return rendered.length ? [rendered.join("\n")] : [];
+}
+
+/** A steps block as one line per step, with its call count when it ran more than once. */
+function stepLines(steps: unknown): string[] {
+  if (!Array.isArray(steps)) return [];
+  const rendered = steps.flatMap((step: { label?: unknown; count?: unknown } | null) => {
+    if (typeof step?.label !== "string") return [];
+    return [
+      typeof step.count === "number" && step.count > 1
+        ? `${step.label} ×${step.count}`
+        : step.label,
+    ];
+  });
+  return rendered.length ? [rendered.join("\n")] : [];
+}
+
+/** Data rows shown under a chart's name in the text mirror. */
+const CHART_MIRROR_MAX_ROWS = 10;
+
+/** A chart block as its name over a plain table of its first rows, when the data is flat. */
+function chartLines(block: { name?: unknown; data?: unknown }): string[] {
+  if (typeof block.name !== "string") return [];
+  const rows = Array.isArray(block.data) ? block.data : [];
+  const first = rows[0] as Record<string, unknown> | null;
+  if (!first || typeof first !== "object" || Array.isArray(first)) return [block.name];
+  const columns = Object.keys(first);
+  if (columns.length === 0 || columns.some((column) => !isChartCell(first[column])))
+    return [block.name];
+  const lines = [block.name, columns.join(" | ")];
+  for (const row of rows.slice(0, CHART_MIRROR_MAX_ROWS)) {
+    const record = row as Record<string, unknown>;
+    lines.push(
+      columns
+        .map((column) => (isChartCell(record[column]) ? String(record[column] ?? "") : ""))
+        .join(" | "),
+    );
+  }
+  if (rows.length > CHART_MIRROR_MAX_ROWS)
+    lines.push(`(${rows.length - CHART_MIRROR_MAX_ROWS} more rows)`);
+  return [lines.join("\n")];
+}
+
+function isChartCell(value: unknown): boolean {
+  return value === null || ["string", "number", "boolean"].includes(typeof value);
 }

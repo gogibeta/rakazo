@@ -4,6 +4,7 @@ import type {
   AdapterContext,
   AdapterDescriptor,
   MessagingCapabilities,
+  MessagingInboundAction,
   MessagingInboundAttachment,
   MessagingInboundEvent,
   MessagingInboundMessage,
@@ -16,17 +17,26 @@ import type {
   MessagingSurface,
 } from "@rakazo/adapter-kit";
 import { getLogger } from "@rakazo/logging";
-import type { Adapter, Message, PostableMarkdown, Root, Thread } from "chat";
+import type {
+  ActionEvent,
+  Adapter,
+  CardElement,
+  Message,
+  PostableMarkdown,
+  Root,
+  Thread,
+} from "chat";
 import { Chat, isLinkNode, paragraph, parseMarkdown, root, text, toPlainText, walkAst } from "chat";
 import { getLarkTextParts } from "./lark/text-parts.js";
 
 /**
  * Per-webhook drain of Chat SDK waitUntil work, plus the Chat dedupe keys of
- * messages the inbound sink failed on.
+ * messages the inbound sink failed on and a count of failed action events.
  */
 const webhookDrain = new AsyncLocalStorage<{
   pending: Promise<unknown>[];
   failedKeys: string[];
+  failedActions: number;
   markdownChars: number;
 }>();
 
@@ -226,6 +236,23 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       chat.onNewMention(deliver);
       chat.onSubscribedMessage(deliver);
       chat.onNewMessage(/(?:)/, deliver);
+      chat.onAction(async (event) => {
+        const action = this.toInboundAction(mounted, event);
+        if (!action) return;
+        try {
+          await this.sink?.(action);
+        } catch (error) {
+          // processAction swallows handler errors into its tracked promise,
+          // so count the failure for the webhook drain instead: the response
+          // turns 5xx and the vendor redelivers. A tap's downstream nonce
+          // derives from the tapped message and action ids, so a redelivery
+          // of a tap that partly succeeded still lands only once. Polling
+          // adapters have no webhook drain; their taps stay at-most-once.
+          const drain = webhookDrain.getStore();
+          if (drain) drain.failedActions += 1;
+          throw error;
+        }
+      });
     }
   }
 
@@ -282,9 +309,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     }
     const message = attachment
       ? attachmentMessage(telegram, request.body, attachment)
-      : markdown
-        ? { markdown: request.body }
-        : request.body;
+      : postableForSend(mounted.platform, request, markdown);
     try {
       const sent = await mounted.chat
         .thread(toAdapterThreadId(mounted, request.threadId))
@@ -447,6 +472,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     const drain = {
       pending: [] as Promise<unknown>[],
       failedKeys: [] as string[],
+      failedActions: 0,
       markdownChars: 0,
     };
     const response = await webhookDrain.run(drain, async () => {
@@ -459,7 +485,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
       return adapterResponse;
     });
     const payload = parseJson(body);
-    if (drain.failedKeys.length > 0) {
+    if (drain.failedKeys.length > 0 || drain.failedActions > 0) {
       // Chat marks a message seen before our handler runs (and Slack marks the
       // event delivered), so the vendor's retry would be acknowledged and
       // dropped. Forget the failed deliveries; the sink's per-message client
@@ -525,6 +551,87 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     const enrichment = platform.enrichTeamRoom?.(message.raw, base) ?? {};
     return { ...base, ...enrichment };
   }
+
+  private toInboundAction(
+    mounted: MountedPlatform,
+    event: ActionEvent,
+  ): MessagingInboundAction | null {
+    if (event.user.isMe || !event.thread) return null;
+    const { platform } = mounted;
+    const isDirect = event.thread.isDM;
+    if (!isDirect && !platform.capabilities.groups) return null;
+    const fromLabel = event.user.fullName || event.user.userName || null;
+    return {
+      type: "action",
+      provider: platform.provider,
+      handle: `${event.messageId}:${event.actionId}`,
+      threadId: toProviderThreadId(
+        mounted,
+        platform.normalizeThreadId?.(event.threadId, event.raw) ?? event.threadId,
+      ),
+      isDirect,
+      from: event.user.userId,
+      fromLabel: fromLabel === event.user.userId ? null : fromLabel,
+      actionId: event.actionId,
+      ...(event.value ? { value: event.value } : {}),
+      messageId: event.messageId,
+    };
+  }
+}
+
+/**
+ * The postable for a text send. Platforms that render actions natively get
+ * a card; every other send keeps today's string/markdown shape, with the
+ * card title leading the text and each action the platform cannot render
+ * appended as a numbered list, so the choices stay answerable by an
+ * ordinary reply naming the number.
+ */
+function postableForSend(
+  platform: MessagingPlatform,
+  request: MessagingSendRequest,
+  markdown: boolean,
+): string | PostableMarkdown | CardElement {
+  const actions = request.actions ?? [];
+  const title = request.card?.title;
+  if (actions.length === 0 && !title) {
+    return markdown ? { markdown: request.body } : request.body;
+  }
+  const { capabilities } = platform;
+  const buttons = capabilities.actions
+    ? actions.slice(0, capabilities.maxActions ?? actions.length)
+    : [];
+  const listed = actions.slice(buttons.length);
+  const listText = listed
+    .map((action, index) => `${buttons.length + index + 1}. ${action.label}`)
+    .join("\n");
+  const cardBody = request.card?.body ?? request.body;
+  const body = listText ? [cardBody, listText].filter(Boolean).join("\n\n") : cardBody;
+  if (!capabilities.actions) {
+    const text = title ? [title, body].filter(Boolean).join("\n") : body;
+    return markdown ? { markdown: text } : text;
+  }
+  const card: CardElement = {
+    type: "card",
+    ...(title ? { title } : {}),
+    children: [
+      ...(body ? [{ type: "text" as const, content: body }] : []),
+      ...(buttons.length
+        ? [
+            {
+              type: "actions" as const,
+              children: buttons.map((action) => ({
+                type: "button" as const,
+                id: action.id,
+                label: action.label,
+                ...(action.style ? { style: action.style } : {}),
+                ...(action.value ? { value: action.value } : {}),
+              })),
+            },
+          ]
+        : []),
+    ],
+  };
+  return card;
 }
 
 /**

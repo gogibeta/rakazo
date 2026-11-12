@@ -1,5 +1,6 @@
 import type {
   AdapterContext,
+  MessagingInboundAction,
   MessagingInboundEvent,
   MessagingInboundMessage,
   MessagingInstallation,
@@ -193,6 +194,7 @@ export class InstalledMessagingSurface implements MessagingSurface {
       const surface = this.provider.surface(installation.credential);
       surface.onInbound(async (event) => {
         if (event.type === "message") await this.sink?.(scopeMessage(installation, event));
+        else if (event.type === "action") await this.sink?.(scopeAction(installation, event));
       });
       entry = { workspaceId: installation.workspaceId, digest, surface, users: 0, retired: false };
       if (this.surfaces.size >= MAX_CACHED_SURFACES) {
@@ -242,6 +244,26 @@ function unScopeHandle(installation: MessagingInstallation, handle: string): str
 /** A workspace user's address as inbound messages from that workspace carry it. */
 export function installationSenderAddress(workspaceId: string, userId: string): string {
   return `${workspaceId}:${userId}`;
+}
+/** A workspace user's tap, scoped like their messages. */
+function scopeAction(
+  installation: MessagingInstallation,
+  event: MessagingInboundAction,
+): MessagingInboundAction {
+  if (event.workspaceId && event.workspaceId !== installation.workspaceId)
+    throw new Error("Messaging workspace mismatch");
+  return {
+    ...event,
+    provider: installation.provider,
+    workspaceId: installation.workspaceId,
+    installationId: installation.id,
+    installationSpaceId: installation.spaceId,
+    installationBotId: installation.botId,
+    handle: `${installation.workspaceId}:${event.handle}`,
+    messageId: `${installation.workspaceId}:${event.messageId}`,
+    from: installationSenderAddress(installation.workspaceId, event.from),
+    threadId: scopeThread(installation, event.threadId),
+  };
 }
 function scopeMessage(
   installation: MessagingInstallation,

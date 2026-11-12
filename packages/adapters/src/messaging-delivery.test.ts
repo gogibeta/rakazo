@@ -398,6 +398,73 @@ describe("deliverMessagingOutbound", () => {
     expect(sentBodies(both)).toEqual(["Open Plan, or write `[Plan](page:cm123)`."]);
   });
 
+  it("mirrors structured blocks as compact text", async () => {
+    const deps = createDeps({
+      messages: [
+        {
+          id: "m-1",
+          blocks: [
+            { kind: "text", text: "Here is the summary." },
+            {
+              kind: "card",
+              lines: [
+                { k: "Status", v: "Done" },
+                { k: "Total", v: "42" },
+              ],
+            },
+            {
+              kind: "steps",
+              steps: [
+                { label: "Searched the web", count: 3 },
+                { label: "Read the page", count: 1 },
+              ],
+            },
+            { kind: "computer", state: "working", text: "Filling in the form" },
+            {
+              kind: "chart",
+              name: "Signups",
+              spec: {},
+              data: [
+                { day: "Mon", count: 3 },
+                { day: "Tue", count: 5 },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(sentBodies(deps)).toEqual([
+      [
+        "Here is the summary.",
+        "Status: Done",
+        "Total: 42",
+        "Searched the web ×3",
+        "Read the page",
+        "Filling in the form",
+        "Signups",
+        "day | count",
+        "Mon | 3",
+        "Tue | 5",
+      ].join("\n"),
+    ]);
+  });
+
+  it("mirrors a chart whose data is not flat rows as its name only", async () => {
+    const deps = createDeps({
+      messages: [
+        {
+          id: "m-1",
+          blocks: [{ kind: "chart", name: "Trend", spec: {}, data: [{ points: [1, 2] }] }],
+        },
+      ],
+    });
+    await deliverMessagingOutbound(deps, { runId: "run-1" }, context);
+
+    expect(sentBodies(deps)).toEqual(["Trend"]);
+  });
+
   it("resolves the DM thread once and caches it when the identity has none", async () => {
     const deps = createDeps({
       identity: { dmThreadId: null },

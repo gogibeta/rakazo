@@ -47,7 +47,31 @@ function createPlatform(
           isMention?: boolean;
           rawType?: string;
           files?: Array<{ name: string; url: string; authenticated?: boolean }>;
+          action?: { actionId: string; value?: string; messageId: string; isMe?: boolean };
         };
+        if (payload.action) {
+          // Like the real adapters: fire processAction and let waitUntil
+          // carry the work past the webhook response.
+          chat!.processAction(
+            {
+              adapter,
+              actionId: payload.action.actionId,
+              ...(payload.action.value !== undefined ? { value: payload.action.value } : {}),
+              messageId: payload.action.messageId,
+              threadId: payload.threadId,
+              user: {
+                userId: "U123",
+                userName: "testuser",
+                fullName: "Test User",
+                isBot: false,
+                isMe: payload.action.isMe ?? false,
+              },
+              raw: {},
+            },
+            options,
+          );
+          return new Response("ok");
+        }
         // Fire-and-forget: matches Chat SDK adapters that return 200 before
         // processMessage settles, relying on waitUntil for background work.
         chat!.processMessage(
@@ -849,6 +873,200 @@ describe("ChatSdkMessagingSurface outbound", () => {
     await expect(surface.openDirectThread("nope", "+15551234567", context)).rejects.toThrow(
       /Unknown messaging provider/,
     );
+  });
+});
+
+describe("ChatSdkMessagingSurface outbound actions", () => {
+  const actions = [
+    { id: "approve", label: "Approve", style: "primary" as const, value: "yes" },
+    { id: "deny", label: "Deny", style: "danger" as const },
+  ];
+
+  it("posts a card with native buttons on an actions platform", async () => {
+    const { surface, adapter } = createSurface({
+      provider: "telegram",
+      capabilities: { direct: true, groups: true, receipt: null, files: true, actions: true },
+    });
+
+    await surface.sendToThread(
+      {
+        threadId: "telegram:123",
+        body: "Deploy to production?",
+        card: { title: "Approval" },
+        actions,
+      },
+      context,
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledExactlyOnceWith("telegram:123", {
+      type: "card",
+      title: "Approval",
+      children: [
+        { type: "text", content: "Deploy to production?" },
+        {
+          type: "actions",
+          children: [
+            { type: "button", id: "approve", label: "Approve", style: "primary", value: "yes" },
+            { type: "button", id: "deny", label: "Deny", style: "danger" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("caps native buttons at the platform limit and lists the rest as numbered text", async () => {
+    const { surface, adapter } = createSurface({
+      provider: "whatsapp",
+      capabilities: { direct: true, groups: false, receipt: null, actions: true, maxActions: 3 },
+    });
+    const five = ["One", "Two", "Three", "Four", "Five"].map((label, index) => ({
+      id: `opt-${index + 1}`,
+      label,
+    }));
+
+    await surface.sendToThread(
+      { threadId: "whatsapp:1555", body: "Pick one", actions: five },
+      context,
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledExactlyOnceWith("whatsapp:1555", {
+      type: "card",
+      children: [
+        { type: "text", content: "Pick one\n\n4. Four\n5. Five" },
+        {
+          type: "actions",
+          children: [
+            { type: "button", id: "opt-1", label: "One" },
+            { type: "button", id: "opt-2", label: "Two" },
+            { type: "button", id: "opt-3", label: "Three" },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("degrades actions to a numbered list where buttons cannot render", async () => {
+    const { surface, adapter } = createSurface({ provider: "slack" });
+
+    await surface.sendToThread(
+      { threadId: "slack:C1:9", body: "Deploy?", card: { title: "Approval" }, actions },
+      context,
+    );
+
+    expect(adapter.postMessage).toHaveBeenCalledExactlyOnceWith(
+      "slack:C1:9",
+      "Approval\nDeploy?\n\n1. Approve\n2. Deny",
+    );
+  });
+
+  it("degrades to a markdown send with the list on a markdown platform without actions", async () => {
+    const { surface, adapter } = createSurface({ provider: "telegram" });
+
+    await surface.sendToThread({ threadId: "telegram:123", body: "Deploy?", actions }, context);
+
+    expect(adapter.postMessage).toHaveBeenCalledExactlyOnceWith("telegram:123", {
+      markdown: "Deploy?\n\n1. Approve\n2. Deny",
+    });
+  });
+});
+
+describe("ChatSdkMessagingSurface inbound actions", () => {
+  it("normalizes a button tap into an inbound action event", async () => {
+    const { surface, events } = createSurface({
+      capabilities: { direct: true, groups: true, receipt: "typing", actions: true },
+    });
+
+    const response = await surface.handleWebhook(
+      "mock",
+      webhookRequest({
+        threadId: "mock:Duser:1",
+        action: { actionId: "approve", value: "yes", messageId: "m-9" },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(events).toEqual([
+      {
+        type: "action",
+        provider: "mock",
+        handle: "m-9:approve",
+        threadId: "mock:Duser:1",
+        isDirect: true,
+        from: "U123",
+        fromLabel: "Test User",
+        actionId: "approve",
+        value: "yes",
+        messageId: "m-9",
+      },
+    ]);
+  });
+
+  it("rewrites the adapter thread prefix for taps on a renamed mount", async () => {
+    const { surface, events } = createSurface({ provider: "mock-work", adapterName: "mock" });
+
+    await surface.handleWebhook(
+      "mock-work",
+      webhookRequest({
+        threadId: "mock:Duser:1",
+        action: { actionId: "deny", messageId: "m-2" },
+      }),
+    );
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "action",
+        provider: "mock-work",
+        threadId: "mock-work:Duser:1",
+        actionId: "deny",
+      }),
+    ]);
+  });
+
+  it("drops taps in groups on a platform without group support", async () => {
+    const { surface, events } = createSurface({
+      capabilities: { direct: true, groups: false, receipt: null, actions: true },
+    });
+
+    await surface.handleWebhook(
+      "mock",
+      webhookRequest({
+        threadId: "mock:C1:9",
+        action: { actionId: "approve", messageId: "m-9" },
+      }),
+    );
+
+    expect(events).toEqual([]);
+  });
+
+  it("ignores taps from the bot itself", async () => {
+    const { surface, events } = createSurface();
+
+    await surface.handleWebhook(
+      "mock",
+      webhookRequest({
+        threadId: "mock:Duser:1",
+        action: { actionId: "approve", messageId: "m-9", isMe: true },
+      }),
+    );
+
+    expect(events).toEqual([]);
+  });
+
+  it("answers 500 when the sink fails on a tap, so the vendor redelivers", async () => {
+    const { surface } = createSurface();
+    surface.onInbound(async () => {
+      throw new Error("db down");
+    });
+
+    const response = await surface.handleWebhook(
+      "mock",
+      webhookRequest({
+        threadId: "mock:Duser:1",
+        action: { actionId: "approve", messageId: "m-9" },
+      }),
+    );
+
+    expect(response?.status).toBe(500);
   });
 });
 

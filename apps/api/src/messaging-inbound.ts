@@ -1,4 +1,9 @@
-import type { JobPublisher, MessagingInboundMessage, SandboxProvider } from "@rakazo/adapter-kit";
+import type {
+  JobPublisher,
+  MessagingInboundAction,
+  MessagingInboundMessage,
+  SandboxProvider,
+} from "@rakazo/adapter-kit";
 import { messagingDeliverJob, runContinueJob } from "@rakazo/adapter-kit";
 import { insertOutboundRows } from "@rakazo/adapters";
 import type { MessageBlock } from "@rakazo/contracts";
@@ -109,6 +114,33 @@ export function createMessagingInboundHandler(deps: MessagingInboundDeps) {
       return;
     }
     await handleDirectEvent(deps, event).catch(droppedWhileDeleting);
+  };
+}
+
+/**
+ * A button tap enters the same path as a message: the tap is the person's
+ * answer to the message that offered the actions, so it becomes a message
+ * whose text is the chosen action — its payload when the send set one,
+ * else its id. The tap's handle keeps the delivery nonce (and with it,
+ * redelivery dedupe) stable per message and action.
+ */
+export function messagingMessageForAction(event: MessagingInboundAction): MessagingInboundMessage {
+  return {
+    type: "message",
+    provider: event.provider,
+    handle: event.handle,
+    threadId: event.threadId,
+    isDirect: event.isDirect,
+    from: event.from,
+    fromLabel: event.fromLabel,
+    channelName: null,
+    participants: [],
+    content: event.value ?? event.actionId,
+    mediaUrl: null,
+    ...(event.workspaceId ? { workspaceId: event.workspaceId } : {}),
+    ...(event.installationId ? { installationId: event.installationId } : {}),
+    ...(event.installationSpaceId ? { installationSpaceId: event.installationSpaceId } : {}),
+    ...(event.installationBotId ? { installationBotId: event.installationBotId } : {}),
   };
 }
 
