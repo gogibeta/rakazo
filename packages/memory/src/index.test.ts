@@ -61,6 +61,34 @@ describe("memory store contract shape", () => {
     });
   });
 
+  it("lists every document in scope for an empty search, as before", async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      { id: "memory-1", path: "facts.md", content: "A fact", revision: 1, updatedAt: new Date() },
+      { id: "memory-2", path: "notes.md", content: "A note", revision: 1, updatedAt: new Date() },
+    ]);
+    const store = new MarkdownMemoryStore({ memoryDocument: { findMany } } as never);
+
+    const results = await store.search({ query: "  ", scope: "user" }, context);
+    expect(results.map((result) => result.path)).toEqual(["facts.md", "notes.md"]);
+    expect(results.every((result) => result.score === 1)).toBe(true);
+    expect(findMany).toHaveBeenCalledWith({
+      where: { spaceId: "workspace-1", scope: "user" },
+    });
+  });
+
+  it("returns the ranked rows the database scored, best first", async () => {
+    const $queryRaw = vi.fn().mockResolvedValue([
+      { path: "budgets.md", content: "The budget in full.", score: 1.42 },
+      { path: "trips.md", content: "Travel notes.", score: 0.03 },
+    ]);
+    const store = new MarkdownMemoryStore({ $queryRaw } as never);
+
+    await expect(store.search({ query: "budgets", scope: "all" }, context)).resolves.toEqual([
+      { path: "budgets.md", snippet: "The budget in full.", score: 1.42 },
+      { path: "trips.md", snippet: "Travel notes.", score: 0.03 },
+    ]);
+  });
+
   it("returns false for a missing user document without touching bot memory", async () => {
     const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
     const store = new MarkdownMemoryStore({ memoryDocument: { deleteMany } } as never);

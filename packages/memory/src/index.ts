@@ -53,21 +53,43 @@ export class MarkdownMemoryStore implements MemoryStore {
     request: MemorySearchRequest,
     context: AdapterContext,
   ): Promise<MemorySearchResult[]> {
-    const documents = await this.prisma.memoryDocument.findMany({
-      where: {
-        spaceId: context.spaceId,
-        ...(request.scope === "all" ? {} : { scope: request.scope }),
-        ...(request.botId ? { botId: request.botId } : {}),
-      },
-    });
-    const q = request.query.toLowerCase();
-    return documents
-      .filter((doc) => doc.content.toLowerCase().includes(q) || doc.path.toLowerCase().includes(q))
-      .map((doc) => ({
+    const where = {
+      spaceId: context.spaceId,
+      ...(request.scope === "all" ? {} : { scope: request.scope }),
+      ...(request.botId ? { botId: request.botId } : {}),
+    };
+    const query = request.query.trim();
+    if (!query) {
+      // An empty search lists the space's memory, as it always has.
+      const documents = await this.prisma.memoryDocument.findMany({ where });
+      return documents.map((doc) => ({
         path: doc.path,
-        snippet: snippet(doc.content, q),
+        snippet: snippet(doc.content, ""),
         score: 1,
       }));
+    }
+    // Ranked full-text matches fused with the literal substring match the store
+    // has always done, so exact phrases and identifiers still hit even when
+    // stemming or tokenising would miss them. Both sides are parameterised:
+    // websearch_to_tsquery parses the query as data, and the ILIKE pattern
+    // escapes its wildcards so the query stays literal there too.
+    const pattern = `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+    const tsquery = Prisma.sql`websearch_to_tsquery('english', ${query})`;
+    const rows = await this.prisma.$queryRaw<SearchRow[]>(Prisma.sql`
+      SELECT path, content,
+        ts_rank(${SEARCH_VECTOR}, ${tsquery})
+          + CASE WHEN content ILIKE ${pattern} OR path ILIKE ${pattern} THEN 1 ELSE 0 END AS score
+      FROM memory_documents
+      WHERE "spaceId" = ${context.spaceId}
+        ${request.scope === "all" ? Prisma.empty : Prisma.sql`AND scope = ${request.scope}`}
+        ${request.botId ? Prisma.sql`AND "botId" = ${request.botId}` : Prisma.empty}
+        AND (${SEARCH_VECTOR} @@ ${tsquery} OR content ILIKE ${pattern} OR path ILIKE ${pattern})
+      ORDER BY score DESC, "updatedAt" DESC, path ASC`);
+    return rows.map((row) => ({
+      path: row.path,
+      snippet: snippet(row.content, query.toLowerCase()),
+      score: row.score,
+    }));
   }
 
   async commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision> {
@@ -169,8 +191,35 @@ export class MarkdownMemoryStore implements MemoryStore {
   }
 }
 
+/**
+ * Matches the expression of memory_documents_search_idx: the content plus the
+ * path with its separators as spaces, so "notes/q3-report.pdf" tokenises into
+ * words. The 'english' config stems, so "budgets" finds "budget".
+ */
+const SEARCH_VECTOR = Prisma.sql`to_tsvector('english', content || ' ' || translate(path, '/._-', '    '))`;
+
+interface SearchRow {
+  path: string;
+  content: string;
+  score: number;
+}
+
 function snippet(content: string, q: string): string {
-  const idx = content.toLowerCase().indexOf(q);
+  const lower = content.toLowerCase();
+  let idx = lower.indexOf(q);
+  let probe = q;
+  if (idx < 0) {
+    // A stemmed hit (query "budgets", text "budget") has no literal match for
+    // the whole query; centre on the first query word that does appear.
+    for (const word of q.split(/\s+/)) {
+      const at = word ? lower.indexOf(word) : -1;
+      if (at >= 0) {
+        idx = at;
+        probe = word;
+        break;
+      }
+    }
+  }
   if (idx < 0) return content.slice(0, 140);
-  return content.slice(Math.max(0, idx - 40), idx + q.length + 80);
+  return content.slice(Math.max(0, idx - 40), idx + probe.length + 80);
 }
