@@ -238,6 +238,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
   it("rejects unauthenticated calls to every protected RPC family", async () => {
     const calls = exhaustiveProtectedCalls([
       ["me"],
+      ["diagnostics/report"],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
       ["updater/status"],
