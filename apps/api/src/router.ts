@@ -56,6 +56,7 @@ import { organizationsRoutes } from "./routes/organizations.js";
 import { pagesRoutes } from "./routes/pages.js";
 import { paymentWalletRoutes } from "./routes/payment-wallet.js";
 import { proxiesRoutes } from "./routes/proxies.js";
+import { walletsRoutes } from "./routes/wallets.js";
 import { routinesRoutes } from "./routes/routines.js";
 import { serviceCredentialsRoutes } from "./routes/service-credentials.js";
 import { spacesRoutes } from "./routes/spaces.js";
@@ -195,5 +196,6 @@ export function createRouter(deps: RouterDeps) {
     ...spendingLimitRoutes(ctx),
     ...diagnosticsRoutes(ctx),
     ...proxiesRoutes(ctx),
+    ...walletsRoutes(ctx),
   });
 }

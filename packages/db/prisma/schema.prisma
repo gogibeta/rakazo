@@ -66,6 +66,8 @@ model User {
   modelCredentials            UserModelCredential[]
   modelCredentialKeys         UserModelCredentialKey[]
   proxies                     UserProxy[]
+  wallets                     UserWallet[]
+  walletUses                  UserWalletUse[]
   voiceCredentials            UserVoiceCredential[]
   paymentWallet               PaymentWallet?
   spendingLimit               SpendingLimit?
@@ -911,6 +913,50 @@ model UserProxy {
 
   @@index([userId, createdAt])
   @@map("user_proxies")
+}
+
+/// A named crypto wallet a person saved for testnet and airdrop work. The
+/// secret (a private key or a seed phrase) is sealed with the deployment
+/// encryption key (record id is this row's id, the way bot secrets seal) and
+/// is never read back; only the name, the chain family and the public address
+/// derived from the secret on save are ever shown. `chain` names the family
+/// the secret belongs to ("evm" today), so other families can slot in.
+model UserWallet {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  chain        String   @default("evm")
+  address      String
+  secretCipher String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  uses         UserWalletUse[]
+
+  @@unique([userId, name])
+  @@index([userId, createdAt])
+  @@map("user_wallets")
+}
+
+/// One approved use of a wallet: a bot's fill of the wallet's secret into a
+/// page field, approved by the person for that one fill. Carries no secret
+/// material — only which wallet, which bot, the stated purpose, the site the
+/// fill went to, and when.
+model UserWalletUse {
+  id        String     @id @default(cuid())
+  walletId  String
+  wallet    UserWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  botId     String
+  botName   String
+  purpose   String
+  site      String
+  createdAt DateTime   @default(now())
+
+  @@index([walletId, createdAt])
+  @@index([userId, createdAt])
+  @@map("user_wallet_uses")
 }
 
 /// A problem or suggestion a user asked their bot to send to the people who run this server.

@@ -271,12 +271,15 @@ export async function gateToolCall(
       (name === "schedule_update" && Boolean(args.prompt))) &&
     (await isRunTainted(ctx)) &&
     (await ctx.trust.routineNamesNewSite(String(args.prompt ?? "")));
-  const { purchase, cardUse } = request;
+  const { purchase, cardUse, walletUse } = request;
   // Typing a saved card is approved like a purchase: every time, by a person.
   const paying = Boolean(purchase) || Boolean(cardUse);
+  // Typing a wallet's secret is approved the same way: every time, by a person.
+  const walletAsk = Boolean(walletUse);
   const requiresApprovalByDefault =
     request.heldForApproval ||
     paying ||
+    walletAsk ||
     commandWatch ||
     siteGate === "new" ||
     unidentifiedAction ||
@@ -290,7 +293,11 @@ export async function gateToolCall(
   const gated = requiresApprovalByDefault || connectorReadGated;
   // These ask in every run, whatever started it.
   const mandatoryInAnyRun =
-    paying || commandWatch || scheduleNamesNewSite || toolRequiresExplicitApproval(name);
+    paying ||
+    walletAsk ||
+    commandWatch ||
+    scheduleNamesNewSite ||
+    toolRequiresExplicitApproval(name);
   // No allow rule skips these, and without them the tool needs no approval, so "Always allow"
   // on their card would save a rule that never takes effect.
   const asksEveryTime =
@@ -362,7 +369,9 @@ export async function gateToolCall(
         reviewOnly: connectorReadGated,
         checkerConfigured,
         newDestination: siteGate === "new",
-        purchase: paying,
+        // A wallet fill asks in every mode too, like a purchase: the plan's
+        // purchase flag is what makes a call ask even when the space never asks.
+        purchase: paying || walletAsk,
       });
   // Nobody is there to approve a purchase a webhook run reaches.
   if (paying && run.trigger === "webhook" && plan !== "deny") {
@@ -371,6 +380,16 @@ export async function gateToolCall(
       result: refusal(
         "purchase_needs_approval_unattended",
         "This would complete a purchase, which needs the user's approval, and a webhook run cannot ask. Don't retry; tell the user.",
+      ),
+    };
+  }
+  // Nobody is there to approve a wallet fill a webhook run reaches, either.
+  if (walletAsk && run.trigger === "webhook" && plan !== "deny") {
+    await auditToolCall(ctx, name, "denied", { reason: "wallet_unattended" });
+    return {
+      result: refusal(
+        "wallet_needs_approval_unattended",
+        "This would type a wallet's secret into a page, which needs the user's approval, and a webhook run cannot ask. Don't retry; tell the user.",
       ),
     };
   }

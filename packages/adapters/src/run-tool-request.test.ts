@@ -46,6 +46,7 @@ function ownBotUpdateCall() {
     heldForApproval: false,
     purchase: undefined,
     cardUse: undefined,
+    walletUse: undefined,
   };
   return { ctx, request: () => structuredClone(request) };
 }

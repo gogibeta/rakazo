@@ -26,6 +26,7 @@ export const BROWSER_ACT_KINDS = [
   "fill_card",
   "fill_pay_token",
   "fill_code",
+  "fill_wallet",
 ] as const;
 const MAX_QUERY = 200;
 const NAVIGATE_URL_REQUIRED = "An HTTP(S) URL without embedded credentials is required";
@@ -50,12 +51,24 @@ export type CardFillStep = {
 export type PayTokenFillStep = { kind: "fill_pay_token"; purchase: string };
 /** Types the code the user entered for the run's last code request; the model never sees it. */
 export type CodeFillStep = { kind: "fill_code"; ref: string };
+/**
+ * Types a saved wallet's secret into the field, on the `site` the person approved for this
+ * call. The model names the wallet and the purpose; it never supplies or sees the value.
+ */
+export type WalletFillStep = {
+  kind: "fill_wallet";
+  ref: string;
+  wallet: string;
+  site: string;
+  purpose?: string;
+};
 export type BrowserActInput =
   | BrowserActStep
   | SecretFillStep
   | CardFillStep
   | PayTokenFillStep
-  | CodeFillStep;
+  | CodeFillStep
+  | WalletFillStep;
 /**
  * desktopTools: the run also has computer_act, so a page-tool failure can fall back to it.
  * downloads: the folder in the computer's home that the page's file downloads are saved to, and the
@@ -87,6 +100,11 @@ export type ResolveCodeFill = (step: CodeFillStep) => Promise<
 export type ResolvePayTokenFill = (
   step: PayTokenFillStep,
 ) => Promise<{ text: string; origin: string; merchantAccountId: string } | { error: string }>;
+
+/** `recordUse` writes the fill's usage record once the page has taken it. */
+export type ResolveWalletFill = (
+  step: WalletFillStep,
+) => Promise<{ text: string; origin: string; recordUse: () => Promise<void> } | { error: string }>;
 
 /**
  * A browser tool call turned down before anything ran, such as a missing argument. It is settled:
@@ -161,6 +179,7 @@ export async function browserActFromTool(
     resolveCardFill?: ResolveCardFill;
     resolvePayTokenFill?: ResolvePayTokenFill;
     resolveCodeFill?: ResolveCodeFill;
+    resolveWalletFill?: ResolveWalletFill;
     redactions?: () => string[];
     /** Maps a bot-facing workspace path to its path in the computer's home. */
     resolveUploadPath?: (path: string) => string;
@@ -183,6 +202,8 @@ export async function browserActFromTool(
     let codeTyped:
       | { index: number; claim: () => Promise<boolean>; restore: () => Promise<void> }
       | undefined;
+    // The wallet fill this batch types, with the action that types it and its usage record.
+    let walletTyped: { index: number; recordUse: () => Promise<void> } | undefined;
     // Resolve every saved login and card before acting, so a missing one cannot leave a
     // half-filled form.
     for (const step of parseBrowserActions(args.actions)) {
@@ -243,6 +264,35 @@ export async function browserActFromTool(
           text: resolved.text,
           origin: resolved.origin,
           field: "code",
+        });
+        continue;
+      }
+      if (step.kind === "fill_wallet") {
+        // One wallet fill per batch, as one approval covers one fill.
+        if (walletTyped)
+          throw new BrowserToolInputError("browser_act takes one fill_wallet at a time");
+        let resolved: Awaited<ReturnType<ResolveWalletFill>>;
+        try {
+          resolved = options.resolveWalletFill
+            ? await options.resolveWalletFill(step)
+            : { error: "Wallet fills are unavailable here." };
+        } catch (error) {
+          context.signal.throwIfAborted();
+          // A stored wallet secret that can't be read may quote its own text in the error, so
+          // neither the bot nor the log gets the message: only that it failed, and how.
+          getLogger().warn("wallet secret could not be loaded for a fill", {
+            errorName: error instanceof Error ? error.name : typeof error,
+          });
+          return { ...refusedInput("This wallet could not be loaded."), completed: 0 };
+        }
+        if ("error" in resolved) return { ...refusedInput(resolved.error), completed: 0 };
+        walletTyped = { index: actions.length, recordUse: resolved.recordUse };
+        actions.push({
+          kind: "fill",
+          ref: step.ref,
+          text: resolved.text,
+          origin: resolved.origin,
+          field: "wallet",
         });
         continue;
       }
@@ -339,6 +389,16 @@ export async function browserActFromTool(
     ) {
       await options.releasePurchase?.();
     }
+    // A wallet fill the page took is written into the wallet's usage history. One it clearly
+    // refused is not recorded; any doubt about the outcome records it, so the history never
+    // understates a use.
+    if (walletTyped && (result.uncertain !== false || result.completed > walletTyped.index)) {
+      await walletTyped.recordUse().catch((error: unknown) =>
+        getLogger().warn("wallet use could not be recorded", {
+          errorName: error instanceof Error ? error.name : typeof error,
+        }),
+      );
+    }
     // A code the page took is spent. One it clearly refused goes back, so a fill on the right page
     // can use it; any doubt about the outcome keeps it spent, never typed twice.
     if (codeTyped && result.uncertain === false && result.completed <= codeTyped.index) {
@@ -415,6 +475,22 @@ export function parseBrowserActions(value: unknown): BrowserActInput[] {
     }
     if (!ref) throw new BrowserToolInputError(`browser_act action ${index} requires ref`);
     if (kind === "fill_code") return { kind, ref };
+    if (kind === "fill_wallet") {
+      const wallet = typeof action.wallet === "string" ? action.wallet.trim() : "";
+      if (!wallet) {
+        throw new BrowserToolInputError(
+          "browser_act fill_wallet needs wallet: the name of a saved wallet",
+        );
+      }
+      const purpose = typeof action.purpose === "string" ? action.purpose : undefined;
+      return {
+        kind,
+        ref,
+        wallet,
+        site: cardFillSite(action.site),
+        ...(purpose !== undefined ? { purpose } : {}),
+      };
+    }
     if (kind === "upload") {
       const paths = Array.isArray(action.paths)
         ? action.paths.map((path) => (typeof path === "string" ? path.trim() : ""))

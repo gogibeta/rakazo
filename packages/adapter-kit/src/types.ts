@@ -1334,9 +1334,10 @@ export type BrowserActStep =
       /**
        * What `text` is: a saved login's hidden field ("password", typed only into a password
        * field) or visible field ("username"), or an approved purchase's card detail. A card fill
-       * always carries `origin`.
+       * always carries `origin`. A wallet secret ("wallet") goes into a password, text or
+       * telephone field or a text area, is masked like a card, and always carries `origin`.
        */
-      field?: "username" | "password" | "card" | "code";
+      field?: "username" | "password" | "card" | "code" | "wallet";
     }
   | {
       kind: "fill";

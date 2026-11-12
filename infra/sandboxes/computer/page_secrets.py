@@ -406,18 +406,23 @@ EVAL_HELPERS = r"""
       // A code the user entered for this page: a visible field like a username, but drawn as dots
       // and only into a box that looks made for a code.
       const code = field === "code";
+      // A wallet secret the user approved for this page: a key or seed phrase field — a password,
+      // text or telephone input, or a text area — drawn as dots like a card.
+      const wallet = field === "wallet";
       let saved = null;
       try { saved = new URL(origin); } catch { /* rejected below */ }
       if (!saved || saved.protocol !== "https:" || location.protocol !== "https:") {
         throw refused(card
           ? "A card can only be filled on HTTPS. Open the merchant's checkout with browser_navigate, then fill again."
           : code ? "A code can only be filled on HTTPS. Open the site with browser_navigate, then fill again."
+          : wallet ? "A wallet key can only be filled on HTTPS. Open the site with browser_navigate, then fill again."
           : "Website logins can only be filled on HTTPS. Open the saved site with browser_navigate, then fill again.");
       }
       if (location.origin !== saved.origin) {
         throw refused(card
           ? "The page is not on the merchant's site for this purchase. Open the merchant's checkout with browser_navigate, then fill again."
           : code ? "The page is not on the site this code was asked for. Open that site with browser_navigate, then fill again."
+          : wallet ? `This fill was approved for ${saved.origin}; the page is on ${location.origin}. Open the site with browser_navigate, then fill again.`
           : `This login is saved for ${saved.origin}; the page is on ${location.origin}. Open the saved site with browser_navigate, then fill again.`);
       }
       const el = focused();
@@ -425,16 +430,21 @@ EVAL_HELPERS = r"""
       if (el.readOnly || el.disabled) throw refused("Element is read-only");
       // A password goes only into a password field, which never displays it. A username is an input;
       // textareas, search boxes, and editable page content stay out. A card goes only into a plain
-      // input: text, tel, or password (CVC boxes are often masked).
+      // input: text, tel, or password (CVC boxes are often masked). A wallet secret also goes into
+      // a text area, where seed phrases are pasted.
       const input = el instanceof HTMLInputElement ? el : null;
+      const area = el instanceof HTMLTextAreaElement ? el : null;
       if (card && !(input && ["text", "tel", "password"].includes(input.type))) {
         throw refused("A card can only be typed into a card field.");
       }
-      const password = !card && !code && field !== "username";
+      if (wallet && !((input && ["text", "tel", "password"].includes(input.type)) || area)) {
+        throw refused("A wallet key can only be typed into a password, text or telephone field, or a text area.");
+      }
+      const password = !card && !code && !wallet && field !== "username";
       if (password && !(input && input.type === "password")) {
         throw refused("A saved password can only be typed into a password field.");
       }
-      if (!card && !password && !(input && ["text", "email", "tel"].includes(input.type))) {
+      if (!card && !password && !wallet && !(input && ["text", "email", "tel"].includes(input.type))) {
         throw refused(code ? "A code can only be typed into a text, email, or telephone field."
           : "A saved username can only be typed into a text, email, or telephone field.");
       }
@@ -443,22 +453,25 @@ EVAL_HELPERS = r"""
       }
       // A numeric box takes the digits of a code written with dashes.
       if (code && numericBox(input)) value = String(value).replaceAll("-", "");
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-      setter.call(input, String(value));
-      if (input.value !== String(value)) {
+      const target = area ?? input;
+      const setter = Object.getOwnPropertyDescriptor(
+        area ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, "value").set;
+      setter.call(target, String(value));
+      if (target.value !== String(value)) {
         // A partly accepted login (an email field trimming a username) is not left on the page.
-        setter.call(input, "");
+        setter.call(target, "");
         throw refused(card ? "This field didn't accept the card, so it was cleared."
           : code ? "This field didn't accept the code, so it was cleared."
+          : wallet ? "This field didn't accept the wallet key, so it was cleared."
           : "This field didn't accept the saved login, so it was cleared.");
       }
       // Snapshots never show the value again, whatever the page later does with the field.
-      input.setAttribute(FILLED, "");
-      // Screenshots reach the model too, so a card or a code is drawn as dots, like a password.
-      if (card || code) maskCard(input);
-      else unmaskCard(input);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+      target.setAttribute(FILLED, "");
+      // Screenshots reach the model too, so a card, a code or a wallet key is drawn as dots, like a password.
+      if (card || code || wallet) maskCard(target);
+      else unmaskCard(target);
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
       if (code) {
         // The widget may draw its slots right away or a moment later.
         maskCodeSlots(input, value);

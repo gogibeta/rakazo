@@ -38,6 +38,7 @@ export const READ_ONLY_AGENT_TOOLS = new Set([
   "service_search",
   "browser_snapshot",
   "list_secrets",
+  "list_wallets",
   "cloud_agent_status",
   "purchase_status",
 ]);

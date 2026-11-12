@@ -17,6 +17,7 @@ import { ProxiesSettings } from "../components/ProxiesSettings";
 import { ServiceCredentialsSettings } from "../components/ServiceCredentialsSettings";
 import { SETTINGS_CONTENT_WIDTH, SettingsGroup, SettingsRow } from "../components/SettingsRows";
 import { VaultSettings } from "../components/VaultSettings";
+import { WalletsSettings } from "../components/WalletsSettings";
 import { canChooseOwnComputer } from "../lib/computer-sandbox";
 import { desktopBridge } from "../lib/desktop";
 import type { RpcClient } from "../lib/rpc";
@@ -440,6 +441,7 @@ export function SettingsOverlay({
                   {section === "confirmations" ? <ApprovalRulesSettings scope="account" /> : null}
                   {section === "vault" ? <VaultSettings scope="account" /> : null}
                   {section === "proxies" ? <ProxiesSettings /> : null}
+                  {section === "wallets" ? <WalletsSettings /> : null}
                   {section === "messaging" && messagingEnabled ? <MessagingSettingsPanel /> : null}
                   {section === "wallet" && paymentWalletProvider ? (
                     <PaymentWalletSettingsPanel provider={paymentWalletProvider} />

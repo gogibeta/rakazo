@@ -242,6 +242,16 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["proxies/list"],
       ["proxies/add", { name: "Test", host: "proxy.example.com", port: 8080 }],
       ["proxies/remove", { proxyId: "missing-proxy" }],
+      ["wallets/list"],
+      [
+        "wallets/add",
+        {
+          name: "Test",
+          secret: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        },
+      ],
+      ["wallets/remove", { walletId: "missing-wallet" }],
+      ["wallets/uses", { walletId: "missing-wallet" }],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
       ["updater/status"],

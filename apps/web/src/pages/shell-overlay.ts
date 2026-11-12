@@ -8,6 +8,7 @@ const SETTINGS_SECTIONS = [
   "confirmations",
   "vault",
   "proxies",
+  "wallets",
   "messaging",
   "wallet",
   "usage",
