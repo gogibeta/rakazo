@@ -46,6 +46,7 @@ describe("built-in tool bridge", () => {
       "schedule_create",
       "schedule_list",
       "search_history",
+      "send_to_chat_apps",
       "shell",
       "skill_read",
       "update_bot",
