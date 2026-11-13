@@ -8,8 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
  */
 export interface HostRestarter {
   /**
-   * Begin the power-cycle. Resolves once the stop and the queued start have
-   * both been accepted by the provider; throws if initiation fails.
+   * Begin the power-cycle. Resolves once the stop and the start have both
+   * been accepted by the provider; throws if initiation fails.
    */
   restart(): Promise<void>;
 }
@@ -17,26 +17,31 @@ export interface HostRestarter {
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
- * The API's own error detail from a failed response, for logs: the JSON
+ * The API's own error detail from a failed response, for logs, plus the
+ * provider's error code on its own for structural classification: the JSON
  * error's code and message when the body carries them, else the raw text.
- * Capped so a verbose body cannot flood the log. Only the response body is
- * read — never the request — so the API key and headers cannot leak into it.
+ * The detail is capped so a verbose body cannot flood the log. Only the
+ * response body is read — never the request — so the API key and headers
+ * cannot leak into either value.
  */
-async function errorDetail(response: Response): Promise<string | undefined> {
+async function errorInfo(response: Response): Promise<{ detail?: string; code?: string }> {
   let body: string;
   try {
     body = (await response.text()).trim();
   } catch {
-    return undefined;
+    return {};
   }
-  if (!body) return undefined;
+  if (!body) return {};
   let detail = body;
+  let code: string | undefined;
   try {
     const parsed = JSON.parse(body) as {
       error?: { code?: unknown; message?: unknown };
       code?: unknown;
       message?: unknown;
     };
+    const rawCode = parsed.error?.code ?? parsed.code;
+    if (typeof rawCode === "string" && rawCode.length > 0) code = rawCode;
     const parts = [parsed.error?.code ?? parsed.code, parsed.error?.message ?? parsed.message]
       .filter((part): part is string => typeof part === "string" && part.length > 0)
       .join(": ");
@@ -44,22 +49,29 @@ async function errorDetail(response: Response): Promise<string | undefined> {
   } catch {
     // Not JSON: the raw body is the detail.
   }
-  return detail.slice(0, 200);
+  return { detail: detail.slice(0, 200), code };
 }
 
 /**
- * A lifecycle call the provider answered with an HTTP error. The status
- * rides along so the start retry can classify the failure structurally —
- * retrying only what can pass on a later attempt — instead of matching on
- * message text.
+ * A lifecycle call the provider answered with an HTTP error. The status and
+ * the provider's error code ride along so the start retry can classify the
+ * failure structurally — retrying only what can pass on a later attempt —
+ * instead of matching on message text.
  */
 class LifecycleHttpError extends Error {
   readonly status: number;
+  readonly code: string | undefined;
 
-  constructor(action: "stop" | "start", status: number, detail: string | undefined) {
+  constructor(
+    action: "stop" | "start",
+    status: number,
+    detail: string | undefined,
+    code: string | undefined,
+  ) {
     super(`instabox ${action} failed with HTTP ${status}${detail ? `: ${detail}` : ""}`);
     this.name = "LifecycleHttpError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -67,12 +79,16 @@ class LifecycleHttpError extends Error {
  * Whether a failed start attempt can succeed on a retry. A rejection from
  * fetch itself (network failure, abort, the per-attempt timeout) may never
  * have reached the provider, and the start's idempotency key makes retrying
- * it safe; 408, 425, 429 and 5xx are transient on the provider side. Any
- * other 4xx — a 409 idempotency conflict above all — fails identically on
+ * it safe; 408, 425, 429 and 5xx are transient on the provider side. A 409
+ * is retryable only when the provider names it operation_conflict: the
+ * start landed while the stop operation was still settling, and the same
+ * start is accepted once it has (live-verified). Any other 409 — an
+ * idempotency_conflict above all — and any other 4xx fails identically on
  * every retry, so it surfaces at once.
  */
 function isRetryableStartError(error: unknown): boolean {
   if (error instanceof LifecycleHttpError) {
+    if (error.status === 409) return error.code === "operation_conflict";
     return (
       error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500
     );
@@ -109,10 +125,14 @@ export interface InstaboxHostRestarterOptions {
  * Lifecycle calls are asynchronous (live-verified): each returns a queued
  * operation rather than waiting for the machine to change state. The caller
  * runs on the machine being restarted, so it cannot wait for the stop to
- * finish — but it does not need to: a start requested while the machine is
- * still stopping is accepted and queued behind the stop, and the machine
- * starts again on its own once the stop completes. That queued start, not
- * any retry loop, is what makes the restart self-recovering.
+ * finish before asking for the start — and a start requested while the stop
+ * operation is still active is refused with a 409 operation_conflict, not
+ * queued. The start is accepted once the stop operation settles (the
+ * machine reaching stopping/stopped, ~14s observed), and this process lives
+ * until the guest finishes powering down, so the bounded retry below —
+ * paced at 2s across a 120s window — lands the start inside that window.
+ * That retry through the conflict window is what makes the restart
+ * self-recovering.
  */
 export function createInstaboxHostRestarter(options: InstaboxHostRestarterOptions): HostRestarter {
   const base = (options.apiUrl ?? INSTABOX_API_URL).replace(/\/+$/, "");
@@ -142,18 +162,20 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
       },
     );
     if (!response.ok) {
-      const detail = await errorDetail(response);
-      throw new LifecycleHttpError(action, response.status, detail);
+      const { detail, code } = await errorInfo(response);
+      throw new LifecycleHttpError(action, response.status, detail, code);
     }
   };
   return {
     async restart() {
       await lifecycle("stop", randomUUID());
-      // Fire the start immediately, with its OWN idempotency key: the
-      // platform queues it behind the still-running stop, which is what
-      // brings the machine back. The bounded retry only covers the start
-      // call itself failing to land transiently, and reuses the start's
-      // key so a retry can never become a second start.
+      // Fire the start immediately, with its OWN idempotency key. While the
+      // stop operation is still settling the provider refuses the start
+      // with a 409 operation_conflict; the bounded retry below re-sends the
+      // same start — same key, so a retry can never become a second start —
+      // until the stop settles and the start is accepted, which is what
+      // brings the machine back. The retry also covers the start call
+      // itself failing to land transiently.
       //
       // The start is awaited, never fire-and-forget: this process runs on
       // the machine being stopped, so once the guest powers off nothing

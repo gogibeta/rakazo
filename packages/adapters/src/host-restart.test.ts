@@ -119,6 +119,57 @@ describe("createInstaboxHostRestarter", () => {
     expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
   });
 
+  it("retries the start through the operation_conflict window until the stop settles", async () => {
+    // Live-verified: a start fired while the stop operation is still active
+    // is refused with 409 operation_conflict, and the same start is accepted
+    // once the stop settles.
+    const operationConflict = {
+      ok: false,
+      status: 409,
+      body: JSON.stringify({
+        error: {
+          code: "operation_conflict",
+          message: "machine has an active stop operation",
+        },
+      }),
+    };
+    const { calls, fetchImpl } = recordingFetch([ok, operationConflict, operationConflict, ok]);
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    await restarter.restart();
+    const startCalls = calls.filter((call) => call.url.endsWith("/start"));
+    expect(startCalls).toHaveLength(3);
+    // Every retried start reuses the start's own key, never the stop's.
+    const startKeys = new Set(startCalls.map(idempotencyKeyOf));
+    expect(startKeys.size).toBe(1);
+    expect(startKeys.has(idempotencyKeyOf(calls[0]!))).toBe(false);
+  });
+
+  it("fails the restart at once when the start is refused with a 409 that is not operation_conflict", async () => {
+    const otherConflict = {
+      ok: false,
+      status: 409,
+      body: JSON.stringify({
+        error: { code: "some_other_conflict", message: "a different conflict" },
+      }),
+    };
+    const { calls, fetchImpl } = recordingFetch([ok, otherConflict]);
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    await expect(restarter.restart()).rejects.toThrow("409");
+    // Only operation_conflict is transient: exactly one start attempt.
+    const startCalls = calls.filter((call) => call.url.endsWith("/start"));
+    expect(startCalls).toHaveLength(1);
+  });
+
   it("gives up after a bounded number of start attempts when the start keeps failing transiently", async () => {
     const { calls, fetchImpl } = recordingFetch([ok, serverError]);
     const restarter = createInstaboxHostRestarter({
