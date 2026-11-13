@@ -79,6 +79,9 @@ export interface AppEnv {
   /** Verified accounts that review plugin submissions, add stdio MCP servers, and grant access
    * (RAKAZO_ADMIN_EMAILS), lowercased. */
   adminEmails: string[];
+  /** Directory the admin System files panel may browse and edit (SYSTEM_FILES_ROOT);
+   * unset leaves the panel disabled. */
+  systemFilesRoot?: string;
   phoneCallsEnabled: boolean;
   phoneCallRingSeconds: number;
   phoneCallCooldownMinutes: number;
@@ -275,6 +278,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     computerSettingsEnabled: source.COMPUTER_SETTINGS_ENABLED === "true",
     navLinks: parseNavLinks(source.RAKAZO_NAV_LINKS),
     adminEmails: list(source.RAKAZO_ADMIN_EMAILS).map((email) => email.toLowerCase()),
+    systemFilesRoot: optional(source.SYSTEM_FILES_ROOT),
     ...phoneCallSettings(source),
     maxUploadSizeBytes: uploadSizeFromEnv(source),
     maxAttachmentsPerMessage: attachmentCountFromEnv(source),

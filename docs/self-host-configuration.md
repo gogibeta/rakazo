@@ -111,6 +111,7 @@ callbacks.
 | `USER_DEVICES_ENABLED` | on              | `false` stops signed-in desktop apps from letting bots run commands on the user's own computer. Set it on the API and worker.                           |
 | `PI_SESSION_RECORDING` | off             | `true` records agent sessions as JSONL under `DATA_DIR/pi-sessions`. The files are not encrypted, so do not use it on a shared or multi-tenant install. |
 | `PRIVACY_POLICY_URL`   | Rakazo's policy | The privacy policy linked from the AI data-sharing notice. Set it on the API.                                                                           |
+| `SYSTEM_FILES_ROOT`    | unset           | Directory the admin System files panel in Settings can browse and edit. Paths are resolved inside it and anything outside is refused. The API only sees folders it mounts: with the Compose stacks that is the `appdata` volume at `/data`, so point it there or at a folder under it unless you add your own mount. Set it on the API. Unset disables the panel. |
 
 ## Database roles
 

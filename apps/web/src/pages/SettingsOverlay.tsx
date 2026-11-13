@@ -16,6 +16,7 @@ import { PlanUsage } from "../components/PlanUsage";
 import { ProxiesSettings } from "../components/ProxiesSettings";
 import { ServiceCredentialsSettings } from "../components/ServiceCredentialsSettings";
 import { SETTINGS_CONTENT_WIDTH, SettingsGroup, SettingsRow } from "../components/SettingsRows";
+import { SystemFilesSettings } from "../components/SystemFilesSettings";
 import { VaultSettings } from "../components/VaultSettings";
 import { WalletsSettings } from "../components/WalletsSettings";
 import { canChooseOwnComputer } from "../lib/computer-sandbox";
@@ -436,6 +437,7 @@ export function SettingsOverlay({
                     <div className="space-y-8">
                       <OrganizationSettingsPanel onBusyChange={setVoiceBusy} />
                       <ServiceCredentialsSettings />
+                      <SystemFilesSettings />
                     </div>
                   ) : null}
                   {section === "confirmations" ? <ApprovalRulesSettings scope="account" /> : null}

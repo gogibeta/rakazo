@@ -60,6 +60,7 @@ import { routinesRoutes } from "./routes/routines.js";
 import { serviceCredentialsRoutes } from "./routes/service-credentials.js";
 import { spacesRoutes } from "./routes/spaces.js";
 import { spendingLimitRoutes } from "./routes/spending-limit.js";
+import { systemFilesRoutes } from "./routes/system-files.js";
 import { threadsRoutes } from "./routes/threads.js";
 import { walletsRoutes } from "./routes/wallets.js";
 import type { VoiceDeps } from "./voice.js";
@@ -137,6 +138,8 @@ export interface RouterDeps {
     ticketBoardEnabled?: boolean;
     navLinks?: NavLink[];
     adminEmails?: string[];
+    /** Root of the admin System files browser; absent disables it. */
+    systemFilesRoot?: string;
     phoneCallsEnabled?: boolean;
     phoneCallRingSeconds?: number;
     maxUploadSizeBytes?: number;
@@ -181,6 +184,7 @@ export function createRouter(deps: RouterDeps) {
     ...computerRoutes(ctx),
     ...computerProviderRoutes(ctx),
     ...serviceCredentialsRoutes(ctx),
+    ...systemFilesRoutes(ctx),
     ...memoryRoutes(ctx),
     ...routinesRoutes(ctx),
     ...boardsRoutes(ctx),

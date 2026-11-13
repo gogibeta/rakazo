@@ -215,6 +215,15 @@ import {
 import { SettingsScopeSchema, SpaceSettingSchema, settingsScopeInput } from "./settings-scope.js";
 import { SpaceAvailabilitySchema } from "./space-availability.js";
 import {
+  SystemFilesListInput,
+  SystemFilesListSchema,
+  SystemFilesReadInput,
+  SystemFilesReadSchema,
+  SystemFilesStatusSchema,
+  SystemFilesWriteInput,
+  SystemFilesWriteSchema,
+} from "./system-files.js";
+import {
   WalletAddInput,
   WalletRemoveInput,
   WalletSummarySchema,
@@ -494,6 +503,13 @@ export const appContract = {
     get: oc.output(ServiceCredentialsStatusSchema),
     update: oc.input(ServiceCredentialsUpdateSchema).output(ServiceCredentialsStatusSchema),
     clear: oc.input(ServiceCredentialsClearSchema).output(ServiceCredentialsStatusSchema),
+  },
+  /** Admin file browser over the operator-chosen SYSTEM_FILES_ROOT; disabled when unset. */
+  systemFiles: {
+    status: oc.output(SystemFilesStatusSchema),
+    list: oc.input(SystemFilesListInput).output(SystemFilesListSchema),
+    read: oc.input(SystemFilesReadInput).output(SystemFilesReadSchema),
+    write: oc.input(SystemFilesWriteInput).output(SystemFilesWriteSchema),
   },
   /** Redacted diagnostics report for the signed-in user, safe to copy and share for support. */
   diagnostics: {
