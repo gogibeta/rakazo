@@ -228,6 +228,7 @@ export * from "./ticket-changes.js";
 export * from "./ticket-tools.js";
 export * from "./tinyfish-web.js";
 export { dispatcherFetch } from "./undici-fetch.js";
+export * from "./user-connections.js";
 export * from "./user-device-emulator.js";
 export * from "./user-device-gateway.js";
 export * from "./user-device-protocol.js";

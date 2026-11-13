@@ -66,6 +66,7 @@ model User {
   modelCredentials            UserModelCredential[]
   modelCredentialKeys         UserModelCredentialKey[]
   proxies                     UserProxy[]
+  customConnections           UserCustomConnection[]
   wallets                     UserWallet[]
   walletUses                  UserWalletUse[]
   voiceCredentials            UserVoiceCredential[]
@@ -916,6 +917,30 @@ model UserProxy {
 
   @@index([userId, createdAt])
   @@map("user_proxies")
+}
+
+/// An API service a person registered for their bots to call: a name, a base
+/// URL and how the service takes its key. The key is sealed with the
+/// deployment encryption key (record id is this row's id, the way bot secrets
+/// seal) and is never read back; only its presence is ever shown. The server
+/// adds the key when a bot calls the service, so bots use the service without
+/// ever seeing the key. `authStyle` is "bearer", "header" or "query";
+/// `authName` names the header or query parameter for the last two.
+model UserCustomConnection {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  baseUrl      String
+  authStyle    String
+  authName     String?
+  secretCipher String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId, createdAt])
+  @@map("user_custom_connections")
 }
 
 /// A named crypto wallet a person saved for testnet and airdrop work. The

@@ -66,6 +66,13 @@ import {
   ComputerUpdateSchema,
 } from "./computer.js";
 import {
+  CustomConnectionAddInput,
+  CustomConnectionRemoveInput,
+  CustomConnectionSummarySchema,
+  CustomConnectionTestInput,
+  CustomConnectionTestResultSchema,
+} from "./custom-connections.js";
+import {
   AccessGrantInputSchema,
   AccessGrantSchema,
   AccountItemSchema,
@@ -504,6 +511,13 @@ export const appContract = {
     list: oc.output(z.object({ proxies: z.array(ProxySummarySchema) })),
     add: oc.input(ProxyAddInput).output(ProxySummarySchema),
     remove: oc.input(ProxyRemoveInput).output(z.object({ ok: z.literal(true) })),
+  },
+  /** The signed-in user's registered API services. Summaries never carry the key. */
+  customConnections: {
+    list: oc.output(z.object({ connections: z.array(CustomConnectionSummarySchema) })),
+    add: oc.input(CustomConnectionAddInput).output(CustomConnectionSummarySchema),
+    remove: oc.input(CustomConnectionRemoveInput).output(z.object({ ok: z.literal(true) })),
+    test: oc.input(CustomConnectionTestInput).output(CustomConnectionTestResultSchema),
   },
   /** The signed-in user's named crypto wallets. Summaries never carry the secret. */
   wallets: {
