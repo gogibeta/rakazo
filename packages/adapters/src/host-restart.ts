@@ -46,7 +46,8 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
       `${base}/v1/machines/${encodeURIComponent(options.machineId)}/${action}`,
       {
         method: "POST",
-        headers: { authorization: `Bearer ${options.apiKey}` },
+        // The instabox API takes the key in X-API-Key, the header its own SDK sends.
+        headers: { "x-api-key": options.apiKey },
       },
     );
     if (!response.ok) throw new Error(`instabox ${action} failed with HTTP ${response.status}`);

@@ -16,7 +16,7 @@ const ok = { ok: true, status: 202 };
 const conflict = { ok: false, status: 409 };
 
 describe("createInstaboxHostRestarter", () => {
-  it("stops then starts the one configured machine, with the key as a bearer token", async () => {
+  it("stops then starts the one configured machine, with the key in the X-API-Key header", async () => {
     const { calls, fetchImpl } = recordingFetch([ok, ok]);
     const restarter = createInstaboxHostRestarter({
       apiKey: "key-123",
@@ -31,7 +31,7 @@ describe("createInstaboxHostRestarter", () => {
     expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
     for (const call of calls) {
       expect(call.init?.method).toBe("POST");
-      expect(call.init?.headers).toEqual({ authorization: "Bearer key-123" });
+      expect(call.init?.headers).toEqual({ "x-api-key": "key-123" });
     }
   });
 
