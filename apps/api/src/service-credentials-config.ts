@@ -13,6 +13,7 @@ import type {
   StoredServiceCredentials,
 } from "@rakazo/contracts";
 import { parseTelegramOwnerUserIds, SERVICE_CREDENTIAL_KEYS } from "@rakazo/contracts";
+import { signupPolicyFromEnv } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { Prisma, runAsSystem, withTransactionRetry } from "@rakazo/db";
 import { requireAdmin } from "./admins.js";
@@ -21,7 +22,7 @@ import type { RouterDeps } from "./router.js";
 export interface ServiceCredentialsConfigDeps {
   prisma: PrismaClient;
   secrets: Pick<SecretStore, "put" | "load" | "delete">;
-  env: Pick<RouterDeps["env"], "adminEmails">;
+  env: Pick<RouterDeps["env"], "adminEmails" | "signupsEnabled" | "signupAllowlist">;
 }
 
 /** Which keys are saved. The values themselves never leave the server. */
@@ -39,7 +40,25 @@ async function statusOf(
   return {
     ...keyStatusOf(credentials),
     telegramOwnerUserIds: await loadTelegramOwnerUserIds(deps.prisma),
+    signupsEnabled: await loadSignupsEnabled(deps),
   };
+}
+
+/**
+ * Whether new accounts are admitted, as the signup gate decides it: the
+ * deployment record once a policy has been saved there, the environment
+ * until then.
+ */
+async function loadSignupsEnabled(deps: ServiceCredentialsConfigDeps): Promise<boolean> {
+  const stored = await deps.prisma.deploymentSettings.findUnique({
+    where: { id: "default" },
+    select: { signupsEnabled: true, signupPolicyInitialized: true },
+  });
+  if (stored?.signupPolicyInitialized) return stored.signupsEnabled;
+  return signupPolicyFromEnv({
+    signupsEnabled: deps.env.signupsEnabled,
+    signupAllowlist: deps.env.signupAllowlist,
+  }).enabled;
 }
 
 export async function getServiceCredentials(
@@ -69,6 +88,12 @@ export async function updateServiceCredentials(
   if (input.telegramOwnerUserIds !== undefined) {
     await storeTelegramOwnerUserIds(deps, parseTelegramOwnerUserIds(input.telegramOwnerUserIds));
   }
+  // Saved on the deployment record like the allowlist; saving it marks the
+  // record as the signup policy in force, so the gate stops following the
+  // environment from then on.
+  if (input.signupsEnabled !== undefined) {
+    await storeSignupsEnabled(deps, input.signupsEnabled);
+  }
   return statusOf(deps, next);
 }
 
@@ -83,6 +108,20 @@ export async function clearServiceCredentials(
   for (const key of input.keys) delete next[key];
   await storeServiceCredentials(deps, actor, next);
   return statusOf(deps, next);
+}
+
+/** Saves the account-creation switch on the deployment record, in the clear. */
+async function storeSignupsEnabled(
+  deps: ServiceCredentialsConfigDeps,
+  signupsEnabled: boolean,
+): Promise<void> {
+  await runAsSystem("an admin changes whether new accounts may be created", () =>
+    deps.prisma.deploymentSettings.upsert({
+      where: { id: "default" },
+      create: { id: "default", signupsEnabled, signupPolicyInitialized: true },
+      update: { signupsEnabled, signupPolicyInitialized: true },
+    }),
+  );
 }
 
 /** Saves the owner allowlist on the deployment record, normalized to clean numeric IDs. */
