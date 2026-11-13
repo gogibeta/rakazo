@@ -1,10 +1,14 @@
 import { isIP } from "node:net";
+import { TERMINAL_PATH } from "@rakazo/contracts/host";
 import { USER_DEVICE_CONNECT_PATH } from "@rakazo/contracts/user-devices";
 import type { ProxyOptions } from "vite";
 import { appendForwardedFor } from "./forwarded-for.js";
 
 /** Vite treats a proxy key starting with `^` as a pattern for the request's path and query. */
 export const DEVICE_SOCKET = `^${USER_DEVICE_CONNECT_PATH}(?:\\?|$)`;
+
+/** The admin terminal's socket, anchored to its exact path like the device socket. */
+export const TERMINAL_SOCKET = `^${TERMINAL_PATH}(?:\\?|$)`;
 
 /**
  * What the web server forwards to the API, in development and in `vite preview` deployments.
@@ -42,9 +46,11 @@ export function apiProxy(
   });
   return {
     "/api": options(false),
-    // A user's own computer keeps its device socket open here, the API's only upgrade. Vite
-    // matches other keys as prefixes, so this one is anchored to the exact path.
+    // A user's own computer keeps its device socket open here. Vite matches other keys as
+    // prefixes, so this one is anchored to the exact path.
     [DEVICE_SOCKET]: options(true),
+    // The admin terminal's socket upgrade, anchored the same way.
+    [TERMINAL_SOCKET]: options(true),
     "/rpc": options(false),
     // Native app domain association, served by the API from deployment settings.
     "/.well-known/apple-app-site-association": options(false),

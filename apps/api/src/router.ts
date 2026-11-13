@@ -143,6 +143,9 @@ export interface RouterDeps {
     /** Raw SIGNUPS_ENABLED / SIGNUP_ALLOWLIST, the signup gate's fallback until a policy is saved. */
     signupsEnabled?: string;
     signupAllowlist?: string;
+    /** Host restart config: the provider key and the one machine it may restart. */
+    instaboxApiKey?: string;
+    instaboxMachineId?: string;
     phoneCallsEnabled?: boolean;
     phoneCallRingSeconds?: number;
     maxUploadSizeBytes?: number;

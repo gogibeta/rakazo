@@ -111,6 +111,7 @@ import {
   neutralizeSpeakerLabels,
   personSpeaker,
 } from "./history-speakers.js";
+import { createHostRestarter } from "./host-restart.js";
 import { createMediaGenerationProvider } from "./media-generation-factory.js";
 import { loadAgentMemoryContext } from "./memory-context.js";
 import { resolveMemberMainModel, selectConfiguredModel } from "./model-roles.js";
@@ -258,6 +259,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
   const mediaGeneration = executorDeps.mediaGeneration ?? createMediaGenerationProvider();
   const paidServices = executorDeps.paidServices ?? createPaidServiceProvider();
   const decisions = executorDeps.decisions ?? createConfiguredDecision();
+  const hostRestart = executorDeps.hostRestart ?? createHostRestarter();
   const documents = executorDeps.documents ?? createConfiguredDocuments();
   const browser =
     executorDeps.browser ?? createBrowserProvider(undefined, { sandbox: executorDeps.sandbox });
@@ -1283,6 +1285,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
             mediaVideoEnabled: Boolean(deps.artifacts && mediaGeneration?.capabilities.video),
             paidServicesEnabled: Boolean(paidServices),
             decisionsEnabled: Boolean(decisions),
+            hostRestartEnabled: Boolean(hostRestart),
             documentsEnabled: Boolean(documents),
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             paymentWalletEnabled,
@@ -1459,6 +1462,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
             documents,
             browser,
             cloudAgent,
+            hostRestart,
           },
           run,
           runId,

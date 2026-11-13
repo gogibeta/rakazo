@@ -126,6 +126,8 @@ export function selectBuiltinToolsForRun(options: {
   paidServicesEnabled?: boolean;
   /** The deployment configured a decision provider (the `decide` tool). */
   decisionsEnabled?: boolean;
+  /** The deployment pointed itself at its own host machine (the `restart_host` tool). */
+  hostRestartEnabled?: boolean;
   /** The deployment configured a document provider (the document tools). */
   documentsEnabled?: boolean;
   messagingChannelRun: boolean;
@@ -187,6 +189,7 @@ export function selectBuiltinToolsForRun(options: {
       (options.mediaVideoEnabled || tool.name !== "generate_video") &&
       (options.paidServicesEnabled || !PAID_SERVICE_TOOL_NAMES.has(tool.name)) &&
       (options.decisionsEnabled || tool.name !== "decide") &&
+      (options.hostRestartEnabled || tool.name !== "restart_host") &&
       (options.documentsEnabled || !DOCUMENT_TOOL_NAMES.has(tool.name)) &&
       (options.ticketBoardEnabled ||
         (tool.name !== "board_tickets" && !tool.name.startsWith("ticket_"))) &&

@@ -3,7 +3,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { USER_DEVICE_CONNECT_PATH } from "@rakazo/contracts";
+import { TERMINAL_PATH, USER_DEVICE_CONNECT_PATH } from "@rakazo/contracts";
 import type { PreviewServer } from "vite";
 import { preview } from "vite";
 import { afterEach, describe, expect, it } from "vitest";
@@ -107,6 +107,18 @@ describe("apiProxy", () => {
         "x-forwarded-for": "203.0.113.9, 127.0.0.1",
       }),
     ]);
+  });
+
+  it("forwards the terminal socket upgrade on its exact path only", async () => {
+    const { target, upgrades } = await startApi();
+    const port = await startPreview(target);
+
+    await expect(upgrade(port, { path: TERMINAL_PATH })).resolves.toBe(101);
+    expect(upgrades).toHaveLength(1);
+    await expect(upgrade(port, { path: `${TERMINAL_PATH}x`, timeoutMs: 500 })).rejects.toThrow(
+      "upgrade was never answered",
+    );
+    expect(upgrades).toHaveLength(1);
   });
 
   it("appends the hop it saw to an API request's forwarded address", async () => {

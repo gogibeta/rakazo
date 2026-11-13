@@ -104,6 +104,7 @@ export * from "./home-object-store.js";
 export { HonchoMemoryProvider } from "./honcho-memory-provider.js";
 export * from "./host-aware-sandbox.js";
 export * from "./host-computer-device.js";
+export * from "./host-restart.js";
 export * from "./http-decisions.js";
 export * from "./http-documents.js";
 export * from "./inbound-email.js";

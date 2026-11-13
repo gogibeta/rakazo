@@ -107,6 +107,10 @@ export interface AppEnv {
   deploymentModelHostCredentials: boolean;
   e2bApiKey: string | undefined;
   novitaApiKey: string | undefined;
+  /** The sandbox provider's key, reused to restart the deployment's own host machine. */
+  instaboxApiKey: string | undefined;
+  /** The one host machine a restart may target; unset disables host restart. */
+  instaboxMachineId: string | undefined;
   sandboxTemplate: string | undefined;
   daytonaApiKey: string | undefined;
   daytonaApiUrl: string | undefined;
@@ -300,6 +304,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     deploymentModelHostCredentials: deploymentModel.hostCredentials,
     e2bApiKey: source.E2B_API_KEY,
     novitaApiKey: source.NOVITA_API_KEY,
+    instaboxApiKey: optional(source.INSTABOX_API_KEY),
+    instaboxMachineId: optional(source.INSTABOX_MACHINE_ID),
     sandboxTemplate: source.SANDBOX_TEMPLATE,
     daytonaApiKey: source.DAYTONA_API_KEY,
     daytonaApiUrl: source.DAYTONA_API_URL,

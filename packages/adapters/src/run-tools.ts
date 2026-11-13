@@ -17,6 +17,7 @@ import { emailTools } from "./run-tools-email.js";
 import { feedbackTools } from "./run-tools-feedback.js";
 import { fileTools } from "./run-tools-files.js";
 import { fleetTools } from "./run-tools-fleet.js";
+import { hostTools } from "./run-tools-host.js";
 import { cloudAgentTool, connectorTool, integrationTools } from "./run-tools-integrations.js";
 import { memoryTools } from "./run-tools-memory.js";
 import { messagingTools } from "./run-tools-messaging.js";
@@ -49,6 +50,7 @@ const TOOL_HANDLERS = new Map<string, ToolHandler>([
   ...Object.entries(messagingTools),
   ...Object.entries(secretTools),
   ...Object.entries(walletTools),
+  ...Object.entries(hostTools),
   ...Object.entries(fleetTools),
   [USER_COMPUTER_SHELL_TOOL, userComputerShell],
   [USER_COMPUTER_OBSERVE_TOOL, userComputerObserve],

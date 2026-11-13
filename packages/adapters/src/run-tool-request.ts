@@ -488,6 +488,15 @@ export async function prepareToolRequest(
       request.walletUse = walletUse;
       request.fleetSummary = walletUseSummary(walletUse);
     }
+    // Restarting the host takes the whole deployment down, so the card says
+    // exactly that; the gate asks every time, in every run.
+    if (name === "restart_host") {
+      request.fleetSummary = {
+        onceOnly: true,
+        title: "Restart the virtual machine?",
+        lines: ["This deployment and every bot on it go offline until the machine boots again."],
+      };
+    }
     // A desktop press has no check on the page right before it, as a browser_act click does: one the user
     // approved goes ahead only while the page still shows what the card did. A card that named nothing
     // (the check failed) has nothing to compare.

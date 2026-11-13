@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import type {
@@ -129,6 +131,7 @@ import { deleteAccountContent, finishStalledOrganizationDeletions } from "./acco
 import { mountAccountExportRoute } from "./account-export.js";
 import { mountAccountImportRoute } from "./account-import.js";
 import { settleDirectoryChange } from "./account-status.js";
+import { isAdmin } from "./admins.js";
 import { mountAppAssociation, nativePasskeys } from "./app-association.js";
 import { storeInboundAttachment } from "./artifacts.js";
 import { mountAuditExportRoute } from "./audit-export.js";
@@ -168,6 +171,7 @@ import { mountSharedPages } from "./shared-pages.js";
 import { afterSpaceDeparture } from "./space-departure.js";
 import { createSpeechSummarizer } from "./speech-summary.js";
 import { settleWithTimeout } from "./team-chat-startup.js";
+import { createTerminalServer } from "./terminal.js";
 import { endUserDeviceSession, mountUserDeviceRoutes } from "./user-devices.js";
 import { mountVoiceHttpRoutes } from "./voice.js";
 import { mountWebhookHttpRoutes } from "./webhook.js";
@@ -202,8 +206,8 @@ export interface AppHandles {
   runtime: AgentRuntime;
   awaitIdle?: () => Promise<void>;
   backgroundFailures?: () => Array<{ name: string; count: number }>;
-  /** Node `upgrade` listener for desktop device sockets; absent when the feature is off. */
-  handleUpgrade?: UserDeviceHub["handleUpgrade"];
+  /** Node `upgrade` listener: the admin terminal first, then desktop device sockets. */
+  handleUpgrade?: (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
   stop: () => Promise<void>;
 }
 
@@ -604,6 +608,19 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       );
     },
   });
+  // The admin terminal: a shell in this process's own environment, gated on
+  // the session cookie plus the deployment admin list at upgrade time.
+  const terminal = createTerminalServer({
+    sessionUserId: async (request) => {
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (typeof value === "string") headers.set(name, value);
+        else if (Array.isArray(value)) headers.set(name, value.join(", "));
+      }
+      return (await auth.api.getSession({ headers }))?.user.id;
+    },
+    isAdmin: (userId) => isAdmin({ prisma, env: { adminEmails: env.adminEmails } }, userId),
+  });
   const oauthTokenUpgrade = auth
     .encryptStoredOAuthTokens()
     .catch((error) => getLogger().error("oauth token encryption upgrade failed", error));
@@ -792,6 +809,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       systemFilesRoot: env.systemFilesRoot,
       signupsEnabled: env.signupsEnabled,
       signupAllowlist: env.signupAllowlist,
+      instaboxApiKey: env.instaboxApiKey,
+      instaboxMachineId: env.instaboxMachineId,
       maxUploadSizeBytes: env.maxUploadSizeBytes,
       maxAttachmentsPerMessage: env.maxAttachmentsPerMessage,
       agentRuntime: env.agentRuntime,
@@ -1143,7 +1162,11 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     runtime,
     awaitIdle: inMemoryJobs ? () => inMemoryJobs.awaitIdle() : undefined,
     backgroundFailures: inMemoryJobs ? () => inMemoryJobs.failureCounts() : undefined,
-    handleUpgrade: userDeviceHub?.handleUpgrade,
+    handleUpgrade: (request, socket, head) => {
+      if (terminal.handleUpgrade(request, socket, head)) return;
+      if (userDeviceHub) return userDeviceHub.handleUpgrade(request, socket, head);
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    },
     stop: async () => {
       // Handlers still running would otherwise query the pool after it ends.
       const requestsSettled = settleWithTimeout(inFlight.settled(), REQUEST_DRAIN_MS);
@@ -1153,6 +1176,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       shutdown.abort();
       // Aborted runs hand themselves back while realtime is still open to announce them.
       const runsStopped = runs?.stop();
+      terminal.close();
       await userDeviceHub?.close();
       oauthLogins.abortAll();
       await messagingRuntime?.stop();
