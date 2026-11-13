@@ -218,6 +218,7 @@ export async function openUserSettings(
     | "voice"
     | "vault"
     | "proxies"
+    | "wallets"
     | "wallet"
     | "usage"
     | "computer"

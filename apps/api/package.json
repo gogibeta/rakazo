@@ -22,6 +22,8 @@
   },
   "dependencies": {
     "@hono/node-server": "2.1.6",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0",
     "@orpc/server": "1.16.2",
     "@rakazo/adapter-kit": "workspace:*",
     "@rakazo/adapters": "workspace:*",
@@ -32,6 +34,8 @@
     "@rakazo/logging": "workspace:*",
     "@rakazo/memory": "workspace:*",
     "@rakazo/page-kit": "workspace:*",
+    "@scure/bip32": "1.7.0",
+    "@scure/bip39": "1.6.0",
     "fflate": "0.8.3",
     "hono": "4.13.17",
     "mermaid": "11.17.2",

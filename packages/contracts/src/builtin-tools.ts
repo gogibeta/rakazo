@@ -43,6 +43,7 @@ export const BUILTIN_TOOL_NAMES = [
   "request_secret",
   "generate_secret",
   "list_secrets",
+  "list_wallets",
   "secret_request",
   "forget_secret",
   "render_plot",

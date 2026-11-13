@@ -866,7 +866,7 @@ describe("browser tools", () => {
     [
       "an unsupported kind",
       [{ kind: "press", ref: "e1" }],
-      "browser_act action 0 needs kind: click, fill, type, upload, fill_secret, fill_card, fill_pay_token, fill_code",
+      "browser_act action 0 needs kind: click, fill, type, upload, fill_secret, fill_card, fill_pay_token, fill_code, fill_wallet",
     ],
     ["no actions", [], "browser_act requires at least one action"],
     [
@@ -961,7 +961,8 @@ describe("browser tools", () => {
   it("keeps the page tools' descriptions short", () => {
     const length = (name: string) =>
       builtinAgentTools.find((tool) => tool.name === name)?.description.length ?? Infinity;
-    expect(length("browser_act")).toBeLessThanOrEqual(1450);
+    // The cap grows with the action kinds: fill_wallet's sentence and its place in the kinds list.
+    expect(length("browser_act")).toBeLessThanOrEqual(1610);
     expect(length("browser_navigate")).toBeLessThanOrEqual(300);
   });
 

@@ -61,6 +61,7 @@ import { serviceCredentialsRoutes } from "./routes/service-credentials.js";
 import { spacesRoutes } from "./routes/spaces.js";
 import { spendingLimitRoutes } from "./routes/spending-limit.js";
 import { threadsRoutes } from "./routes/threads.js";
+import { walletsRoutes } from "./routes/wallets.js";
 import type { VoiceDeps } from "./voice.js";
 
 export { nextConnectionLabel } from "./model-credentials.js";
@@ -195,5 +196,6 @@ export function createRouter(deps: RouterDeps) {
     ...spendingLimitRoutes(ctx),
     ...diagnosticsRoutes(ctx),
     ...proxiesRoutes(ctx),
+    ...walletsRoutes(ctx),
   });
 }

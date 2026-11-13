@@ -246,6 +246,12 @@ importers:
       '@hono/node-server':
         specifier: 2.1.6
         version: 2.1.6(hono@4.13.17)
+      '@noble/curves':
+        specifier: 1.9.1
+        version: 1.9.1
+      '@noble/hashes':
+        specifier: 1.8.0
+        version: 1.8.0
       '@orpc/server':
         specifier: 1.16.2
         version: 1.16.2(@opentelemetry/api@1.10.0)(crossws@0.3.5)(ws@8.22.0)
@@ -276,6 +282,12 @@ importers:
       '@rakazo/page-kit':
         specifier: workspace:*
         version: link:../../packages/page-kit
+      '@scure/bip32':
+        specifier: 1.7.0
+        version: 1.7.0
+      '@scure/bip39':
+        specifier: 1.6.0
+        version: 1.6.0
       fflate:
         specifier: 0.8.3
         version: 0.8.3(patch_hash=714376135bb621edb5604ee53e6831513d435a7f1e01bc481fac77a61ac4e14d)

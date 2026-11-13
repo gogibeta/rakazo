@@ -51,8 +51,11 @@ import { SCHEDULE_TOOL_NAMES } from "./schedule-tools.js";
 import { SKILL_TOOL_NAMES } from "./skill-tools.js";
 import { refusal } from "./tool-refusal.js";
 import { argumentGiven, dropUnchangedOwnBotArgs } from "./update-bot-patch.js";
+import { findUserWallet } from "./user-wallets.js";
 import type { VaultCardUse } from "./vault-card-use.js";
 import { cardUseSummary, requestedCardUse, vaultCardUseOf } from "./vault-card-use.js";
+import type { WalletUse } from "./wallet-use.js";
+import { requestedWalletUse, walletUseOf, walletUseSummary } from "./wallet-use.js";
 
 /** A tool call resolved to the tool it runs and the exact request an approval covers. */
 export interface ToolRequest {
@@ -76,6 +79,8 @@ export interface ToolRequest {
   purchase: PurchaseApproval | undefined;
   /** This page tool call types a saved card into a checkout, which a person approves each time. */
   cardUse: VaultCardUse | undefined;
+  /** This page tool call types a saved wallet's secret into a page, which a person approves each time. */
+  walletUse: WalletUse | undefined;
 }
 
 type ToolError = { error: string };
@@ -297,6 +302,7 @@ export async function resolveToolRequest(
     heldForApproval: false,
     purchase: undefined,
     cardUse: undefined,
+    walletUse: undefined,
   };
 }
 
@@ -411,7 +417,12 @@ export async function prepareToolRequest(
   if (PURCHASE_CHECKED_TOOLS.has(name)) {
     // The approval is written here from what the page says; a model-supplied one is dropped, and an
     // approved replay keeps the one the user saw.
-    const { purchaseApproval: given, cardApproval: givenCard, ...rest } = args;
+    const {
+      purchaseApproval: given,
+      cardApproval: givenCard,
+      walletApproval: givenWallet,
+      ...rest
+    } = args;
     const approved = nextApprovedTool === name ? purchaseApprovalOf(given) : undefined;
     args = approved ? { ...rest, purchaseApproval: given } : rest;
     // A saved card is typed only into the checkout a person approved: the approval names the card
@@ -438,6 +449,44 @@ export async function prepareToolRequest(
       args = { ...args, cardApproval: cardUse };
       request.cardUse = cardUse;
       request.fleetSummary = cardUseSummary(cardUse);
+    }
+    // A saved wallet's secret is typed only into the page a person approved: the approval names
+    // the wallet and the site, and a replay keeps the one the user saw.
+    const wantedWallet = name === "browser_act" ? requestedWalletUse(rest.actions) : undefined;
+    if (wantedWallet && "error" in wantedWallet) return wantedWallet;
+    if (wantedWallet) {
+      if (wantedCard) {
+        return refusal(
+          "wallet_and_card_together",
+          "Type the saved card and the wallet in separate browser_act calls, so the user approves each one.",
+        );
+      }
+      const approvedWallet = nextApprovedTool === name ? walletUseOf(givenWallet) : undefined;
+      if (
+        approvedWallet &&
+        (approvedWallet.wallet !== wantedWallet.wallet || approvedWallet.site !== wantedWallet.site)
+      )
+        return refusal(
+          "wallet_not_approved",
+          "This types a wallet the user has not approved, so nothing was typed. Call the tool again with only that wallet; that asks the user.",
+        );
+      let walletUse = approvedWallet;
+      if (!walletUse) {
+        const row = await findUserWallet(deps.prisma, run.userId, wantedWallet.wallet);
+        if (!row)
+          return refusal(
+            "wallet_not_found",
+            "No wallet is saved under this name. Check list_wallets.",
+          );
+        walletUse = {
+          ...wantedWallet,
+          address: row.address,
+          savedAt: row.updatedAt.toISOString(),
+        };
+      }
+      args = { ...args, walletApproval: walletUse };
+      request.walletUse = walletUse;
+      request.fleetSummary = walletUseSummary(walletUse);
     }
     // A desktop press has no check on the page right before it, as a browser_act click does: one the user
     // approved goes ahead only while the page still shows what the card did. A card that named nothing
@@ -478,7 +527,14 @@ export async function prepareToolRequest(
           : purchaseCardSummary(purchase);
       }
     }
-    if (purchase || request.cardUse || given !== undefined || givenCard !== undefined)
+    if (
+      purchase ||
+      request.cardUse ||
+      request.walletUse ||
+      given !== undefined ||
+      givenCard !== undefined ||
+      givenWallet !== undefined
+    )
       request.effectRequest = args;
   }
   request.args = args;

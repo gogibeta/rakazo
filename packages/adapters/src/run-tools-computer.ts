@@ -58,7 +58,9 @@ import {
 import { recordPagePayment } from "./spending-gate.js";
 import { DESKTOP_HELD_FOR_TAKEOVER_MESSAGE } from "./takeover-resume.js";
 import { getActiveTeachingSession } from "./teaching-session.js";
+import { recordUserWalletUse, resolveUserWalletFill } from "./user-wallets.js";
 import { vaultCardUseOf } from "./vault-card-use.js";
+import { walletUseOf } from "./wallet-use.js";
 
 function appendComputerCommand(ctx: RunContext, payload: ComputerCommand) {
   const { deps, run, runId, bot, thread } = ctx;
@@ -293,6 +295,36 @@ export async function pageBrowserTool(ctx: RunContext, call: ToolCall) {
               addRunSecrets(ctx, resolved.redactions);
               const { text, origin, claim, restore } = resolved;
               return { text, origin, claim, restore };
+            },
+            resolveWalletFill: async (step) => {
+              // Only the wallet and site the person approved for this call.
+              const approvedUse = walletUseOf(args.walletApproval);
+              if (approvedUse?.wallet !== step.wallet || approvedUse.site !== step.site)
+                return { error: "The user has not approved typing this wallet here." };
+              const resolved = await resolveUserWalletFill({
+                prisma: deps.prisma,
+                secretStore: deps.secretStore,
+                userId: run.userId,
+                name: step.wallet,
+                site: step.site,
+                savedAt: approvedUse.savedAt,
+              });
+              if ("error" in resolved) return resolved;
+              addRunSecrets(ctx, resolved.redactions);
+              return {
+                text: resolved.text,
+                origin: resolved.origin,
+                recordUse: () =>
+                  recordUserWalletUse({
+                    prisma: deps.prisma,
+                    walletId: resolved.walletId,
+                    userId: run.userId,
+                    botId: bot.id,
+                    botName: bot.name,
+                    purpose: approvedUse.purpose,
+                    site: approvedUse.site,
+                  }),
+              };
             },
             resolvePayTokenFill: async (step) => {
               const paymentWallet = deps.paymentWallet;

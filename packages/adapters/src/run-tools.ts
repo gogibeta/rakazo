@@ -33,6 +33,7 @@ import {
   userComputerObserve,
   userComputerShell,
 } from "./run-tools-user-computer.js";
+import { walletTools } from "./run-tools-wallets.js";
 import { strategicInitiativeToolAllowed } from "./strategic-initiative.js";
 import { logToolRefusal } from "./tool-completion-audit.js";
 import { refusal } from "./tool-refusal.js";
@@ -47,6 +48,7 @@ const TOOL_HANDLERS = new Map<string, ToolHandler>([
   ...Object.entries(taskTools),
   ...Object.entries(messagingTools),
   ...Object.entries(secretTools),
+  ...Object.entries(walletTools),
   ...Object.entries(fleetTools),
   [USER_COMPUTER_SHELL_TOOL, userComputerShell],
   [USER_COMPUTER_OBSERVE_TOOL, userComputerObserve],

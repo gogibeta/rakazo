@@ -214,6 +214,13 @@ import {
 } from "./service-credentials.js";
 import { SettingsScopeSchema, SpaceSettingSchema, settingsScopeInput } from "./settings-scope.js";
 import { SpaceAvailabilitySchema } from "./space-availability.js";
+import {
+  WalletAddInput,
+  WalletRemoveInput,
+  WalletSummarySchema,
+  WalletUseSummarySchema,
+  WalletUsesInput,
+} from "./wallets.js";
 
 const botId = z.object({ botId: Id });
 const groupId = z.object({ groupId: Id });
@@ -497,6 +504,13 @@ export const appContract = {
     list: oc.output(z.object({ proxies: z.array(ProxySummarySchema) })),
     add: oc.input(ProxyAddInput).output(ProxySummarySchema),
     remove: oc.input(ProxyRemoveInput).output(z.object({ ok: z.literal(true) })),
+  },
+  /** The signed-in user's named crypto wallets. Summaries never carry the secret. */
+  wallets: {
+    list: oc.output(z.object({ wallets: z.array(WalletSummarySchema) })),
+    add: oc.input(WalletAddInput).output(WalletSummarySchema),
+    remove: oc.input(WalletRemoveInput).output(z.object({ ok: z.literal(true) })),
+    uses: oc.input(WalletUsesInput).output(z.object({ uses: z.array(WalletUseSummarySchema) })),
   },
   /** Deployment-owner view of the append-only security event log, newest first. */
   security: {

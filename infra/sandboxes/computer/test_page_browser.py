@@ -1933,6 +1933,24 @@ class LoginFrameBrowser:
                 if method == "Runtime.callFunctionOn" and "fill(value" in params["functionDeclaration"]]
 
 
+class WalletFillTest(unittest.TestCase):
+    STEP = {"kind": "fill", "ref": "e2", "text": "fake-wallet-key", "origin": "https://portal.example.test",
+            "field": "wallet"}
+
+    def test_fills_the_focused_field_of_the_page_with_the_secret_as_an_argument(self):
+        browser = LoginFrameBrowser()
+        secrets.fill_focused(browser.client, "page", dict(self.STEP))
+        self.assertEqual(browser.filled_in(), [("page", 1)])
+        self.assertNotIn("fake-wallet-key", json.dumps([p for m, p, _ in browser.sent if m == "Runtime.evaluate"]))
+
+    def test_a_field_in_another_site_s_frame_is_refused(self):
+        browser = LoginFrameBrowser(focus_in_frame=True)
+        with self.assertRaisesRegex(secrets.Refused, "in a frame from https://auth.example.test, not on the "
+                                    "site it is meant for"):
+            secrets.fill_focused(browser.client, "page", dict(self.STEP))
+        self.assertEqual(browser.filled_in(), [])
+
+
 class SavedLoginTest(unittest.TestCase):
     STEP = {"kind": "fill", "ref": "e2", "text": "fake-password", "origin": "https://portal.example.test",
             "field": "password"}

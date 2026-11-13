@@ -3,6 +3,7 @@ import {
   Brain,
   Building2,
   CloudDownload,
+  Coins,
   Cpu,
   CreditCard,
   Gauge,
@@ -57,6 +58,12 @@ export function useSettingsNavItems(available: {
       label: t`Proxies`,
       icon: Globe,
       description: t`Connections your bots can browse through.`,
+    },
+    {
+      id: "wallets",
+      label: t`Crypto wallets`,
+      icon: Coins,
+      description: t`Burner wallets for testnet work.`,
     },
     ...(available.wallet
       ? [

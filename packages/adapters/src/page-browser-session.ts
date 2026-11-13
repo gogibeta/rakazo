@@ -167,11 +167,14 @@ export class PageBrowserSession {
 
   private checkFillOrigin(action: { origin?: string; field?: string }): void {
     const card = action.field === "card";
+    const wallet = action.field === "wallet";
     if (!action.origin && !card) return;
     const page = new URL(this.url);
     const notHttps = card
       ? `A card can only be filled on HTTPS. ${REOPEN_MERCHANT_SITE}`
-      : `Website logins can only be filled on HTTPS. ${REOPEN_SAVED_SITE}`;
+      : wallet
+        ? `A wallet key can only be filled on HTTPS. ${REOPEN_SAVED_SITE}`
+        : `Website logins can only be filled on HTTPS. ${REOPEN_SAVED_SITE}`;
     let saved: URL;
     try {
       saved = new URL(action.origin ?? "");
@@ -186,7 +189,9 @@ export class PageBrowserSession {
       throw new FillRefused(
         card
           ? `The page is not on the merchant's site for this purchase. ${REOPEN_MERCHANT_SITE}`
-          : `This login is saved for ${saved.origin}; the page is on ${page.origin}. ${REOPEN_SAVED_SITE}`,
+          : wallet
+            ? `This fill was approved for ${saved.origin}; the page is on ${page.origin}. ${REOPEN_SAVED_SITE}`
+            : `This login is saved for ${saved.origin}; the page is on ${page.origin}. ${REOPEN_SAVED_SITE}`,
       );
     }
   }
@@ -245,11 +250,24 @@ export class PageBrowserSession {
     }
     if (action.kind === "fill" || action.kind === "type") {
       const card = action.field === "card";
+      const wallet = action.field === "wallet";
       if (action.origin || card) {
         const inputType = el instanceof win.HTMLInputElement ? el.type : "";
         if (card) {
           if (!CARD_INPUT_TYPES.has(inputType)) {
             throw new FillRefused("A card can only be typed into a card field.");
+          }
+        } else if (wallet) {
+          // A wallet secret goes into a key or phrase field: a password, text or telephone
+          // input, or a text area (where seed phrases are pasted). It joins loginFilled below,
+          // so snapshots never show it, and the live helper draws it as dots.
+          if (
+            !(el instanceof win.HTMLTextAreaElement) &&
+            !(el instanceof win.HTMLInputElement && CARD_INPUT_TYPES.has(inputType))
+          ) {
+            throw new FillRefused(
+              "A wallet key can only be typed into a password, text or telephone field, or a text area.",
+            );
           }
         } else if (action.field === "code") {
           if (!USERNAME_INPUT_TYPES.has(inputType)) {
@@ -280,7 +298,9 @@ export class PageBrowserSession {
           throw new FillRefused(
             card
               ? "This field didn't accept the card, so it was cleared."
-              : "This field didn't accept the saved login, so it was cleared.",
+              : wallet
+                ? "This field didn't accept the wallet key, so it was cleared."
+                : "This field didn't accept the saved login, so it was cleared.",
           );
         }
         el.dispatchEvent(new win.Event("input", { bubbles: true }));
