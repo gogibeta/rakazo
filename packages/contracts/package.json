@@ -29,6 +29,11 @@
       "types": "./src/content-security-policy.ts",
       "development": "./src/content-security-policy.ts",
       "default": "./src/content-security-policy.ts"
+    },
+    "./host": {
+      "types": "./src/host.ts",
+      "development": "./src/host.ts",
+      "default": "./src/host.ts"
     }
   },
   "scripts": {
