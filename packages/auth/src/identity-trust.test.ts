@@ -43,6 +43,8 @@ function fixture({
   webOrigin = "http://web.example.test",
   requestOrigin,
   stalledDelivery = false,
+  envSignupsEnabled,
+  envSignupAllowlist,
   ...hooks
 }: {
   allowlist?: string;
@@ -52,6 +54,9 @@ function fixture({
   requestOrigin?: string;
   /** The provider accepts the message but never settles, like a hung SMTP connection. */
   stalledDelivery?: boolean;
+  /** Fixed environment policy, instead of mirroring the stored deployment record. */
+  envSignupsEnabled?: string;
+  envSignupAllowlist?: string;
 } & Pick<
   AuthEnv,
   "singleAccount" | "afterDeleteSession" | "afterReplaceSession" | "beforeDeleteUser"
@@ -164,10 +169,10 @@ function fixture({
     baseURL,
     webOrigin,
     get signupsEnabled() {
-      return String(policy.signupsEnabled);
+      return envSignupsEnabled ?? String(policy.signupsEnabled);
     },
     get signupAllowlist() {
-      return policy.signupAllowlist;
+      return envSignupAllowlist ?? policy.signupAllowlist;
     },
     email: delivery
       ? {
@@ -398,6 +403,39 @@ describe("identity trust through auth endpoints", () => {
       code: "REGISTRATION_CLOSED",
       message: "Registration is closed",
     });
+  });
+
+  it("lets a saved closed setting refuse signups the environment would allow", async () => {
+    const f = fixture({ envSignupsEnabled: "true" });
+    f.policy.signupsEnabled = false;
+    const response = await f.signup();
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "REGISTRATION_CLOSED" });
+  });
+
+  it("lets a saved open setting admit signups the environment closed", async () => {
+    const f = fixture({ delivery: false, envSignupsEnabled: "false" });
+    const response = await f.signup();
+    expect(response.status).toBe(200);
+  });
+
+  it("follows the environment while no setting has been saved", async () => {
+    const closed = fixture({ envSignupsEnabled: "false" });
+    closed.policy.signupPolicyInitialized = false;
+    closed.policy.signupsEnabled = true;
+    expect((await closed.signup()).status).toBe(400);
+
+    const open = fixture({ delivery: false, envSignupsEnabled: "true" });
+    open.policy.signupPolicyInitialized = false;
+    open.policy.signupsEnabled = false;
+    expect((await open.signup()).status).toBe(200);
+  });
+
+  it("reports the setting in force for the public auth options", async () => {
+    const f = fixture({ envSignupsEnabled: "false" });
+    await expect(f.auth.signupsEnabled()).resolves.toBe(true);
+    f.policy.signupsEnabled = false;
+    await expect(f.auth.signupsEnabled()).resolves.toBe(false);
   });
 
   it("permits ordinary unverified signup without granting admin or mailbox proof on open deployments", async () => {

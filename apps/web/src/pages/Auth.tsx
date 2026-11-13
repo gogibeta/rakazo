@@ -54,21 +54,25 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [capabilityAttempt, setCapabilityAttempt] = useState(0);
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState("");
+  // A closed deployment hides every way into the sign-up form; the server refuses regardless.
+  const registrationClosed = mode === "up" && reset?.signupsEnabled === false;
+  const signupsOpen = reset?.signupsEnabled !== false;
   const useCode = Boolean(reset?.passwordAuth && reset.emailCode) && mode !== "forgot";
   // A blank password asks for an emailed code, so code-only accounts need no toggle.
   const codeMode = useCode && !password;
   const codeStep = useCode && codeSent;
   const passwordFieldId = mode === "in" ? "current-password" : "new-password";
-  const title =
-    sent || codeStep ? (
-      <Trans>Check your email</Trans>
-    ) : mode === "in" ? (
-      <Trans>Sign in to Rakazo</Trans>
-    ) : mode === "up" ? (
-      <Trans>Create your Rakazo</Trans>
-    ) : (
-      <Trans>Reset your password</Trans>
-    );
+  const title = registrationClosed ? (
+    <Trans>Registration is closed</Trans>
+  ) : sent || codeStep ? (
+    <Trans>Check your email</Trans>
+  ) : mode === "in" ? (
+    <Trans>Sign in to Rakazo</Trans>
+  ) : mode === "up" ? (
+    <Trans>Create your Rakazo</Trans>
+  ) : (
+    <Trans>Reset your password</Trans>
+  );
 
   useEffect(() => {
     setReset(null);
@@ -233,7 +237,13 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
   return (
     <AuthFrame onSubmit={submit} title={title}>
-      {sent ? (
+      {registrationClosed ? (
+        <div className="w-full text-center">
+          <Link to={`/sign-in${nextQuery}`} className="font-medium text-foreground">
+            <Trans>Back to sign in</Trans>
+          </Link>
+        </div>
+      ) : sent ? (
         <div className="w-full text-center">
           <Link to={`/sign-in${nextQuery}`} className="font-medium text-foreground">
             <Trans>Back to sign in</Trans>
@@ -431,7 +441,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
                   <Trans>Continue with {reset.sso.name}</Trans>
                 </Button>
               ) : null}
-              {codeStep ? null : (
+              {codeStep || (mode === "in" && !signupsOpen) ? null : (
                 <p className="mt-8 text-muted-foreground">
                   {mode === "in" ? (
                     <>
