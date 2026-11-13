@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHostRestarter, createInstaboxHostRestarter } from "./host-restart.js";
 
-function recordingFetch(responses: Array<{ ok: boolean; status: number }>) {
+function recordingFetch(responses: Array<{ ok: boolean; status: number; body?: string }>) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   let index = 0;
   const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     const response = responses[Math.min(index++, responses.length - 1)]!;
-    return response as Response;
+    return { ...response, text: async () => response.body ?? "" } as unknown as Response;
   });
   return { calls, fetchImpl };
 }
@@ -16,7 +16,7 @@ const ok = { ok: true, status: 202 };
 const conflict = { ok: false, status: 409 };
 
 describe("createInstaboxHostRestarter", () => {
-  it("stops then starts the one configured machine, with the key in the X-API-Key header", async () => {
+  it("stops then starts the one configured machine, with the key as an Authorization Bearer token", async () => {
     const { calls, fetchImpl } = recordingFetch([ok, ok]);
     const restarter = createInstaboxHostRestarter({
       apiKey: "key-123",
@@ -31,7 +31,7 @@ describe("createInstaboxHostRestarter", () => {
     expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
     for (const call of calls) {
       expect(call.init?.method).toBe("POST");
-      expect(call.init?.headers).toEqual({ "x-api-key": "key-123" });
+      expect(call.init?.headers).toEqual({ authorization: "Bearer key-123" });
     }
   });
 
@@ -58,6 +58,25 @@ describe("createInstaboxHostRestarter", () => {
     });
     await expect(restarter.restart()).rejects.toThrow("409");
     expect(calls).toHaveLength(1);
+  });
+
+  it("surfaces the API's error detail from a JSON body, never the key", async () => {
+    const body = JSON.stringify({
+      error: { code: "malformed_key", message: "Send the key as an Authorization Bearer token" },
+    });
+    const { fetchImpl } = recordingFetch([{ ok: false, status: 400, body }]);
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    const error = await restarter.restart().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("HTTP 400");
+    expect((error as Error).message).toContain("malformed_key");
+    expect((error as Error).message).toContain("Authorization Bearer token");
+    expect((error as Error).message).not.toContain("key-123");
   });
 });
 

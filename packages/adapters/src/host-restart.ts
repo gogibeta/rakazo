@@ -12,6 +12,37 @@ export interface HostRestarter {
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * The API's own error detail from a failed response, for logs: the JSON
+ * error's code and message when the body carries them, else the raw text.
+ * Capped so a verbose body cannot flood the log. Only the response body is
+ * read — never the request — so the API key and headers cannot leak into it.
+ */
+async function errorDetail(response: Response): Promise<string | undefined> {
+  let body: string;
+  try {
+    body = (await response.text()).trim();
+  } catch {
+    return undefined;
+  }
+  if (!body) return undefined;
+  let detail = body;
+  try {
+    const parsed = JSON.parse(body) as {
+      error?: { code?: unknown; message?: unknown };
+      code?: unknown;
+      message?: unknown;
+    };
+    const parts = [parsed.error?.code ?? parsed.code, parsed.error?.message ?? parsed.message]
+      .filter((part): part is string => typeof part === "string" && part.length > 0)
+      .join(": ");
+    if (parts) detail = parts;
+  } catch {
+    // Not JSON: the raw body is the detail.
+  }
+  return detail.slice(0, 200);
+}
+
 /** The instabox API the sandbox provider already talks to (SDK default base). */
 const INSTABOX_API_URL = "https://api.instabox.sh";
 /** How long the background start retries run after the stop is accepted. */
@@ -46,11 +77,19 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
       `${base}/v1/machines/${encodeURIComponent(options.machineId)}/${action}`,
       {
         method: "POST",
-        // The instabox API takes the key in X-API-Key, the header its own SDK sends.
-        headers: { "x-api-key": options.apiKey },
+        // Live-verified against api.instabox.sh: an ibk_ key sent via
+        // X-API-Key is rejected (401 "malformed_key"); the API takes the key
+        // as an Authorization Bearer token. The vendor SDK sends X-API-Key,
+        // but the live API disagrees for these keys — do not switch back.
+        headers: { authorization: `Bearer ${options.apiKey}` },
       },
     );
-    if (!response.ok) throw new Error(`instabox ${action} failed with HTTP ${response.status}`);
+    if (!response.ok) {
+      const detail = await errorDetail(response);
+      throw new Error(
+        `instabox ${action} failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+      );
+    }
   };
   return {
     async restart() {
