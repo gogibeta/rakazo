@@ -14,6 +14,7 @@ function recordingFetch(responses: Array<{ ok: boolean; status: number; body?: s
 
 const ok = { ok: true, status: 202 };
 const conflict = { ok: false, status: 409 };
+const serverError = { ok: false, status: 500 };
 
 function idempotencyKeyOf(call: { init?: RequestInit }): string | undefined {
   const headers = call.init?.headers as Record<string, string> | undefined;
@@ -30,8 +31,7 @@ describe("createInstaboxHostRestarter", () => {
       sleep: async () => undefined,
     });
     await restarter.restart();
-    // The start runs in the background; let it land before asserting.
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls).toHaveLength(2);
     expect(calls[0]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/stop");
     expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
     for (const call of calls) {
@@ -46,8 +46,49 @@ describe("createInstaboxHostRestarter", () => {
     expect(idempotencyKeyOf(calls[1]!)).not.toBe(idempotencyKeyOf(calls[0]!));
   });
 
-  it("retries a failed start call, reusing the start's own idempotency key", async () => {
-    const { calls, fetchImpl } = recordingFetch([ok, conflict, conflict, ok]);
+  it("does not resolve restart() until the start request has been accepted", async () => {
+    let acceptStart!: (response: Response) => void;
+    const startGate = new Promise<Response>((resolve) => {
+      acceptStart = resolve;
+    });
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith("/start")) return startGate;
+      return { ok: true, status: 202, text: async () => "" } as unknown as Response;
+    });
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    let resolved = false;
+    const pending = restarter.restart().then(() => {
+      resolved = true;
+    });
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    // Give restart() every chance to settle early; it must not: the caller
+    // dies with the guest, so returning before the start is accepted could
+    // lose the start and leave the machine off.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(resolved).toBe(false);
+    acceptStart({ ok: true, status: 202, text: async () => "" } as unknown as Response);
+    await pending;
+    expect(resolved).toBe(true);
+  });
+
+  it("retries the start after a network failure, reusing the start's own idempotency key", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let startAttempts = 0;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push({ url, init });
+      if (url.endsWith("/start")) {
+        startAttempts++;
+        if (startAttempts === 1) throw new TypeError("fetch failed");
+      }
+      return { ok: true, status: 202, text: async () => "" } as unknown as Response;
+    });
     const restarter = createInstaboxHostRestarter({
       apiKey: "key-123",
       machineId: "m_abc",
@@ -55,10 +96,44 @@ describe("createInstaboxHostRestarter", () => {
       sleep: async () => undefined,
     });
     await restarter.restart();
-    await vi.waitFor(() => expect(calls).toHaveLength(4));
-    expect(calls.slice(1).every((call) => call.url.endsWith("/start"))).toBe(true);
+    expect(startAttempts).toBe(2);
     // Every start attempt reuses the start's own key, never the stop's.
-    const startKeys = new Set(calls.slice(1).map(idempotencyKeyOf));
+    const startKeys = new Set(
+      calls.filter((call) => call.url.endsWith("/start")).map(idempotencyKeyOf),
+    );
+    expect(startKeys.size).toBe(1);
+    expect(startKeys.has(idempotencyKeyOf(calls[0]!))).toBe(false);
+  });
+
+  it("fails the restart at once when the start is refused with a 409", async () => {
+    const { calls, fetchImpl } = recordingFetch([ok, conflict]);
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    await expect(restarter.restart()).rejects.toThrow("409");
+    // A conflict fails identically on every retry: exactly one start attempt.
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
+  });
+
+  it("gives up after a bounded number of start attempts when the start keeps failing transiently", async () => {
+    const { calls, fetchImpl } = recordingFetch([ok, serverError]);
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    await expect(restarter.restart()).rejects.toThrow("500");
+    const startCalls = calls.filter((call) => call.url.endsWith("/start"));
+    // One attempt per 2s interval across the 120s retry window, even when
+    // the injected sleep returns immediately.
+    expect(startCalls).toHaveLength(60);
+    // Every attempt reuses the start's own key, never the stop's.
+    const startKeys = new Set(startCalls.map(idempotencyKeyOf));
     expect(startKeys.size).toBe(1);
     expect(startKeys.has(idempotencyKeyOf(calls[0]!))).toBe(false);
   });
@@ -72,9 +147,8 @@ describe("createInstaboxHostRestarter", () => {
       sleep: async () => undefined,
     });
     await restarter.restart();
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
     await restarter.restart();
-    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    expect(calls).toHaveLength(4);
     // A fresh key per action per restart: all four calls carry distinct keys.
     expect(new Set(calls.map(idempotencyKeyOf)).size).toBe(4);
   });
