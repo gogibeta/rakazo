@@ -317,3 +317,79 @@ describe("sending files to another bot", () => {
     });
   });
 });
+
+describe("send_to_chat_apps", () => {
+  function chatAppContext(identities: Array<{ id: string; provider: string }>) {
+    const created: Array<Record<string, unknown>> = [];
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      messagingOutbound: {
+        aggregate: vi.fn(async () => ({ _max: { createdAt: null } })),
+        createMany: vi.fn(async (args: { data: Array<Record<string, unknown>> }) => {
+          created.push(...args.data);
+          return { count: args.data.length };
+        }),
+      },
+    };
+    const enqueue = vi.fn(async () => undefined);
+    const ctx = {
+      deps: {
+        prisma: {
+          messagingIdentity: { findMany: vi.fn(async () => identities) },
+          $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) =>
+            callback(tx),
+          ),
+        },
+        jobs: { enqueue },
+      },
+      run: { id: "run-1", spaceId: "space-1", userId: "user-1", threadId: "thread-1" },
+      bot: { id: "bot-coder", name: "Coder" },
+      thread: { id: "thread-1", groupId: null },
+      secrets: [],
+      state: {},
+    } as unknown as RunContext;
+    return { ctx, created, enqueue };
+  }
+
+  it("queues the message for the owner's linked Telegram and reports the send", async () => {
+    const { ctx, created, enqueue } = chatAppContext([{ id: "mi-tg", provider: "telegram" }]);
+    await expect(
+      messagingTools.send_to_chat_apps!(
+        ctx,
+        callWith("send_to_chat_apps", { message: "the whole report" }),
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      sentTo: ["telegram"],
+      messages: 1,
+      note: "Queued for delivery to the user's linked chat apps as direct messages from this deployment's bot.",
+    });
+    expect(created).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "chatapps:effect-1:mi-tg:0",
+        kind: "dm",
+        identityId: "mi-tg",
+        body: "the whole report",
+      }),
+    ]);
+    expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ name: "messaging.deliver" }));
+  });
+
+  it("relays the link-a-chat-app guidance when the owner has none linked", async () => {
+    const { ctx, created, enqueue } = chatAppContext([]);
+    const result = (await messagingTools.send_to_chat_apps!(
+      ctx,
+      callWith("send_to_chat_apps", { message: "hello" }),
+    )) as { error: string };
+    expect(result.error).toContain("Settings → Messaging");
+    expect(created).toHaveLength(0);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses an empty message", async () => {
+    const { ctx } = chatAppContext([{ id: "mi-tg", provider: "telegram" }]);
+    await expect(
+      messagingTools.send_to_chat_apps!(ctx, callWith("send_to_chat_apps", { message: "  " })),
+    ).resolves.toEqual({ error: "message is required" });
+  });
+});

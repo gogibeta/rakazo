@@ -16,6 +16,7 @@ import { PlanUsage } from "../components/PlanUsage";
 import { ProxiesSettings } from "../components/ProxiesSettings";
 import { ServiceCredentialsSettings } from "../components/ServiceCredentialsSettings";
 import { SETTINGS_CONTENT_WIDTH, SettingsGroup, SettingsRow } from "../components/SettingsRows";
+import { SignupSettings } from "../components/SignupSettings";
 import { SystemFilesSettings } from "../components/SystemFilesSettings";
 import { VaultSettings } from "../components/VaultSettings";
 import { WalletsSettings } from "../components/WalletsSettings";
@@ -436,6 +437,7 @@ export function SettingsOverlay({
                   {section === "organization" ? (
                     <div className="space-y-8">
                       <OrganizationSettingsPanel onBusyChange={setVoiceBusy} />
+                      <SignupSettings />
                       <ServiceCredentialsSettings />
                       <SystemFilesSettings />
                     </div>

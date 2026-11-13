@@ -355,6 +355,74 @@ function routineResultBody(
   return [head, ...(clipped ? [clipped] : []), tail].join("\n\n");
 }
 
+export type ChatAppMessageResult =
+  | { ok: true; providers: string[]; parts: number }
+  | { ok: false; error: string };
+
+/**
+ * A message a bot was asked to send its owner on their linked chat apps,
+ * queued as DM outbox rows for every identity the owner has linked — the
+ * same rows, splitting and drain the routine-result mirror uses. Recipients
+ * come only from the owner's own identity rows: the caller names no address,
+ * and another person's identities are never read. WhatsApp is excluded for
+ * the mirror's reason: a proactive WhatsApp message outside its 24-hour
+ * window needs a template this deployment does not have. Rows are keyed by
+ * the caller's idempotency key, so a retried call queues nothing twice; the
+ * drain itself is the messaging.deliver job, enqueued here and reconciled
+ * later if this enqueue is lost.
+ */
+export async function queueOwnerChatAppMessage(
+  deps: Pick<MessagingDeliveryDeps, "prisma" | "jobs">,
+  input: { userId: string; body: string; idempotencyKey: string },
+): Promise<ChatAppMessageResult> {
+  const body = input.body.trim();
+  if (!body) return { ok: false, error: "message is required" };
+  const identities = await deps.prisma.messagingIdentity.findMany({
+    where: { userId: input.userId },
+    select: { id: true, provider: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (identities.length === 0) {
+    return {
+      ok: false,
+      error:
+        "The user has not linked any chat app yet, so there is nowhere to send this. Tell them to link one in Settings → Messaging first. Chat apps connect at the account level here — never suggest a QR code, a web login or a new bot token.",
+    };
+  }
+  const deliverable = identities.filter((identity) => identity.provider !== "whatsapp");
+  if (deliverable.length === 0) {
+    return {
+      ok: false,
+      error:
+        "The user has only linked WhatsApp, which cannot receive proactive messages outside its 24-hour window without a template this deployment does not have. Ask them to link Telegram or Slack in Settings → Messaging instead.",
+    };
+  }
+  let parts = 0;
+  for (const identity of deliverable) {
+    const split = splitOutboundBody(identity.provider, body);
+    await insertOutboundRows(
+      deps.prisma,
+      { identityId: identity.id },
+      split.map((part, index) => ({
+        idempotencyKey: `${input.idempotencyKey}:${identity.id}:${index}`,
+        kind: "dm",
+        identityId: identity.id,
+        body: part,
+        sourceMessageId: null,
+      })),
+    );
+    parts += split.length;
+  }
+  await deps.jobs.enqueue(messagingDeliverJob()).catch((error) => {
+    getLogger().error("chat app message enqueue error", error);
+  });
+  return {
+    ok: true,
+    providers: [...new Set(deliverable.map((identity) => identity.provider))],
+    parts,
+  };
+}
+
 /** Step lines an activity message shows; older steps collapse into a count. */
 const ACTIVITY_MAX_STEP_LINES = 6;
 

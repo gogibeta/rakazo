@@ -35,6 +35,8 @@ export const ServiceCredentialsStatusSchema = z.object({
   whatsappVerifyToken: z.boolean(),
   /** Owner Telegram user IDs (not a secret, so unlike the keys it is returned in full). */
   telegramOwnerUserIds: z.array(z.string()),
+  /** Whether new accounts are currently admitted, as the signup gate sees it. */
+  signupsEnabled: z.boolean(),
 });
 export type ServiceCredentialsStatus = z.infer<typeof ServiceCredentialsStatusSchema>;
 
@@ -76,6 +78,11 @@ export const ServiceCredentialsUpdateSchema = z.object({
     .max(2048)
     .regex(/^[\d,\s]*$/, "Telegram user IDs must be numbers separated by commas")
     .optional(),
+  /**
+   * Allow or close new account creation. Stored on the deployment record in
+   * the clear; once saved it, not the environment, decides who may register.
+   */
+  signupsEnabled: z.boolean().optional(),
 });
 export type ServiceCredentialsUpdate = z.infer<typeof ServiceCredentialsUpdateSchema>;
 

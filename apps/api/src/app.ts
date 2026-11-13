@@ -327,21 +327,29 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   const ticketBoardEnabled = env.ticketBoardEnabled;
   const boardEvents = createBoardEvents(realtime);
   const environmentSignupPolicy = signupPolicyFromEnv(env);
-  // Mirror the env policy for the previous release during a rolling deploy.
-  await prisma.deploymentSettings.upsert({
+  // Seed the deployment record from the env policy until an admin saves a
+  // policy in Settings; from then on the saved policy is the one in force,
+  // so booting must not overwrite it with the environment again.
+  const storedSignupPolicy = await prisma.deploymentSettings.findUnique({
     where: { id: "default" },
-    create: {
-      id: "default",
-      signupsEnabled: environmentSignupPolicy.enabled,
-      signupAllowlist: environmentSignupPolicy.allowlist.join(","),
-      signupPolicyInitialized: true,
-    },
-    update: {
-      signupsEnabled: environmentSignupPolicy.enabled,
-      signupAllowlist: environmentSignupPolicy.allowlist.join(","),
-      signupPolicyInitialized: true,
-    },
+    select: { signupPolicyInitialized: true },
   });
+  if (!storedSignupPolicy?.signupPolicyInitialized) {
+    await prisma.deploymentSettings.upsert({
+      where: { id: "default" },
+      create: {
+        id: "default",
+        signupsEnabled: environmentSignupPolicy.enabled,
+        signupAllowlist: environmentSignupPolicy.allowlist.join(","),
+        signupPolicyInitialized: true,
+      },
+      update: {
+        signupsEnabled: environmentSignupPolicy.enabled,
+        signupAllowlist: environmentSignupPolicy.allowlist.join(","),
+        signupPolicyInitialized: true,
+      },
+    });
+  }
 
   const jobKind = env.wakeupDriver;
   const inMemoryJobs = jobKind === "memory" ? new InMemoryJobQueue() : undefined;
@@ -782,6 +790,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       navLinks: env.navLinks,
       adminEmails: env.adminEmails,
       systemFilesRoot: env.systemFilesRoot,
+      signupsEnabled: env.signupsEnabled,
+      signupAllowlist: env.signupAllowlist,
       maxUploadSizeBytes: env.maxUploadSizeBytes,
       maxAttachmentsPerMessage: env.maxAttachmentsPerMessage,
       agentRuntime: env.agentRuntime,
@@ -837,11 +847,12 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       c.header("cache-control", "no-store");
     });
   }
-  app.get("/api/auth/capabilities", (c) => {
+  app.get("/api/auth/capabilities", async (c) => {
     return c.json({
       sso: env.oidc
         ? { name: env.oidc.name, availability: auth.ssoAvailability() ?? "checking" }
         : null,
+      signupsEnabled: await auth.signupsEnabled(),
       passwordAuth: env.passwordAuth !== false,
       passwordReset: env.passwordAuth !== false && Boolean(email),
       resetUrl:

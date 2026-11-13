@@ -140,6 +140,9 @@ export interface RouterDeps {
     adminEmails?: string[];
     /** Root of the admin System files browser; absent disables it. */
     systemFilesRoot?: string;
+    /** Raw SIGNUPS_ENABLED / SIGNUP_ALLOWLIST, the signup gate's fallback until a policy is saved. */
+    signupsEnabled?: string;
+    signupAllowlist?: string;
     phoneCallsEnabled?: boolean;
     phoneCallRingSeconds?: number;
     maxUploadSizeBytes?: number;

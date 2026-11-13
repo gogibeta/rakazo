@@ -17,6 +17,7 @@ import { messageBot } from "./bot-messages.js";
 import { endCallFromTool, requestUserCall } from "./call-request.js";
 import { normalizeWorkspacePath, resolveBotWorkspacePath } from "./computer-support.js";
 import { handoffToGroupBot } from "./group-handoff.js";
+import { queueOwnerChatAppMessage } from "./messaging-delivery.js";
 import type { RunContext } from "./run-context.js";
 import {
   canPostLongTaskHeadsUp,
@@ -300,6 +301,23 @@ export const messagingTools: ToolHandlers = {
           }
         : { ok: true },
     );
+  },
+  async send_to_chat_apps(ctx, call) {
+    const { deps, run } = ctx;
+    const { args, effectKey } = call;
+    const body = redactSecrets(String(args.message ?? ""), ctx.secrets).trim();
+    if (!body) return call.finish({ error: "message is required" });
+    const result = await queueOwnerChatAppMessage(
+      { prisma: deps.prisma, jobs: deps.jobs },
+      { userId: run.userId, body, idempotencyKey: `chatapps:${effectKey}` },
+    );
+    if (!result.ok) return call.finish({ error: result.error });
+    return call.finish({
+      ok: true,
+      sentTo: result.providers,
+      messages: result.parts,
+      note: "Queued for delivery to the user's linked chat apps as direct messages from this deployment's bot.",
+    });
   },
   async message_bot(ctx, call) {
     const { deps, run, bot } = ctx;
