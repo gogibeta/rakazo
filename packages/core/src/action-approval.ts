@@ -92,6 +92,8 @@ const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set([
   "create_space",
   "set_child_instructions",
   "set_child_bot_model",
+  // Power-cycling the deployment's own host takes every bot down with it.
+  "restart_host",
 ]);
 
 const READ_ONLY_CONNECTOR_PATTERN = /(^|[_-])(get|list|search|find|read)([_-]|$)/i;

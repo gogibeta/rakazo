@@ -137,6 +137,9 @@ export interface RouterDeps {
     ticketBoardEnabled?: boolean;
     navLinks?: NavLink[];
     adminEmails?: string[];
+    /** Host restart config: the provider key and the one machine it may restart. */
+    instaboxApiKey?: string;
+    instaboxMachineId?: string;
     phoneCallsEnabled?: boolean;
     phoneCallRingSeconds?: number;
     maxUploadSizeBytes?: number;

@@ -254,6 +254,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["wallets/uses", { walletId: "missing-wallet" }],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
+      ["deployment/hostStatus"],
+      ["deployment/restartHost"],
       ["updater/status"],
       ["updater/check", {}],
       ["updater/apply", {}],

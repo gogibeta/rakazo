@@ -478,6 +478,10 @@ export const appContract = {
         }),
       )
       .output(DeploymentSettingsSchema),
+    /** Whether the operator pointed this deployment at its own host machine. */
+    hostStatus: oc.output(z.object({ restartConfigured: z.boolean() })),
+    /** Power-cycle the host machine. Admins only; the deployment goes down with it. */
+    restartHost: oc.output(z.object({ initiated: z.literal(true) })),
   },
   /** Admin choice of where new computers run, with that provider's connection settings. */
   computerProvider: {

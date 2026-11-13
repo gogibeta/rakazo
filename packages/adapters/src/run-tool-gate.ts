@@ -393,6 +393,16 @@ export async function gateToolCall(
       ),
     };
   }
+  // Nor a host restart: it takes the whole deployment down, so a person approves it in person.
+  if (name === "restart_host" && run.trigger === "webhook" && plan !== "deny") {
+    await auditToolCall(ctx, name, "denied", { reason: "host_restart_unattended" });
+    return {
+      result: refusal(
+        "host_restart_needs_approval_unattended",
+        "This would restart the host machine, which needs the user's approval, and a webhook run cannot ask. Don't retry; tell the user.",
+      ),
+    };
+  }
   if (plan === "deny") {
     await auditToolCall(ctx, name, "denied", {
       reason: approvalResolved.decision === "deny" ? "rule" : "never_asks",

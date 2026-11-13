@@ -36,6 +36,7 @@ import type { ConfiguredDecision } from "./configured-decision.js";
 import type { selectRunConnections } from "./connection-context.js";
 import type { ExecutorDeps } from "./executor-deps.js";
 import type { FleetRun } from "./fleet-tools.js";
+import type { HostRestarter } from "./host-restart.js";
 import { namedAgentTools } from "./pi-runtime-tools.js";
 import type { lazyRunComputer } from "./run-computer.js";
 import type { createRunWorkspaceCheckpoint } from "./run-lifecycle.js";
@@ -270,6 +271,8 @@ export interface RunProviders {
   documents: DocumentProvider | undefined;
   browser: BrowserProvider;
   cloudAgent: ExecutorDeps["cloudAgent"];
+  /** The deployment's own host machine, when a restart may target it. */
+  hostRestart: HostRestarter | undefined;
 }
 
 /**

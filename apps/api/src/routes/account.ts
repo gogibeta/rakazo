@@ -43,6 +43,7 @@ import { createAccessGrant, listAccessGrants, revokeAccessGrant } from "../acces
 import { requireAdmin } from "../admins.js";
 import { aiConsentStatus, allowAiConsent } from "../ai-consent.js";
 import type { BillingService } from "../billing.js";
+import { getDeploymentHostStatus, restartDeploymentHost } from "../deployment-host.js";
 import { firstModelConnectAnalytics } from "../model-connect-analytics.js";
 import type { RouterDeps } from "../router.js";
 import {
@@ -243,6 +244,12 @@ export function accountRoutes(ctx: RouterContext) {
       update: authed.deployment.update.handler(() => {
         throw new ORPCError("FORBIDDEN");
       }),
+      hostStatus: authed.deployment.hostStatus.handler(({ context }) =>
+        getDeploymentHostStatus(deps, context.actor),
+      ),
+      restartHost: authed.deployment.restartHost.handler(({ context }) =>
+        restartDeploymentHost(deps, context.actor),
+      ),
     },
     security: {
       events: authed.security.events.handler(() => {

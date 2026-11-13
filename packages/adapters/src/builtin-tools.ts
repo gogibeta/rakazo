@@ -664,6 +664,13 @@ export const builtinAgentTools: ConnectorTool[] = [
     readOnly: true,
   },
   {
+    name: "restart_host",
+    description:
+      "Restart the virtual machine this deployment runs on. Everything on it, including this conversation, goes down until it boots again. The user approves every restart first; it never runs unattended. Only offered when the operator pointed the deployment at its own host machine.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: false,
+  },
+  {
     name: "secret_request",
     description:
       "Make an authenticated HTTPS request using a saved credential name. The backend injects authentication only at its saved origin. Redirects are rejected; response echoes of the credential are redacted. Use normal request URLs and bodies without secret placeholders.",

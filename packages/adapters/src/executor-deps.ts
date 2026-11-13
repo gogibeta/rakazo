@@ -22,6 +22,7 @@ import type {
 import type { PrismaClient, RunLease, ThreadEvents } from "@rakazo/db";
 import type { CloudAgentConnection } from "./cloud-agent-factory.js";
 import type { ConfiguredDecision } from "./configured-decision.js";
+import type { HostRestarter } from "./host-restart.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
@@ -76,6 +77,8 @@ export interface ExecutorDeps {
   decisions?: ConfiguredDecision;
   /** The deployment's document provider for the document tools. Defaults from env keys when omitted. */
   documents?: DocumentProvider;
+  /** The deployment's own host machine for the `restart_host` tool. Defaults from env when omitted. */
+  hostRestart?: HostRestarter;
   /** Page browser (DOM refs) on the bot computer. Defaults to the sandbox live browser when supported. */
   browser?: BrowserProvider;
   secretHttp?: RemoteTransportDependencies;
