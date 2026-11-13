@@ -46,7 +46,7 @@ async function errorDetail(response: Response): Promise<string | undefined> {
 
 /** The instabox API the sandbox provider already talks to (SDK default base). */
 const INSTABOX_API_URL = "https://api.instabox.sh";
-/** How long the background start retries run after the stop is accepted. */
+/** How long a failed start call is retried in the background before giving up. */
 const START_RETRY_WINDOW_MS = 120_000;
 const START_RETRY_INTERVAL_MS = 2_000;
 
@@ -63,11 +63,13 @@ export interface InstaboxHostRestarterOptions {
  * The instabox API has no single restart action — the CLI's `restart` is the
  * same stop-then-start pair (SDK lifecycle actions: start/stop/suspend/resume).
  *
- * The caller runs on the machine being restarted, so it cannot wait for the
- * stop to finish: the start is requested as soon as the stop is accepted and
- * retried in the background, so the platform queues it behind the stop. A
- * guest that dies before a start lands leaves the machine stopped; starting
- * it from the instabox dashboard always works.
+ * Lifecycle calls are asynchronous (live-verified): each returns a queued
+ * operation rather than waiting for the machine to change state. The caller
+ * runs on the machine being restarted, so it cannot wait for the stop to
+ * finish — but it does not need to: a start requested while the machine is
+ * still stopping is accepted and queued behind the stop, and the machine
+ * starts again on its own once the stop completes. That queued start, not
+ * any retry loop, is what makes the restart self-recovering.
  */
 export function createInstaboxHostRestarter(options: InstaboxHostRestarterOptions): HostRestarter {
   const base = (options.apiUrl ?? INSTABOX_API_URL).replace(/\/+$/, "");
@@ -84,8 +86,11 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
         // but the live API disagrees for these keys — do not switch back.
         // Lifecycle POSTs also require an Idempotency-Key header (1-200
         // printable characters); without one the API returns 400
-        // bad_request. One key is minted per restart and shared by its stop
-        // and start calls, so a retried start cannot apply twice.
+        // bad_request. Keys are per-request (live-verified): each action
+        // call carries its own key, because reusing one key for a different
+        // request is rejected (409 idempotency_conflict). Retries of the
+        // same action reuse that action's key, so a retried call cannot
+        // apply twice.
         headers: {
           authorization: `Bearer ${options.apiKey}`,
           "idempotency-key": idempotencyKey,
@@ -101,13 +106,18 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
   };
   return {
     async restart() {
-      const idempotencyKey = randomUUID();
-      await lifecycle("stop", idempotencyKey);
+      await lifecycle("stop", randomUUID());
+      // Fire the start immediately, with its OWN idempotency key: the
+      // platform queues it behind the still-running stop, which is what
+      // brings the machine back. The bounded retry only covers the start
+      // call itself failing to land (a network or HTTP error), and reuses
+      // the start's key so a retry can never become a second start.
+      const startIdempotencyKey = randomUUID();
       const startWithRetries = async (): Promise<void> => {
         const deadline = Date.now() + START_RETRY_WINDOW_MS;
         for (;;) {
           try {
-            await lifecycle("start", idempotencyKey);
+            await lifecycle("start", startIdempotencyKey);
             return;
           } catch {
             if (Date.now() + START_RETRY_INTERVAL_MS > deadline) return;

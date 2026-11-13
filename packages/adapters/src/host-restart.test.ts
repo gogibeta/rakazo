@@ -41,11 +41,12 @@ describe("createInstaboxHostRestarter", () => {
       expect(headers["idempotency-key"]).toEqual(expect.any(String));
       expect(headers["idempotency-key"]!.length).toBeGreaterThan(0);
     }
-    // One idempotency key per restart, shared by its stop and start calls.
-    expect(idempotencyKeyOf(calls[1]!)).toBe(idempotencyKeyOf(calls[0]!));
+    // Idempotency keys are per-request: the start carries a different key
+    // from the stop.
+    expect(idempotencyKeyOf(calls[1]!)).not.toBe(idempotencyKeyOf(calls[0]!));
   });
 
-  it("retries the start while the platform refuses it during the stop", async () => {
+  it("retries a failed start call, reusing the start's own idempotency key", async () => {
     const { calls, fetchImpl } = recordingFetch([ok, conflict, conflict, ok]);
     const restarter = createInstaboxHostRestarter({
       apiKey: "key-123",
@@ -56,8 +57,10 @@ describe("createInstaboxHostRestarter", () => {
     await restarter.restart();
     await vi.waitFor(() => expect(calls).toHaveLength(4));
     expect(calls.slice(1).every((call) => call.url.endsWith("/start"))).toBe(true);
-    // Retried starts reuse the restart's one idempotency key.
-    expect(new Set(calls.map(idempotencyKeyOf)).size).toBe(1);
+    // Every start attempt reuses the start's own key, never the stop's.
+    const startKeys = new Set(calls.slice(1).map(idempotencyKeyOf));
+    expect(startKeys.size).toBe(1);
+    expect(startKeys.has(idempotencyKeyOf(calls[0]!))).toBe(false);
   });
 
   it("mints a fresh idempotency key for each restart", async () => {
@@ -72,9 +75,8 @@ describe("createInstaboxHostRestarter", () => {
     await vi.waitFor(() => expect(calls).toHaveLength(2));
     await restarter.restart();
     await vi.waitFor(() => expect(calls).toHaveLength(4));
-    expect(idempotencyKeyOf(calls[1]!)).toBe(idempotencyKeyOf(calls[0]!));
-    expect(idempotencyKeyOf(calls[3]!)).toBe(idempotencyKeyOf(calls[2]!));
-    expect(idempotencyKeyOf(calls[2]!)).not.toBe(idempotencyKeyOf(calls[0]!));
+    // A fresh key per action per restart: all four calls carry distinct keys.
+    expect(new Set(calls.map(idempotencyKeyOf)).size).toBe(4);
   });
 
   it("fails the restart when the stop itself is refused", async () => {
