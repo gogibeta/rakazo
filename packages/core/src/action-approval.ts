@@ -69,6 +69,8 @@ const APPROVAL_REQUIRED_BUILTIN_TOOLS = new Set([
   "service_call",
   "archive_bot",
   "secret_request",
+  // Sends the owner's saved API key to a service they registered; the owner approves the call.
+  "call_connection",
   "forget_secret",
   "forget_memory",
   // Permanent, and only for mail the bot received; its owner may still want it.

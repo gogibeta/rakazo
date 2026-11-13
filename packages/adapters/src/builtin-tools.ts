@@ -6,6 +6,7 @@ import {
   BOT_MEMORY_MAX_BYTES,
   BotSecretName,
   botSecretDestinationSchema,
+  CustomConnectionCallInput,
   FEEDBACK_DESCRIPTION_MAX_LENGTH,
   FEEDBACK_KINDS,
   FLEET_TOOL_NAMES,
@@ -662,6 +663,12 @@ export const builtinAgentTools: ConnectorTool[] = [
       "List the user's saved crypto wallets with their chain and public address, for planning testnet and airdrop work. Keys and seed phrases are never returned; type one into a page with browser_act fill_wallet, which asks the user first, every time.",
     inputSchema: { type: "object", properties: {} },
     readOnly: true,
+  },
+  {
+    name: "call_connection",
+    description:
+      "Call an API service the user registered in Settings under Custom connections, by its name (for example a code-hosting or project API they connected). The server adds the saved API key at call time; you never receive the key, and responses are redacted in case the service echoes it. Pass a path relative to the connection's base URL and a JSON body for writes. Redirects are not followed. If no connection exists under the name, ask the user to add it in Settings instead of asking for a key in chat.",
+    inputSchema: z.toJSONSchema(CustomConnectionCallInput, { io: "input" }),
   },
   {
     name: "secret_request",

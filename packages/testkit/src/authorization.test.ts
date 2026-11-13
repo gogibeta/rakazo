@@ -252,6 +252,18 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ],
       ["wallets/remove", { walletId: "missing-wallet" }],
       ["wallets/uses", { walletId: "missing-wallet" }],
+      ["customConnections/list"],
+      [
+        "customConnections/add",
+        {
+          name: "Test",
+          baseUrl: "https://api.example.com",
+          authStyle: "bearer",
+          apiKey: "not-a-real-key",
+        },
+      ],
+      ["customConnections/remove", { connectionId: "missing-connection" }],
+      ["customConnections/test", { connectionId: "missing-connection" }],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
       ["updater/status"],
