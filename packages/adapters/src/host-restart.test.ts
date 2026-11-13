@@ -15,6 +15,11 @@ function recordingFetch(responses: Array<{ ok: boolean; status: number; body?: s
 const ok = { ok: true, status: 202 };
 const conflict = { ok: false, status: 409 };
 
+function idempotencyKeyOf(call: { init?: RequestInit }): string | undefined {
+  const headers = call.init?.headers as Record<string, string> | undefined;
+  return headers?.["idempotency-key"];
+}
+
 describe("createInstaboxHostRestarter", () => {
   it("stops then starts the one configured machine, with the key as an Authorization Bearer token", async () => {
     const { calls, fetchImpl } = recordingFetch([ok, ok]);
@@ -31,8 +36,13 @@ describe("createInstaboxHostRestarter", () => {
     expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
     for (const call of calls) {
       expect(call.init?.method).toBe("POST");
-      expect(call.init?.headers).toEqual({ authorization: "Bearer key-123" });
+      const headers = call.init?.headers as Record<string, string>;
+      expect(headers.authorization).toBe("Bearer key-123");
+      expect(headers["idempotency-key"]).toEqual(expect.any(String));
+      expect(headers["idempotency-key"]!.length).toBeGreaterThan(0);
     }
+    // One idempotency key per restart, shared by its stop and start calls.
+    expect(idempotencyKeyOf(calls[1]!)).toBe(idempotencyKeyOf(calls[0]!));
   });
 
   it("retries the start while the platform refuses it during the stop", async () => {
@@ -46,6 +56,25 @@ describe("createInstaboxHostRestarter", () => {
     await restarter.restart();
     await vi.waitFor(() => expect(calls).toHaveLength(4));
     expect(calls.slice(1).every((call) => call.url.endsWith("/start"))).toBe(true);
+    // Retried starts reuse the restart's one idempotency key.
+    expect(new Set(calls.map(idempotencyKeyOf)).size).toBe(1);
+  });
+
+  it("mints a fresh idempotency key for each restart", async () => {
+    const { calls, fetchImpl } = recordingFetch([ok, ok]);
+    const restarter = createInstaboxHostRestarter({
+      apiKey: "key-123",
+      machineId: "m_abc",
+      fetch: fetchImpl,
+      sleep: async () => undefined,
+    });
+    await restarter.restart();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    await restarter.restart();
+    await vi.waitFor(() => expect(calls).toHaveLength(4));
+    expect(idempotencyKeyOf(calls[1]!)).toBe(idempotencyKeyOf(calls[0]!));
+    expect(idempotencyKeyOf(calls[3]!)).toBe(idempotencyKeyOf(calls[2]!));
+    expect(idempotencyKeyOf(calls[2]!)).not.toBe(idempotencyKeyOf(calls[0]!));
   });
 
   it("fails the restart when the stop itself is refused", async () => {
