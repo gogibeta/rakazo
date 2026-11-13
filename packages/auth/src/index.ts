@@ -8,6 +8,7 @@ import {
   MAX_PASSWORD_LENGTH,
   MESSAGING_EMAIL_SUFFIX,
   MIN_PASSWORD_LENGTH,
+  parseAllowlist,
   signupPolicyFromEnv,
 } from "@rakazo/core";
 import type { PrismaClient, SecurityEventType } from "@rakazo/db";
@@ -198,9 +199,31 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
       )
     );
   };
+  /**
+   * The signup policy in force: the deployment record an admin saved in
+   * Settings, once one has been saved; the environment until then. Read on
+   * every check, so a Settings change applies without a restart. A record
+   * that cannot be read leaves the environment in charge.
+   */
+  const effectiveSignupPolicy = async (): Promise<{ enabled: boolean; allowlist: string[] }> => {
+    try {
+      const stored = await prisma.deploymentSettings?.findUnique({
+        where: { id: "default" },
+        select: { signupsEnabled: true, signupAllowlist: true, signupPolicyInitialized: true },
+      });
+      if (stored?.signupPolicyInitialized)
+        return {
+          enabled: stored.signupsEnabled,
+          allowlist: parseAllowlist(stored.signupAllowlist),
+        };
+    } catch {
+      // Fall through to the environment policy.
+    }
+    return signupPolicyFromEnv(env);
+  };
   /** Refuses a new account early, before creating it, once a single-person deployment has one. */
   const admission = async () => {
-    const policy = signupPolicyFromEnv(env);
+    const policy = await effectiveSignupPolicy();
     if (!env.singleAccount || !policy.enabled) return policy;
     return (await hasAdmittedAccount(prisma)) ? { ...policy, enabled: false } : policy;
   };
@@ -535,7 +558,7 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
           ctx.path === "/sign-up/email"
             ? await admission()
             : ctx.path === "/sign-in/email"
-              ? signupPolicyFromEnv(env)
+              ? await effectiveSignupPolicy()
               : undefined;
         let requireEmailVerification = false;
         if (ctx.path === "/sign-up/email") {
@@ -612,7 +635,7 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
                     );
                     if (accounts.some((account) => account.providerId === "oidc")) return session;
                   }
-                  policy ??= signupPolicyFromEnv(env);
+                  policy ??= await effectiveSignupPolicy();
                   return policy.allowlist.length === 0 ? session : null;
                 },
               },
@@ -669,7 +692,7 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
           before: async (session, ctx) => {
             // The auth adapter can still be inside the signup transaction.
             const user = await ctx?.context.internalAdapter.findUserById(session.userId);
-            const policy = signupPolicyFromEnv(env);
+            const policy = await effectiveSignupPolicy();
             const oidcSignIn = isOidcCallback(ctx);
             const bypassAllowlist = oidcSignIn && env.oidc?.allowSignupBypass;
             if (!user || isMessagingEmail(user.email)) {
@@ -811,6 +834,8 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
   authContext = auth.$context;
   return Object.assign(auth, {
     emailCodeSignIn,
+    /** Whether new accounts are currently admitted, for the public auth options. */
+    signupsEnabled: async () => (await effectiveSignupPolicy()).enabled,
     /** Encrypts OAuth tokens stored before encryption was enabled. Safe to rerun. */
     encryptStoredOAuthTokens: async () => encryptStoredOAuthTokens(prisma, await tokenKey()),
     ssoAvailability: () => discovery?.availability(),

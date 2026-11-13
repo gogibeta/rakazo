@@ -50,6 +50,7 @@ export * from "./server-headers.js";
 export * from "./service-credentials.js";
 export * from "./settings-scope.js";
 export * from "./space-availability.js";
+export * from "./system-files.js";
 export * from "./terminal.js";
 export * from "./user-devices.js";
 export * from "./vault-items.js";

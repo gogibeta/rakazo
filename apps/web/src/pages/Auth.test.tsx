@@ -348,3 +348,36 @@ it("leaves the password form unchanged without email codes", async () => {
   expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.required).toBe(true);
   expect(host.querySelector('button[type="submit"]')!.textContent).toBe("Sign in");
 });
+
+it("hides the sign-up link on sign-in when registration is closed", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    signupsEnabled: false,
+  });
+  await render("in");
+  expect(host.textContent).not.toContain("Sign up");
+  expect(host.querySelector('input[name="email"]')).not.toBeNull();
+});
+
+it("shows a closed state instead of the sign-up form when registration is closed", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    signupsEnabled: false,
+  });
+  await render("up");
+  expect(host.textContent).toContain("Registration is closed");
+  expect(host.textContent).toContain("Back to sign in");
+  expect(host.querySelector("input")).toBeNull();
+});
+
+it("offers sign-up when registration is open", async () => {
+  vi.mocked(fetchAuthCapabilities).mockResolvedValue({
+    ...capabilities,
+    passwordAuth: true,
+    signupsEnabled: true,
+  });
+  await render("in");
+  expect(host.textContent).toContain("Sign up");
+});

@@ -18,14 +18,17 @@ const EMPTY_STATUS = {
   whatsappAppSecret: false,
   whatsappVerifyToken: false,
   telegramOwnerUserIds: [] as string[],
+  signupsEnabled: true,
 };
 
 /** An in-memory deployment settings row and secret table behind the calls the config makes. */
-function makeDeps(options: { admin?: boolean } = {}) {
+function makeDeps(options: { admin?: boolean; envSignupsEnabled?: string } = {}) {
   const state = {
     settings: null as null | {
       serviceCredentialsCipher: string | null;
       telegramOwnerUserIds?: string | null;
+      signupsEnabled?: boolean;
+      signupPolicyInitialized?: boolean;
     },
     secrets: new Map<string, string>(),
   };
@@ -60,7 +63,11 @@ function makeDeps(options: { admin?: boolean } = {}) {
         state.secrets.delete(ciphertext);
       }),
     },
-    env: { adminEmails: options.admin === false ? [] : ["admin@example.com"] },
+    env: {
+      adminEmails: options.admin === false ? [] : ["admin@example.com"],
+      signupsEnabled: options.envSignupsEnabled,
+      signupAllowlist: undefined,
+    },
   };
   return { deps, state };
 }
@@ -75,6 +82,9 @@ describe("service credentials settings", () => {
     await expect(
       clearServiceCredentials(deps, actor, { keys: ["tinyfishApiKey"] }),
     ).rejects.toThrow("Admins only");
+    await expect(updateServiceCredentials(deps, actor, { signupsEnabled: false })).rejects.toThrow(
+      "Admins only",
+    );
   });
 
   it("reports nothing saved before any key is set", async () => {
@@ -163,6 +173,39 @@ describe("service credentials settings", () => {
     const cleared = await updateServiceCredentials(deps, actor, { telegramOwnerUserIds: "" });
     expect(cleared.telegramOwnerUserIds).toEqual([]);
     expect(state.settings?.telegramOwnerUserIds).toBe("");
+  });
+
+  it("reports the environment's signup policy until one is saved", async () => {
+    const { deps } = makeDeps({ envSignupsEnabled: "false" });
+    await expect(getServiceCredentials(deps, actor)).resolves.toEqual({
+      ...EMPTY_STATUS,
+      signupsEnabled: false,
+    });
+  });
+
+  it("saves the account-creation switch on the deployment record", async () => {
+    const { deps, state } = makeDeps();
+    const status = await updateServiceCredentials(deps, actor, { signupsEnabled: false });
+    expect(status).toEqual({ ...EMPTY_STATUS, signupsEnabled: false });
+    expect(state.settings?.signupsEnabled).toBe(false);
+    expect(state.settings?.signupPolicyInitialized).toBe(true);
+    // Not a key: nothing about the switch lands in the sealed record.
+    expect(state.secrets.size).toBe(0);
+    await expect(getServiceCredentials(deps, actor)).resolves.toEqual(status);
+  });
+
+  it("a saved switch overrides the environment in both directions", async () => {
+    const { deps } = makeDeps({ envSignupsEnabled: "false" });
+    const status = await updateServiceCredentials(deps, actor, { signupsEnabled: true });
+    expect(status.signupsEnabled).toBe(true);
+    await expect(getServiceCredentials(deps, actor)).resolves.toEqual(status);
+  });
+
+  it("leaves the switch alone when the field is absent", async () => {
+    const { deps } = makeDeps();
+    await updateServiceCredentials(deps, actor, { signupsEnabled: false });
+    const status = await updateServiceCredentials(deps, actor, { naceApiKey: "nace-key" });
+    expect(status.signupsEnabled).toBe(false);
   });
 
   it("clearing a key keeps the allowlist", async () => {
