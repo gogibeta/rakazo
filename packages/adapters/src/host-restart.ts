@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 /**
@@ -72,7 +73,7 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
   const base = (options.apiUrl ?? INSTABOX_API_URL).replace(/\/+$/, "");
   const send = options.fetch ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => delay(ms));
-  const lifecycle = async (action: "stop" | "start"): Promise<void> => {
+  const lifecycle = async (action: "stop" | "start", idempotencyKey: string): Promise<void> => {
     const response = await send(
       `${base}/v1/machines/${encodeURIComponent(options.machineId)}/${action}`,
       {
@@ -81,7 +82,14 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
         // X-API-Key is rejected (401 "malformed_key"); the API takes the key
         // as an Authorization Bearer token. The vendor SDK sends X-API-Key,
         // but the live API disagrees for these keys — do not switch back.
-        headers: { authorization: `Bearer ${options.apiKey}` },
+        // Lifecycle POSTs also require an Idempotency-Key header (1-200
+        // printable characters); without one the API returns 400
+        // bad_request. One key is minted per restart and shared by its stop
+        // and start calls, so a retried start cannot apply twice.
+        headers: {
+          authorization: `Bearer ${options.apiKey}`,
+          "idempotency-key": idempotencyKey,
+        },
       },
     );
     if (!response.ok) {
@@ -93,12 +101,13 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
   };
   return {
     async restart() {
-      await lifecycle("stop");
+      const idempotencyKey = randomUUID();
+      await lifecycle("stop", idempotencyKey);
       const startWithRetries = async (): Promise<void> => {
         const deadline = Date.now() + START_RETRY_WINDOW_MS;
         for (;;) {
           try {
-            await lifecycle("start");
+            await lifecycle("start", idempotencyKey);
             return;
           } catch {
             if (Date.now() + START_RETRY_INTERVAL_MS > deadline) return;
