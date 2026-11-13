@@ -29,7 +29,7 @@ import { useModelOAuthSignIn } from "../../lib/use-model-oauth-signin";
 import { errorText } from "../../lib/user-error";
 import { useModelConnectionForm } from "../model-settings/use-model-connection-form";
 
-/** Rakazo credits sit among the providers as the one choice that needs no account of its own. */
+/** AgentX credits sit among the providers as the one choice that needs no account of its own. */
 const CREDITS_OPTION = "__rakazo_credits__";
 /** Select value for a hosted compatible service; the rest of the value is its base URL. */
 const ENDPOINT_PRESET_OPTION = "endpoint-preset:";
@@ -156,7 +156,7 @@ export function useOnboardingModel({
       return providerDisplayName(id, byId.get(id)?.providerName ?? id, auth);
     };
     const main = [
-      ...(billingEnabled ? [{ value: CREDITS_OPTION, label: t`Rakazo credits` }] : []),
+      ...(billingEnabled ? [{ value: CREDITS_OPTION, label: t`AgentX credits` }] : []),
       ...MAIN_PROVIDER_OPTIONS.filter((option) => byId.has(option.provider)).map((option) => ({
         value: providerOptionValue(option.provider, option.auth),
         label: optionLabel(option.provider, option.auth),

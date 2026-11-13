@@ -168,7 +168,7 @@ test("imports an OpenClaw folder and another assistant's document as new bots", 
   await expect(mcp.getByRole("checkbox", { name: "docs" })).not.toBeChecked();
   await expect(mcp.getByText("Credentials: Authorization", { exact: true })).toBeVisible();
   await expect(mcp.getByRole("checkbox", { name: "files" })).toBeDisabled();
-  await expect(mcp.getByText("Not supported in Rakazo", { exact: true })).toBeVisible();
+  await expect(mcp.getByText("Not supported in AgentX", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "agent-import-compatibility");
   // Choices made before the opt-in survive it, in both directions.
   const nameBox = homePreview.getByRole("textbox", { name: "Name" });
@@ -259,8 +259,8 @@ test("imports an OpenClaw folder and another assistant's document as new bots", 
   }
   await preview.getByRole("button", { name: "Not imported", exact: true }).click();
   await expect(preview.getByTestId("agent-import-skipped").getByRole("listitem")).toHaveText([
-    /IDENTITY\.md: Emoji\s*Not used by Rakazo/,
-    /TOOLS\.md\s*Not used by Rakazo/,
+    /IDENTITY\.md: Emoji\s*Not used by AgentX/,
+    /TOOLS\.md\s*Not used by AgentX/,
   ]);
   // IDENTITY.md names and describes the bot; it is not part of its instructions.
   await expect(preview.getByRole("textbox", { name: "Name" })).toHaveValue("Pebble");
