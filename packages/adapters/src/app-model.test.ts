@@ -95,15 +95,17 @@ describe("listOwnBotModels", () => {
   });
 
   it("marks the bot's own model, not the default, when it has one", async () => {
-    const listing = await listOwnBotModels(
-      deps({ defaultModel: { provider: "google", model: "gemini-2.5-flash" } }),
-      scope,
-      { ...onDefault, modelProvider: "google", modelId: "gemini-3.8-flash" },
-    );
-    expect(listing.current).toMatchObject({ model: "gemini-3.8-flash", isDefault: false });
+    const first = await listOwnBotModels(deps(), scope, onDefault);
+    const other = first.connections[0]!.models.find((model) => !model.active)!;
+    const listing = await listOwnBotModels(deps(), scope, {
+      ...onDefault,
+      modelProvider: "google",
+      modelId: other.id,
+    });
+    expect(listing.current).toMatchObject({ model: other.id, isDefault: false });
     const [connection] = listing.connections;
-    expect(connection!.models.find((model) => model.id === "gemini-3.8-flash")?.active).toBe(true);
-    expect(connection!.models.find((model) => model.id === "gemini-2.5-flash")?.active).toBe(false);
+    expect(connection!.models.find((model) => model.id === other.id)?.active).toBe(true);
+    expect(connection!.models.find((model) => model.id === "gemini-3.8-flash")?.active).toBe(false);
   });
 });
 
