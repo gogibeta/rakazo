@@ -635,15 +635,11 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "send_to_chat_apps",
     description:
-      "Send a message to the user's own linked chat apps — Telegram, Slack and the like — which this deployment is already connected to at the account level. No website, QR code, web login or bot token is involved, and there is no address or chat id to supply: it can only ever message the user themselves. Use it whenever the user asks you to send, forward or copy something to their Telegram or another chat app: pass the full text and it arrives as a direct message from this deployment's bot, split into as many messages as the platform's length limit needs. If the user has not linked a chat app, the result says so; relay that they can link one in Settings → Messaging.",
+      "Send a message to the user's own linked chat apps (Telegram, Slack, …): this deployment is already connected to them at the account level, so no website, QR code, web login or bot token is involved. Use it whenever the user asks you to send or forward something to their Telegram or another chat app — pass the full text; it arrives as a DM from this deployment's bot, split to fit platform length limits. It can only ever message the user themselves. If no chat app is linked, the result says so: relay that they can link one in Settings → Messaging.",
     inputSchema: {
       type: "object",
       properties: {
-        message: {
-          type: "string",
-          minLength: 1,
-          description: "The full text to deliver to the user's linked chat apps.",
-        },
+        message: { type: "string", minLength: 1 },
       },
       required: ["message"],
       additionalProperties: false,
