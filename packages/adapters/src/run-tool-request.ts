@@ -2,6 +2,7 @@ import type { ConnectorCall, ConnectorTool } from "@rakazo/adapter-kit";
 import { BOT_INSTRUCTIONS_MAX_LENGTH, BotSecretAuth } from "@rakazo/contracts";
 import { redactSecrets } from "@rakazo/core";
 import { prepareAgentConnectionResponse } from "./agent-connections.js";
+import { prepareOwnBotModelChange } from "./app-model.js";
 import type { FleetCardSummary } from "./approval-ask.js";
 import type { TerminatingToolResult } from "./approval-effect.js";
 import {
@@ -382,6 +383,34 @@ export async function prepareToolRequest(
     if (refused) return refused;
     args = request.args;
   }
+  if (name === "app_set_model" && nextApprovedTool !== name) {
+    // The bot's own model is the owner's setting: their run, their approval.
+    // Resolve the name now; an approved replay runs the stored request and
+    // never resolves it again.
+    if (isSubagentToolExecution(executionId))
+      return refusal("helper_app_model", "Helpers cannot change their bot's model.");
+    if (!ctx.source.ownerStartedRun)
+      return refusal("run_not_owner_started", "Model changes need a run the owner started.");
+    if (!(await neverAsks(ctx)) && (await ctx.trust.receivedOutsideMessage()))
+      return refusal(
+        "outside_message_blocks_app_model",
+        "Changes to your model are blocked for the rest of this run because it received a channel or webhook message.",
+      );
+    const live = await deps.prisma.bot.findUnique({
+      where: { id: bot.id },
+      select: { id: true, modelProvider: true, modelId: true, thinkingLevel: true },
+    });
+    if (!live) return refusal("bot_not_found", "This bot is no longer available.");
+    const prepared = await prepareOwnBotModelChange(
+      await fleetPrepareDeps(deps, run),
+      run,
+      live,
+      args,
+    );
+    if (!prepared.ok) return refusal("app_model_request_invalid", prepared.error);
+    args = prepared.canonical;
+    request.fleetSummary = prepared.summary;
+  }
   if (isFleetApprovalTool(name) && nextApprovedTool !== name) {
     // Resolve names, members, model and schedule now; an approved replay runs the stored
     // request above and never resolves them again.
@@ -538,7 +567,12 @@ export async function prepareToolRequest(
       request.effectRequest = args;
   }
   request.args = args;
-  if (name === "respond_agent_connection" || name === "update_bot" || isFleetApprovalTool(name))
+  if (
+    name === "respond_agent_connection" ||
+    name === "update_bot" ||
+    name === "app_set_model" ||
+    isFleetApprovalTool(name)
+  )
     request.effectRequest = args;
   return undefined;
 }

@@ -12,6 +12,7 @@ import {
   BUILTIN_AGENT_TOOL_NAMES,
   PAGE_BROWSER_TOOL_NAMES,
 } from "./run-tool-selection.js";
+import { appTools } from "./run-tools-app.js";
 import { computerTools, pageBrowserTool } from "./run-tools-computer.js";
 import { emailTools } from "./run-tools-email.js";
 import { feedbackTools } from "./run-tools-feedback.js";
@@ -50,6 +51,7 @@ const TOOL_HANDLERS = new Map<string, ToolHandler>([
   ...Object.entries(secretTools),
   ...Object.entries(walletTools),
   ...Object.entries(fleetTools),
+  ...Object.entries(appTools),
   [USER_COMPUTER_SHELL_TOOL, userComputerShell],
   [USER_COMPUTER_OBSERVE_TOOL, userComputerObserve],
   [USER_COMPUTER_ACT_TOOL, userComputerAct],

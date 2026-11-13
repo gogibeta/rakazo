@@ -17,6 +17,8 @@ import {
 import { SKILL_TOOL_NAMES } from "./skill-tools.js";
 
 export const READ_ONLY_AGENT_TOOLS = new Set([
+  "app_get_settings",
+  "app_list_models",
   "computer_observe",
   "list_files",
   "list_fleet",
@@ -181,6 +183,8 @@ export function selectBuiltinToolsForRun(options: {
         BACKGROUND_HELPER_TOOL_NAMES.has(tool.name)) &&
       (!FLEET_TOOL_NAMES_SET.has(tool.name) ||
         (Boolean(options.fleetManagement) && ownerStartedRun)) &&
+      // Switching the model it runs on is the owner's call, made in their own chat.
+      (ownerStartedRun || tool.name !== "app_set_model") &&
       (ownerStartedRun || (tool.name !== "update_preferences" && tool.name !== "feedback")) &&
       (options.paymentWalletEnabled || !PURCHASE_TOOL_NAMES.has(tool.name)) &&
       (options.mediaImagesEnabled || tool.name !== "generate_image") &&
