@@ -101,6 +101,16 @@ describe("toolRequiresApproval", () => {
     }
   });
 
+  it("always asks before the bot switches its own model, and never before it reads it", () => {
+    expect(toolRequiresApproval("app_set_model", false)).toBe(true);
+    expect(toolRequiresExplicitApproval("app_set_model")).toBe(true);
+    for (const name of ["app_list_models", "app_get_settings"]) {
+      expect(toolRequiresApproval(name, false)).toBe(false);
+      expect(toolRequiresExplicitApproval(name)).toBe(false);
+      expect(toolResultTaintsRun(name)).toBe(false);
+    }
+  });
+
   it("treats grouping and scheduling other bots as ordinary approvals that Never ask skips", () => {
     for (const name of ["create_group", "update_group", "create_child_routine"]) {
       expect(toolRequiresApproval(name, false)).toBe(true);

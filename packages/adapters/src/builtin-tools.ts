@@ -1966,6 +1966,40 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "app_list_models",
+    description:
+      "List the model connections available to you and the models each can run, marking the one you currently use. Call this when the user asks which model you run or what you could switch to, or before naming a model you have not checked.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: true,
+  },
+  {
+    name: "app_get_settings",
+    description:
+      "Read your own settings as a chat user meets them: current model, thinking level, approval mode (ask, auto or never — how your actions get approved), computer state, and your notification, check-in and read-aloud switches. Call this when the user asks how you are set up.",
+    inputSchema: { type: "object", properties: {} },
+    readOnly: true,
+  },
+  {
+    name: "app_set_model",
+    description:
+      'Change your own model — only yours, never another bot\'s and never the account default. Pass model as the user named it: a name like "Claude Sonnet" or an exact id; pass provider when they named the connection too. clear: true returns you to the default model. The owner approves the switch on a card before it happens; when a name matches several models, the result lists their ids so you can ask which one.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          description: 'A name like "Claude Sonnet" or an exact id.',
+        },
+        provider: {
+          type: "string",
+          description: "Optional; the connection to take the model from.",
+        },
+        clear: { type: "boolean", description: "Reset to the default model." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "list_fleet",
     description:
       "List the bots and groups in this space with their ids, sections, pinned state and models. You can manage every bot listed; createdByMe only says which ones you created. Pass bot_id of a bot in this space to read only its full instructions and instructionsVersion, which set_child_instructions needs as expected_version. Call this before changing the bots you manage.",

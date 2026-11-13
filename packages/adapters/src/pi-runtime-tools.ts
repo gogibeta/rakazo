@@ -260,6 +260,9 @@ export function describeToolActivity(
   if (toolName === "organize_bot") return "Organizing the sidebar";
   if (toolName === "set_child_instructions") return "Rewriting a bot's instructions";
   if (toolName === "set_child_bot_model") return "Setting a bot's model";
+  if (toolName === "app_list_models") return "Checking available models";
+  if (toolName === "app_get_settings") return "Checking my settings";
+  if (toolName === "app_set_model") return "Changing my model";
   if (toolName === "create_child_routine") return `Scheduling routine: ${detail(record.name)}`;
   if (toolName === "remember") return "Saving a note to memory";
   if (toolName === "save_shared_memory") return `Saving shared memory: ${detail(record.path)}`;
