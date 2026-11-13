@@ -111,6 +111,10 @@ export interface AppEnv {
   instaboxApiKey: string | undefined;
   /** The one host machine a restart may target; unset disables host restart. */
   instaboxMachineId: string | undefined;
+  /** External restarter endpoint that performs the power-cycle outside the host. */
+  hostRestartUrl: string | undefined;
+  /** Shared secret presented to the external restarter. */
+  hostRestartSecret: string | undefined;
   sandboxTemplate: string | undefined;
   daytonaApiKey: string | undefined;
   daytonaApiUrl: string | undefined;
@@ -306,6 +310,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     novitaApiKey: source.NOVITA_API_KEY,
     instaboxApiKey: optional(source.INSTABOX_API_KEY),
     instaboxMachineId: optional(source.INSTABOX_MACHINE_ID),
+    hostRestartUrl: optional(source.HOST_RESTART_URL),
+    hostRestartSecret: optional(source.HOST_RESTART_SECRET),
     sandboxTemplate: source.SANDBOX_TEMPLATE,
     daytonaApiKey: source.DAYTONA_API_KEY,
     daytonaApiUrl: source.DAYTONA_API_URL,

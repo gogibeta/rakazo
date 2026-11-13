@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
-import { createHostRestarter, createInstaboxHostRestarter } from "./host-restart.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createHostRestarter,
+  createInstaboxHostRestarter,
+  createRemoteHostRestarter,
+} from "./host-restart.js";
 
 function recordingFetch(responses: Array<{ ok: boolean; status: number; body?: string }>) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
@@ -236,7 +240,50 @@ describe("createInstaboxHostRestarter", () => {
   });
 });
 
+describe("createRemoteHostRestarter", () => {
+  it("resolves on a 202 and sends one POST with the secret and a browser user agent", async () => {
+    const { calls, fetchImpl } = recordingFetch([{ ok: true, status: 202 }]);
+    const restarter = createRemoteHostRestarter({
+      url: "https://restarter.example.com/restart",
+      secret: "test-secret",
+      fetch: fetchImpl,
+    });
+    await expect(restarter.restart()).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://restarter.example.com/restart");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(calls[0]!.init?.body).toBeUndefined();
+    const headers = calls[0]!.init?.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer test-secret");
+    expect(headers["user-agent"]).toContain("Mozilla/5.0");
+    expect(headers["user-agent"]).toContain("Chrome/");
+    expect(calls[0]!.init?.signal).toBeDefined();
+  });
+
+  it("throws with the status and the response detail on a 500, never the secret", async () => {
+    const body = JSON.stringify({
+      error: { code: "restart_failed", message: "delegate could not start the machine" },
+    });
+    const { fetchImpl } = recordingFetch([{ ok: false, status: 500, body }]);
+    const restarter = createRemoteHostRestarter({
+      url: "https://restarter.example.com/restart",
+      secret: "test-secret",
+      fetch: fetchImpl,
+    });
+    const error = await restarter.restart().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("500");
+    expect((error as Error).message).toContain("restart_failed");
+    expect((error as Error).message).toContain("could not start the machine");
+    expect((error as Error).message).not.toContain("test-secret");
+  });
+});
+
 describe("createHostRestarter", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("is disabled unless both the key and the machine id are set", () => {
     expect(createHostRestarter({})).toBeUndefined();
     expect(createHostRestarter({ INSTABOX_API_KEY: "key-123" })).toBeUndefined();
@@ -244,5 +291,49 @@ describe("createHostRestarter", () => {
     expect(
       createHostRestarter({ INSTABOX_API_KEY: "key-123", INSTABOX_MACHINE_ID: "m_abc" }),
     ).toBeDefined();
+  });
+
+  it("is disabled unless both the remote url and its secret are set", () => {
+    expect(
+      createHostRestarter({ HOST_RESTART_URL: "https://restarter.example.com/restart" }),
+    ).toBeUndefined();
+    expect(createHostRestarter({ HOST_RESTART_SECRET: "test-secret" })).toBeUndefined();
+    expect(
+      createHostRestarter({
+        HOST_RESTART_URL: "https://restarter.example.com/restart",
+        HOST_RESTART_SECRET: "test-secret",
+      }),
+    ).toBeDefined();
+  });
+
+  it("prefers the remote restarter when both configurations exist", async () => {
+    const { calls, fetchImpl } = recordingFetch([{ ok: true, status: 202 }]);
+    vi.stubGlobal("fetch", fetchImpl);
+    const restarter = createHostRestarter({
+      HOST_RESTART_URL: "https://restarter.example.com/restart",
+      HOST_RESTART_SECRET: "test-secret",
+      INSTABOX_API_KEY: "key-123",
+      INSTABOX_MACHINE_ID: "m_abc",
+    });
+    expect(restarter).toBeDefined();
+    await restarter!.restart();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://restarter.example.com/restart");
+    const headers = calls[0]!.init?.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer test-secret");
+  });
+
+  it("falls back to the direct restarter when only its pair exists", async () => {
+    const { calls, fetchImpl } = recordingFetch([ok, ok]);
+    vi.stubGlobal("fetch", fetchImpl);
+    const restarter = createHostRestarter({
+      INSTABOX_API_KEY: "key-123",
+      INSTABOX_MACHINE_ID: "m_abc",
+    });
+    expect(restarter).toBeDefined();
+    await restarter!.restart();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/stop");
+    expect(calls[1]!.url).toBe("https://api.instabox.sh/v1/machines/m_abc/start");
   });
 });

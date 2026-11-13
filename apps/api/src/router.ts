@@ -146,6 +146,9 @@ export interface RouterDeps {
     /** Host restart config: the provider key and the one machine it may restart. */
     instaboxApiKey?: string;
     instaboxMachineId?: string;
+    /** External restarter config: its endpoint and the shared secret for it. */
+    hostRestartUrl?: string;
+    hostRestartSecret?: string;
     phoneCallsEnabled?: boolean;
     phoneCallRingSeconds?: number;
     maxUploadSizeBytes?: number;

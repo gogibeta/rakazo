@@ -108,6 +108,14 @@ const START_RETRY_INTERVAL_MS = 2_000;
 const START_MAX_ATTEMPTS = START_RETRY_WINDOW_MS / START_RETRY_INTERVAL_MS;
 /** No single lifecycle call may hang longer than this. */
 const LIFECYCLE_TIMEOUT_MS = 10_000;
+/** No single call to the external restarter may hang longer than this. */
+const REMOTE_RESTART_TIMEOUT_MS = 15_000;
+/**
+ * The external restarter sits behind an edge that rejects bot-ish default
+ * user agents, so the delegation presents as a current browser.
+ */
+const REMOTE_RESTART_USER_AGENT =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 export interface InstaboxHostRestarterOptions {
   apiKey: string;
@@ -203,15 +211,58 @@ export function createInstaboxHostRestarter(options: InstaboxHostRestarterOption
   };
 }
 
+export interface RemoteHostRestarterOptions {
+  url: string;
+  secret: string;
+  fetch?: FetchLike;
+}
+
 /**
- * The deployment's host restarter, when the operator pointed the deployment at
- * its own machine: INSTABOX_API_KEY (the sandbox provider's key) plus
- * INSTABOX_MACHINE_ID naming the one machine a restart may touch. Either one
- * missing disables the feature.
+ * Delegate the power-cycle to an external restarter that runs outside the
+ * machine being restarted: one POST to the configured URL, authenticated
+ * with the shared secret as a Bearer token. The delegate performs the
+ * stop-then-start sequence itself, so this call only needs the request to
+ * be accepted — resolving on any 2xx. Failures surface the HTTP status and
+ * the response body's error detail; the secret and the request headers are
+ * never read back into the error.
+ */
+export function createRemoteHostRestarter(options: RemoteHostRestarterOptions): HostRestarter {
+  const send = options.fetch ?? fetch;
+  return {
+    async restart() {
+      const response = await send(options.url, {
+        method: "POST",
+        signal: AbortSignal.timeout(REMOTE_RESTART_TIMEOUT_MS),
+        headers: {
+          authorization: `Bearer ${options.secret}`,
+          "user-agent": REMOTE_RESTART_USER_AGENT,
+        },
+      });
+      if (!response.ok) {
+        const { detail } = await errorInfo(response);
+        throw new Error(
+          `remote host restart failed with HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+        );
+      }
+    },
+  };
+}
+
+/**
+ * The deployment's host restarter, when the operator configured one. An
+ * external restarter (HOST_RESTART_URL plus HOST_RESTART_SECRET) wins when
+ * both of its values are set: it performs the power-cycle from outside the
+ * machine, which the in-guest path cannot do reliably. Otherwise the direct
+ * path remains as a fallback: INSTABOX_API_KEY (the sandbox provider's key)
+ * plus INSTABOX_MACHINE_ID naming the one machine a restart may touch.
+ * Either configuration missing its pair disables the feature.
  */
 export function createHostRestarter(
   env: NodeJS.ProcessEnv = process.env,
 ): HostRestarter | undefined {
+  const url = env.HOST_RESTART_URL?.trim();
+  const secret = env.HOST_RESTART_SECRET?.trim();
+  if (url && secret) return createRemoteHostRestarter({ url, secret });
   const apiKey = env.INSTABOX_API_KEY?.trim();
   const machineId = env.INSTABOX_MACHINE_ID?.trim();
   if (!apiKey || !machineId) return undefined;
