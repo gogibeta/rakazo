@@ -7,7 +7,7 @@ function recordingFetch(responses: Array<{ ok: boolean; status: number; body?: s
   const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
     const response = responses[Math.min(index++, responses.length - 1)]!;
-    return { ...response, text: async () => response.body ?? "" } as Response;
+    return { ...response, text: async () => response.body ?? "" } as unknown as Response;
   });
   return { calls, fetchImpl };
 }
