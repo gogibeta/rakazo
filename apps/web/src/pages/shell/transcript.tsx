@@ -57,7 +57,7 @@ import { QuoteSelectionButton } from "./quote-selection-button";
 export function bubbleFrameWidth(role: ThreadMessage["role"]) {
   return role === "user"
     ? "max-w-[min(84%,calc(100%_-_8rem),39rem)] [@media(hover:none)]:max-w-[min(84%,39rem)]"
-    : "max-w-[min(88%,calc(100%_-_8rem),39rem)] [@media(hover:none)]:max-w-[min(88%,39rem)]";
+    : "max-w-[min(88%,calc(100%_-_8rem),39rem)] [@media(hover:none)]:max-w-full";
 }
 
 export const Transcript = memo(function Transcript({
