@@ -789,6 +789,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       ticketBoardEnabled,
       navLinks: env.navLinks,
       adminEmails: env.adminEmails,
+      systemFilesRoot: env.systemFilesRoot,
       signupsEnabled: env.signupsEnabled,
       signupAllowlist: env.signupAllowlist,
       maxUploadSizeBytes: env.maxUploadSizeBytes,

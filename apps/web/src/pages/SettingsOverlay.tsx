@@ -17,6 +17,7 @@ import { ProxiesSettings } from "../components/ProxiesSettings";
 import { ServiceCredentialsSettings } from "../components/ServiceCredentialsSettings";
 import { SETTINGS_CONTENT_WIDTH, SettingsGroup, SettingsRow } from "../components/SettingsRows";
 import { SignupSettings } from "../components/SignupSettings";
+import { SystemFilesSettings } from "../components/SystemFilesSettings";
 import { VaultSettings } from "../components/VaultSettings";
 import { WalletsSettings } from "../components/WalletsSettings";
 import { canChooseOwnComputer } from "../lib/computer-sandbox";
@@ -438,6 +439,7 @@ export function SettingsOverlay({
                       <OrganizationSettingsPanel onBusyChange={setVoiceBusy} />
                       <SignupSettings />
                       <ServiceCredentialsSettings />
+                      <SystemFilesSettings />
                     </div>
                   ) : null}
                   {section === "confirmations" ? <ApprovalRulesSettings scope="account" /> : null}
