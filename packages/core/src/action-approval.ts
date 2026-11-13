@@ -241,6 +241,8 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "ask_user",
   // Only confirms what the bot itself sent.
   "send_email",
+  // Only confirms the bot's own message was queued for the owner's chat apps.
+  "send_to_chat_apps",
   "connect_app",
   "attach_file",
   // Only confirms the bot's own address.

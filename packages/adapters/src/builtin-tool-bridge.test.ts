@@ -46,6 +46,7 @@ describe("built-in tool bridge", () => {
       "schedule_create",
       "schedule_list",
       "search_history",
+      "send_to_chat_apps",
       "shell",
       "skill_read",
       "update_bot",
@@ -60,7 +61,8 @@ describe("built-in tool bridge", () => {
     // read_file takes a line range; ask_user carries the content being decided about;
     // search_history lists earlier tool work by kind without a keyword;
     // list_wallets is named among find_tool's deferred areas.
-    expect(definitionBytes(listed)).toBeLessThanOrEqual(32_600);
+    // send_to_chat_apps is listed so a bot asked to message its owner finds it.
+    expect(definitionBytes(listed)).toBeLessThanOrEqual(33_400);
     expect(deferred.map((tool) => tool.name)).toEqual(
       expect.arrayContaining(["render_plot", "create_space", "generate_secret", "scratchpad_add"]),
     );
