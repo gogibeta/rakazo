@@ -636,6 +636,7 @@ export function threadsRoutes(ctx: RouterContext) {
             username: input.username,
             remember: input.remember,
             dismiss: input.dismiss,
+            surface: "app",
           })
           .catch((error: unknown) => {
             if (error instanceof AnswerTooLongError)

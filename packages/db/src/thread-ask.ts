@@ -27,6 +27,7 @@ import {
 import { urlSite } from "@rakazo/core/egress";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { saveApprovalRule, storedBatchActions } from "./approval-settings.js";
+import { recordAuditEvent } from "./audit-events.js";
 import type { Prisma, PrismaClient } from "./client.js";
 import { expireComputerExecutionLeases } from "./computers.js";
 import { contentEncryptionOf } from "./content-encryption.js";
@@ -127,6 +128,8 @@ export interface AnswerRunInput {
   remember?: false;
   /** Turns down a pending secret request; only the run's user can, and nothing is stored. */
   dismiss?: boolean;
+  /** The surface the answer came through ("app", or a messaging provider), for the audit log. */
+  surface?: string;
 }
 
 /** What request_secret returns to the bot once the user dismissed its card. */
@@ -186,7 +189,7 @@ async function commitAnswerRunInput(
 ): Promise<{
   threadId: string;
   seq: number;
-  approval?: { decision: string; effectKind: string };
+  approval?: { decision: string; effectKind: string; effectId: string };
 } | null> {
   // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
   // concurrent clear cannot deadlock against this transaction.
@@ -481,7 +484,13 @@ async function commitAnswerRunInput(
     threadId: updated.threadId,
     seq: updated.seq,
     ...(approvalEffect
-      ? { approval: { decision: approvalAnswer, effectKind: approvalEffect.kind } }
+      ? {
+          approval: {
+            decision: approvalAnswer,
+            effectKind: approvalEffect.kind,
+            effectId: approvalEffect.id,
+          },
+        }
       : {}),
   };
 }
@@ -515,6 +524,27 @@ export async function answerRunInput(
         decision: committed.approval.decision,
         effectKind: committed.approval.effectKind,
         runId: input.runId,
+      },
+    });
+    // The decision's canonical row in the audit log, alongside the security
+    // event: who decided, on which effect, through which surface. The audit
+    // outcome vocabulary has no "approved", so the decision rides in metadata.
+    await recordAuditEvent({
+      action: "tool.approval_decision",
+      actor: { type: "user", id: input.answeredByUserId },
+      spaceId: input.spaceId,
+      target: {
+        type: "effect",
+        id: committed.approval.effectId,
+        label: committed.approval.effectKind,
+      },
+      outcome: committed.approval.decision === "deny" ? "denied" : "success",
+      runId: input.runId,
+      threadId: input.threadId,
+      metadata: {
+        tool: committed.approval.effectKind,
+        decision: committed.approval.decision === "deny" ? "denied" : "approved",
+        ...(input.surface ? { surface: input.surface } : {}),
       },
     });
   }

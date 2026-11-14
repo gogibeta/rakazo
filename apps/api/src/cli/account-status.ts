@@ -13,6 +13,7 @@ import {
   createThreadEvents,
   installAuditEventStore,
   installSecurityEventStore,
+  installToolEventStore,
   runAsSystem,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -30,6 +31,7 @@ const env = loadEnv();
 const { prisma, pool } = createDb(env.databaseUrl, { keyProvider: contentKeyProviderFromEnv() });
 installSecurityEventStore(prisma);
 installAuditEventStore(prisma);
+installToolEventStore(prisma);
 // Publishing only: open chats of other people hear that the account's runs stopped.
 const realtime = new PostgresRealtimeFanout({
   connectionString: env.realtimeDatabaseUrl,

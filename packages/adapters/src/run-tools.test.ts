@@ -1,5 +1,6 @@
 import { BACKGROUND_HELPER_TRIGGER } from "@rakazo/core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { installToolEventStore } from "@rakazo/db";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApprovedEffectReplayQueue, terminatingToolResult } from "./approval-effect.js";
 import { CATALOG_EXECUTE } from "./lazy-tool-catalog.js";
 
@@ -216,6 +217,95 @@ describe("dispatchTool audit outcomes", () => {
         metadata: { effectId: "effect-update_preferences", autoApproved: false },
       },
     ]);
+  });
+});
+
+function fakeToolEventStore() {
+  const rows: Array<Record<string, unknown>> = [];
+  return {
+    rows,
+    toolEvent: {
+      findFirst: async () =>
+        rows.length ? { seq: Math.max(...rows.map((row) => row.seq as number)) } : null,
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        rows.push(data);
+        return data;
+      },
+    },
+  };
+}
+
+describe("dispatchTool tool events", () => {
+  let store: ReturnType<typeof fakeToolEventStore>;
+
+  beforeEach(() => {
+    store = fakeToolEventStore();
+    installToolEventStore(store as never);
+  });
+
+  afterEach(() => installToolEventStore(undefined));
+
+  it("records a gated call's success with its effect and a hashed argument record", async () => {
+    const ctx = dispatchContext(true);
+    await applyTool(ctx as never, "update_preferences", {}, "call-1");
+    expect(store.rows).toEqual([
+      expect.objectContaining({
+        toolName: "update_preferences",
+        status: "succeeded",
+        kind: "normal",
+        effectId: "effect-update_preferences",
+        argsSummary: {},
+      }),
+    ]);
+    // sha256 of the canonical empty arguments.
+    expect(store.rows[0]?.argsHash).toBe(
+      "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    );
+    expect(store.rows[0]?.resultBytes as number).toBeGreaterThan(0);
+  });
+
+  it("records a pre-gate refusal under the resolved tool name", async () => {
+    const resolveCall = vi.fn(async () => ({
+      tool: { name: "message_agent", route: { connectorId: "remote" } },
+      call: { tool: "message_agent", args: { message: "hi" }, executionId: "call-1" },
+    }));
+    const base = dispatchContext(false);
+    const ctx = {
+      ...base,
+      deps: { ...base.deps, connector: { execute: vi.fn(), resolveCall } },
+      run: { userId: "user-1", trigger: BACKGROUND_HELPER_TRIGGER },
+    };
+    ctx.tools.connector.set("installed_execute_tool", {
+      name: "installed_execute_tool",
+      route: { connectorId: "remote", toolName: CATALOG_EXECUTE },
+    });
+
+    await applyTool(ctx as never, "installed_execute_tool", { id: "x:message_agent" }, "call-1");
+    expect(store.rows).toEqual([
+      expect.objectContaining({
+        toolName: "message_agent",
+        status: "refused",
+        argsSummary: { id: "x:message_agent" },
+      }),
+    ]);
+  });
+
+  it("records a check-in turn-away as refused", async () => {
+    const ctx = {
+      ...dispatchContext(false),
+      run: { trigger: "routine", clientNonce: "strategic-initiative:bot-1:1" },
+    };
+    await applyTool(
+      ctx as never,
+      "computer_shell",
+      { command: "ls", prompt: "do not store this" },
+      "call-1",
+    );
+    expect(store.rows).toEqual([
+      expect.objectContaining({ toolName: "computer_shell", status: "refused" }),
+    ]);
+    // Content-like argument keys never reach the record.
+    expect(store.rows[0]?.argsSummary).toEqual({ command: "ls" });
   });
 });
 
