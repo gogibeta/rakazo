@@ -107,7 +107,9 @@ describePostgres("chat replies during screen takeover (PostgreSQL)", () => {
     const bot = await system.bot.create({
       data: { spaceId: id, userId: id, name: "Fixture", color: "test", computerId: computer.id },
     });
-    const thread = await system.thread.create({ data: { spaceId: id, userId: id, botId: bot.id } });
+    const thread = await system.thread.create({
+      data: { spaceId: id, userId: id, botId: bot.id, isPrimary: true },
+    });
     const task = await system.task.create({
       data: {
         spaceId: id,
