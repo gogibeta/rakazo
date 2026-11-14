@@ -1016,7 +1016,6 @@ function SpaceShell() {
             {active && !inGroup ? (
               <SidebarSessions
                 rpc={rpc}
-                queries={queries}
                 botId={active.id}
                 botName={active.name}
                 sessionId={activeSessionId}

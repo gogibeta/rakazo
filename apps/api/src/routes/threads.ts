@@ -211,9 +211,26 @@ export function threadsRoutes(ctx: RouterContext) {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input, {
           includeArchived: true,
         });
+        // The peer-messages overlay asks for a bot's peer runs without naming
+        // a thread. Those exchanges live in delegation sessions now (F4), so
+        // the overlay reads the bot's most recent delegation session; with
+        // none, it reads the primary thread as before.
+        let threadId = target.threadId;
+        if (input.includePeerRuns && target.kind === "bot" && !input.threadId) {
+          const delegation = await deps.prisma.thread.findFirst({
+            where: {
+              spaceId: context.actor.spaceId,
+              botId: target.botId,
+              kind: "delegation",
+            },
+            orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
+            select: { id: true },
+          });
+          if (delegation) threadId = delegation.id;
+        }
         return loadMessagePage(
           deps.prisma,
-          target.threadId,
+          threadId,
           input.before,
           THREAD_MESSAGE_PAGE_SIZE,
           input.around,
