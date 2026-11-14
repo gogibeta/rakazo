@@ -47,7 +47,7 @@ describePostgres("bot email addresses (PostgreSQL)", () => {
       data: { spaceId: owner.spaceId, userId: owner.userId, name: "Scout", color: "blue" },
     });
     await system.thread.create({
-      data: { spaceId: owner.spaceId, botId: created.id, userId: owner.userId },
+      data: { spaceId: owner.spaceId, botId: created.id, userId: owner.userId, isPrimary: true },
     });
     return created;
   }

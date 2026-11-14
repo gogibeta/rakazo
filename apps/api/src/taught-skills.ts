@@ -169,7 +169,7 @@ async function ensureGraphicalComputer(
       where: { id: bot.id },
       include: { threads: { where: { isPrimary: true }, take: 1 }, computer: true },
     });
-    bot = { ...reloaded, thread: reloaded.threads[0] ?? null };
+    bot = { ...reloaded, thread: reloaded.threads?.[0] ?? null };
   }
   if (!bot.computer?.providerRef || bot.computer.state !== "running") {
     throw new ORPCError("BAD_REQUEST", { message: "Computer must be running to teach" });
@@ -404,7 +404,7 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
       if (!foundBot) throw new IsolationError();
       let bot: Awaited<ReturnType<ReturnType<typeof createRepos>["getBot"]>> = {
         ...foundBot,
-        thread: foundBot.threads[0] ?? null,
+        thread: foundBot.threads?.[0] ?? null,
       };
       const alreadyRecording = await deps.prisma.taughtSkill.findFirst({
         where: { botId, status: "recording" },
@@ -452,10 +452,10 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
       }
       await deps.jobs.enqueue(skillTeachingExpireJob(row.id, expiresAt));
       const withSnapshot = await captureTeachingSnapshot(deps, actor, bot, row);
-      if (bot.threads[0]) {
+      if (bot.thread) {
         await deps.events.append({
           spaceId: actor.spaceId,
-          threadId: bot.threads[0].id,
+          threadId: bot.thread.id,
           botId: bot.id,
           type: "skill.teaching.started",
           payload: { skillId: row.id, goal },

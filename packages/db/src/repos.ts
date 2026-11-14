@@ -51,7 +51,8 @@ function withPrimaryThread<B extends { threads: ReadonlyArray<{ id: string }> }>
   bot: B,
 ): Omit<B, "threads"> & { thread: B["threads"][number] | null } {
   const { threads, ...rest } = bot;
-  return { ...rest, thread: threads[0] ?? null };
+  // Hand-built rows in tests may omit the relation entirely; Prisma always returns it.
+  return { ...rest, thread: threads?.[0] ?? null };
 }
 
 /** Newest messages loaded for sidebar preview; enough to skip a short peer-run tail. */
