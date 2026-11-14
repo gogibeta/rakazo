@@ -24,7 +24,14 @@ async function startVault() {
   const app = createVaultApp({
     service,
     serviceToken: env.serviceToken,
-    onError: (error) => logger.error("vault request failed", error),
+    // Sanitized by the app: a fixed code, the route pattern, a correlation
+    // id. The raw error never reaches the log — it could carry a secret.
+    onError: (report) =>
+      logger.error("vault request failed", {
+        "error.code": report.code,
+        "http.route": report.route,
+        "correlation.id": report.correlationId,
+      }),
   });
   const server = serve({ fetch: app.fetch, hostname: env.host, port: env.port }, () => {
     logger.info("vault listening", { "http.host": env.host, "http.port": env.port });

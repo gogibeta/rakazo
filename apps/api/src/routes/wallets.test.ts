@@ -103,6 +103,43 @@ function walletStore() {
           return { ...row };
         },
       ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          // The where shapes the password state uses: equality, null, `lte`, OR groups.
+          const matches = (row: VaultRow, conditions: Record<string, unknown>): boolean =>
+            Object.entries(conditions).every(([key, condition]) => {
+              if (key === "OR") {
+                return (condition as Array<Record<string, unknown>>).some((sub) =>
+                  matches(row, sub),
+                );
+              }
+              const value = row[key as keyof VaultRow];
+              if (condition instanceof Date) {
+                return value instanceof Date && value.getTime() === condition.getTime();
+              }
+              if (condition && typeof condition === "object") {
+                const ops = condition as { lte?: Date };
+                if (ops.lte !== undefined) return value instanceof Date && value <= ops.lte;
+                return false;
+              }
+              return value === condition;
+            });
+          let count = 0;
+          for (const row of vaultRows.values()) {
+            if (!matches(row, where)) continue;
+            const record = row as unknown as Record<string, unknown>;
+            for (const [key, value] of Object.entries(data)) record[key] = value;
+            count++;
+          }
+          return { count };
+        },
+      ),
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
   };

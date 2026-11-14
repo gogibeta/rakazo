@@ -4,10 +4,16 @@ import {
   vaultClientFromEnv,
   WalletVaultClientError,
 } from "./wallet-vault-client.js";
+import { WALLET_VAULT_GRANT_TTL_MS } from "./wallet-vault-service.js";
 
 // Dummy values for tests only; they guard nothing.
 const TOKEN = "test-vault-service-token-with-32-chars";
 const PASSWORD = "test-vault-password-one";
+
+/** A live grant's expiry, as the vault would report it: the fixed window from now. */
+function liveExpiry(): string {
+  return new Date(Date.now() + WALLET_VAULT_GRANT_TTL_MS).toISOString();
+}
 
 type FetchCall = { url: string; init: RequestInit };
 
@@ -52,11 +58,12 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 
 describe("wallet vault client", () => {
   it("sends the service token and rebuilds the status from the vault's fields", async () => {
+    const expiresAt = liveExpiry();
     const { vault, calls } = client(async () =>
       jsonResponse(200, {
         configured: true,
         unlocked: true,
-        expiresAt: "2026-09-01T06:00:00.000Z",
+        expiresAt,
         passwordEpoch: 3,
         // Extra fields the vault did not mean for callers never cross.
         passwordMaterial: "must-not-cross",
@@ -65,7 +72,7 @@ describe("wallet vault client", () => {
     expect(await vault.status("u1")).toEqual({
       configured: true,
       unlocked: true,
-      expiresAt: "2026-09-01T06:00:00.000Z",
+      expiresAt,
       passwordEpoch: 3,
     });
     expect(calls).toHaveLength(1);
@@ -76,19 +83,94 @@ describe("wallet vault client", () => {
   });
 
   it("passes an unlock through and returns only the grant handle and expiry", async () => {
+    const expiresAt = liveExpiry();
     const { vault, calls } = client(async () =>
       jsonResponse(200, {
         grantId: "grant-1",
-        expiresAt: "2026-09-01T06:00:00.000Z",
+        expiresAt,
         passwordEpoch: 1,
       }),
     );
     expect(await vault.unlock("u1", PASSWORD)).toEqual({
       grantId: "grant-1",
-      expiresAt: "2026-09-01T06:00:00.000Z",
+      expiresAt,
       passwordEpoch: 1,
     });
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ userId: "u1", password: PASSWORD });
+  });
+
+  it("rejects an unlock whose expiry is not a date, already past, or outside the six-hour window", async () => {
+    const notADate = client(async () =>
+      jsonResponse(200, { grantId: "grant-1", expiresAt: "not-a-date", passwordEpoch: 1 }),
+    );
+    expect(await codeOf(notADate.vault.unlock("u1", PASSWORD))).toBe("vault_unavailable");
+
+    const expired = client(async () =>
+      jsonResponse(200, {
+        grantId: "grant-1",
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+        passwordEpoch: 1,
+      }),
+    );
+    expect(await codeOf(expired.vault.unlock("u1", PASSWORD))).toBe("vault_unavailable");
+
+    const tooLong = client(async () =>
+      jsonResponse(200, {
+        grantId: "grant-1",
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
+        passwordEpoch: 1,
+      }),
+    );
+    expect(await codeOf(tooLong.vault.unlock("u1", PASSWORD))).toBe("vault_unavailable");
+  });
+
+  it("rejects a status whose expiry is malformed, stale, or inconsistent with the lock state", async () => {
+    const malformed = client(async () =>
+      jsonResponse(200, {
+        configured: true,
+        unlocked: true,
+        expiresAt: "not-a-date",
+        passwordEpoch: 1,
+      }),
+    );
+    expect(await codeOf(malformed.vault.status("u1"))).toBe("vault_unavailable");
+
+    const stale = client(async () =>
+      jsonResponse(200, {
+        configured: true,
+        unlocked: true,
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+        passwordEpoch: 1,
+      }),
+    );
+    expect(await codeOf(stale.vault.status("u1"))).toBe("vault_unavailable");
+
+    // An expiry with no live grant, and a live grant with no expiry, are
+    // both off-contract.
+    const stray = client(async () =>
+      jsonResponse(200, {
+        configured: true,
+        unlocked: false,
+        expiresAt: liveExpiry(),
+        passwordEpoch: 1,
+      }),
+    );
+    expect(await codeOf(stray.vault.status("u1"))).toBe("vault_unavailable");
+
+    const missing = client(async () =>
+      jsonResponse(200, { configured: true, unlocked: true, expiresAt: null, passwordEpoch: 1 }),
+    );
+    expect(await codeOf(missing.vault.status("u1"))).toBe("vault_unavailable");
+
+    const locked = client(async () =>
+      jsonResponse(200, { configured: true, unlocked: false, expiresAt: null, passwordEpoch: 1 }),
+    );
+    expect(await locked.vault.status("u1")).toEqual({
+      configured: true,
+      unlocked: false,
+      expiresAt: null,
+      passwordEpoch: 1,
+    });
   });
 
   it("maps the vault's typed errors and never echoes the password", async () => {

@@ -63,23 +63,40 @@ export class WalletVaultNotConfiguredError extends Error {
  * Count one failed password attempt against a vault row, starting the
  * lockout once the count reaches the limit. Password change and unlock
  * verification share this, so both draw on the one throttle the row carries.
+ *
+ * The count moves with Prisma's atomic increment, never a read-modify-write:
+ * concurrent failures each land, none overwrites another, and the failure
+ * that reaches the limit is the one that sets the lockout — conditionally,
+ * so it never extends a lockout another failure already set.
  */
 async function recordFailedPasswordAttempt(
   prisma: PrismaClient,
   userId: string,
-  vault: VaultRow,
   now: Date,
 ): Promise<{ failedAttempts: number; lockedUntil: Date | null }> {
-  const failedAttempts = vault.failedAttempts + 1;
-  const lockedUntil =
-    failedAttempts >= WALLET_VAULT_MAX_FAILED_ATTEMPTS
-      ? new Date(now.getTime() + WALLET_VAULT_LOCKOUT_MS)
-      : vault.lockedUntil;
-  await prisma.walletVault.update({
+  const updated = (await prisma.walletVault.update({
     where: { userId },
-    data: { failedAttempts, lockedUntil },
-  });
-  return { failedAttempts, lockedUntil };
+    data: { failedAttempts: { increment: 1 } },
+  })) as VaultRow;
+  let lockedUntil = updated.lockedUntil;
+  const lockoutDue =
+    updated.failedAttempts >= WALLET_VAULT_MAX_FAILED_ATTEMPTS &&
+    (lockedUntil === null || lockedUntil <= now);
+  if (lockoutDue) {
+    const candidate = new Date(now.getTime() + WALLET_VAULT_LOCKOUT_MS);
+    const set = await prisma.walletVault.updateMany({
+      where: { userId, OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }] },
+      data: { lockedUntil: candidate },
+    });
+    if (set.count > 0) {
+      lockedUntil = candidate;
+    } else {
+      // Another failure set the lockout first; report the one that stands.
+      const row = (await prisma.walletVault.findUnique({ where: { userId } })) as VaultRow | null;
+      lockedUntil = row?.lockedUntil ?? lockedUntil;
+    }
+  }
+  return { failedAttempts: updated.failedAttempts, lockedUntil };
 }
 
 /** Vault password state safe to show the owner: never the verifier. */
@@ -145,7 +162,8 @@ export async function setupWalletVaultPassword(
  * Change the wallet password. The current password is always required — an
  * active unlock grant is not proof of knowing it. On success the epoch moves
  * (revoking grants minted under the old password) in the same transaction
- * that swaps the verifier, and the throttle counters reset.
+ * that swaps the verifier, and the throttle counters reset — conditionally,
+ * so a failure recorded concurrently with the change is never erased.
  *
  * `onRejected` fires after a rejection has been recorded, with counts only,
  * so the caller can audit the attempt; it never receives a password.
@@ -165,7 +183,7 @@ export async function changeWalletVaultPassword(
   const now = hooks?.now ?? new Date();
 
   const reject = async (): Promise<never> => {
-    const outcome = await recordFailedPasswordAttempt(prisma, userId, vault, now);
+    const outcome = await recordFailedPasswordAttempt(prisma, userId, now);
     await hooks?.onRejected?.(outcome);
     throw new WalletVaultPasswordError();
   };
@@ -176,19 +194,28 @@ export async function changeWalletVaultPassword(
   if (!(await verifyPassword(vault.verifier, input.currentPassword))) return reject();
 
   const verifier = await createPasswordVerifier(input.newPassword);
-  const updated = await prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     // Revoke first: moving the epoch retires every grant minted under the
     // old password before the new verifier exists.
     await tx.walletVault.update({
       where: { userId },
       data: { passwordEpoch: { increment: 1 } },
     });
-    return tx.walletVault.update({
-      where: { userId },
+    // Swap the verifier and reset the throttle — conditionally, on the
+    // counters this change read. A failure recorded concurrently moved
+    // them; then the swap still lands but the reset must not erase it.
+    const swapped = await tx.walletVault.updateMany({
+      where: { userId, failedAttempts: vault.failedAttempts, lockedUntil: vault.lockedUntil },
       data: { verifier, changedAt: now, failedAttempts: 0, lockedUntil: null },
     });
+    if (swapped.count === 0) {
+      await tx.walletVault.update({
+        where: { userId },
+        data: { verifier, changedAt: now },
+      });
+    }
   });
-  return { configured: true, changedAt: updated.changedAt.toISOString() };
+  return { configured: true, changedAt: now.toISOString() };
 }
 
 /**
@@ -196,9 +223,11 @@ export async function changeWalletVaultPassword(
  * one password check, and it shares the throttle with password change:
  * attempts draw on the same counters, so failures here count toward the
  * same lockout and a lockout earned elsewhere refuses here too. On success
- * the counters reset and the current `passwordEpoch` comes back — the epoch
- * is what the vault mints the new grant under. Every rejection is the same
- * generic error, and `onRejected` hears counts only, never a password.
+ * the counters reset — conditionally, so a failure recorded concurrently
+ * is never erased by the success that raced it — and the current
+ * `passwordEpoch` comes back: the epoch is what the vault mints the new
+ * grant under. Every rejection is the same generic error, and `onRejected`
+ * hears counts only, never a password.
  */
 export async function verifyWalletVaultPassword(
   prisma: PrismaClient,
@@ -218,14 +247,17 @@ export async function verifyWalletVaultPassword(
   // is not counted again — the lockout simply runs its course.
   if (vault.lockedUntil && vault.lockedUntil > now) throw new WalletVaultPasswordError();
   if (!(await verifyPassword(vault.verifier, password))) {
-    const outcome = await recordFailedPasswordAttempt(prisma, userId, vault, now);
+    const outcome = await recordFailedPasswordAttempt(prisma, userId, now);
     await hooks?.onRejected?.(outcome);
     throw new WalletVaultPasswordError();
   }
 
+  // Reset the throttle — conditionally, on the counters this verification
+  // read. If a failure landed concurrently the counts moved, this matches
+  // nothing, and a success never erases a failure that raced it.
   if (vault.failedAttempts !== 0 || vault.lockedUntil !== null) {
-    await prisma.walletVault.update({
-      where: { userId },
+    await prisma.walletVault.updateMany({
+      where: { userId, failedAttempts: vault.failedAttempts, lockedUntil: vault.lockedUntil },
       data: { failedAttempts: 0, lockedUntil: null },
     });
   }

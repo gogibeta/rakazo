@@ -4,6 +4,7 @@ import type {
   WalletVaultServiceErrorCode,
   WalletVaultUnlockResult,
 } from "./wallet-vault-service.js";
+import { WALLET_VAULT_GRANT_TTL_MS } from "./wallet-vault-service.js";
 
 /**
  * The API and worker's only path to the wallet vault: a small HTTP client
@@ -72,15 +73,6 @@ function stringField(record: Record<string, unknown>, key: string): string {
   return value;
 }
 
-function nullableStringField(record: Record<string, unknown>, key: string): string | null {
-  const value = record[key];
-  if (value === null) return null;
-  if (typeof value !== "string" || value.length === 0) {
-    throw new WalletVaultClientError("vault_unavailable");
-  }
-  return value;
-}
-
 function nullableEpochField(record: Record<string, unknown>, key: string): number | null {
   const value = record[key];
   if (value === null) return null;
@@ -88,6 +80,32 @@ function nullableEpochField(record: Record<string, unknown>, key: string): numbe
     throw new WalletVaultClientError("vault_unavailable");
   }
   return value;
+}
+
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Slack over the fixed grant window, for clock differences with the vault. */
+const EXPIRY_SKEW_MS = 60_000;
+
+/**
+ * A grant expiry from a vault response, strictly: an ISO timestamp that
+ * parses, is still in the future, and sits inside the fixed six-hour grant
+ * window the vault mints under. Anything else — a non-date, an expiry
+ * already past, a window longer than the contract allows — is off-shape,
+ * and the client fails closed with `vault_unavailable`.
+ */
+function grantExpiryField(record: Record<string, unknown>, key: string): string {
+  const raw = stringField(record, key);
+  const ms = ISO_TIMESTAMP.test(raw) ? Date.parse(raw) : Number.NaN;
+  const remaining = ms - Date.now();
+  if (
+    Number.isNaN(ms) ||
+    remaining <= 0 ||
+    remaining > WALLET_VAULT_GRANT_TTL_MS + EXPIRY_SKEW_MS
+  ) {
+    throw new WalletVaultClientError("vault_unavailable");
+  }
+  return raw;
 }
 
 /**
@@ -148,10 +166,16 @@ export function createWalletVaultClient(options: {
       if (typeof payload.configured !== "boolean" || typeof payload.unlocked !== "boolean") {
         throw new WalletVaultClientError("vault_unavailable");
       }
+      // The vault reports an expiry only for a live grant; when it does, the
+      // expiry must satisfy the same strict contract as an unlock response.
+      const expiresAt = payload.expiresAt === null ? null : grantExpiryField(payload, "expiresAt");
+      if (payload.unlocked !== (expiresAt !== null)) {
+        throw new WalletVaultClientError("vault_unavailable");
+      }
       return {
         configured: payload.configured,
         unlocked: payload.unlocked,
-        expiresAt: nullableStringField(payload, "expiresAt"),
+        expiresAt,
         passwordEpoch: nullableEpochField(payload, "passwordEpoch"),
       };
     },
@@ -166,7 +190,7 @@ export function createWalletVaultClient(options: {
       if (passwordEpoch === null) throw new WalletVaultClientError("vault_unavailable");
       return {
         grantId: stringField(payload, "grantId"),
-        expiresAt: stringField(payload, "expiresAt"),
+        expiresAt: grantExpiryField(payload, "expiresAt"),
         passwordEpoch,
       };
     },
