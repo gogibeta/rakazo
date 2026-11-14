@@ -1,0 +1,113 @@
+{
+  "gitSha": "08656c755111dfff669f24de4e62fa04854b2951",
+  "mode": "layer1",
+  "corpus": "fixture",
+  "date": "2026-11-14T20:05:57.569Z",
+  "cases": [
+    {
+      "id": "x1-eight-wallets",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": true,
+        "truthAfterFalsehood": true,
+        "contextBytes": 370
+      }
+    },
+    {
+      "id": "x2-wallet-connected",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": true,
+        "truthAfterFalsehood": true,
+        "contextBytes": 317
+      }
+    },
+    {
+      "id": "x3-model-identity",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": true,
+        "truthAfterFalsehood": false,
+        "contextBytes": 383
+      }
+    },
+    {
+      "id": "x4-invoice-past-due",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": true,
+        "truthAfterFalsehood": true,
+        "contextBytes": 358
+      }
+    },
+    {
+      "id": "f1-search-provider-error",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": false,
+        "truthAfterFalsehood": false,
+        "contextBytes": 168
+      }
+    },
+    {
+      "id": "f2-message-denied",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": false,
+        "truthAfterFalsehood": false,
+        "contextBytes": 235
+      }
+    },
+    {
+      "id": "f3-partial-batch",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": false,
+        "truthAfterFalsehood": false,
+        "contextBytes": 379
+      }
+    },
+    {
+      "id": "f4a-search-no-results",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": false,
+        "truthAfterFalsehood": false,
+        "contextBytes": 98
+      }
+    },
+    {
+      "id": "f4b-search-lookup-failed",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": false,
+        "truthAfterFalsehood": false,
+        "contextBytes": 152
+      }
+    },
+    {
+      "id": "c1-history-agrees",
+      "layer1": {
+        "truthInContext": true,
+        "falsehoodInContext": false,
+        "truthAfterFalsehood": false,
+        "contextBytes": 255
+      }
+    },
+    {
+      "id": "c2-qr-capability",
+      "layer1": {
+        "truthInContext": false,
+        "falsehoodInContext": true,
+        "truthAfterFalsehood": false,
+        "contextBytes": 154
+      }
+    }
+  ],
+  "summary": {
+    "layer1": {
+      "asDesigned": 11,
+      "drifted": 0
+    }
+  }
+}
