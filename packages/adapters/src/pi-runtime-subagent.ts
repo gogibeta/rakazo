@@ -24,7 +24,12 @@ import {
 } from "./pi-runtime-models.js";
 import { conversationSessionId, reliableModelStream } from "./pi-runtime-stream.js";
 import type { ToolHost } from "./pi-runtime-tools.js";
-import { toAgentTools, toolCallBudgetExceededMessage } from "./pi-runtime-tools.js";
+import {
+  notifyRunBudgetExceeded,
+  recordRunUsage,
+  toAgentTools,
+  toolCallBudgetExceededMessage,
+} from "./pi-runtime-tools.js";
 import { observedPiStream } from "./pi-usage.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
@@ -218,6 +223,9 @@ export async function executeSubagent(
               recordUsage: host.request.onUsage,
               onProviderError: (message) => providerFailures.add(message.content),
               onUsage: (usage) => {
+                // Helper spend counts toward the parent run's shared budget.
+                const crossing = recordRunUsage(host.toolCallBudget, usage);
+                if (crossing) notifyRunBudgetExceeded(host.request, crossing);
                 contextPolicy.onUsage(usage);
                 const decision = contextPolicy.getDecision();
                 if (decision)
@@ -379,7 +387,7 @@ export async function executeSubagent(
       return `Subagent failed: ${message}`;
     }
     const budgetMessage = budgetExceeded
-      ? toolCallBudgetExceededMessage(host.toolCallBudget.limit)
+      ? toolCallBudgetExceededMessage(host.toolCallBudget)
       : undefined;
     const label = `Result from your helper "${name}" (not a message from the user):\n`;
     // The parent clips label and result together, so the result gets what is left.
