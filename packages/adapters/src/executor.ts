@@ -40,6 +40,7 @@ import {
   parseComputerMode,
   RunHistoryWriteError,
   readRunTimingFields,
+  recordAuditEvent,
   recordUsage,
   settleReleasedTakeoverCards,
   teamChatRunFromOwner,
@@ -1824,6 +1825,21 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                   runId,
                   parentRunId: runId,
                   operationId: runId,
+                });
+              },
+              onRunBudgetExceeded: async (crossing) => {
+                await recordAuditEvent({
+                  action: "run.budget_exceeded",
+                  actor: { type: "bot", id: bot.id, label: bot.name },
+                  spaceId: run.spaceId,
+                  runId,
+                  threadId: thread.id,
+                  metadata: {
+                    bound: crossing.bound,
+                    used: crossing.used,
+                    limit: crossing.limit,
+                    enforced: crossing.enforced,
+                  },
                 });
               },
               prompt,

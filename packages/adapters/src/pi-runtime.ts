@@ -85,8 +85,12 @@ import {
   createGate,
   createQueue,
   describeToolActivity,
+  maybeAbortToolCallBudget,
+  notifyRunBudgetExceeded,
+  recordRunUsage,
   redactAskUserDetailInMessage,
   releaseToolCallBudget,
+  runBudgetNoteFor,
   toAgentTools,
   toolCallBudgetExceededMessage,
   toolCallBudgetFor,
@@ -292,7 +296,9 @@ export class PiAgentRuntime implements AgentRuntime {
         const toolDefs = request.tools;
         const nestedAgents = new Set<Agent>();
         const completionModel = modelForCompletion(model, request.model.maxTokens);
-        trackedBudget = toolCallBudgetFor(request.runId);
+        trackedBudget = toolCallBudgetFor(request.runId, {
+          routine: Boolean(request.routineId),
+        });
         const initialModelTarget: RuntimeModelTarget = {
           config: request.model,
           models,
@@ -459,6 +465,15 @@ export class PiAgentRuntime implements AgentRuntime {
           imageTokens: estimatePiImageTokens,
           recordUsage: request.onUsage,
           onUsage: (usage: AgentUsage) => {
+            // The same usage the stream records: meter it into the run budget.
+            // A hard crossing under enforcement stops the run through the same
+            // abort the tool-call fuse uses; measuring-only crossings are
+            // reported (and audited by the requester) without stopping anything.
+            if (trackedBudget) {
+              const crossing = recordRunUsage(trackedBudget, usage);
+              if (crossing) notifyRunBudgetExceeded(request, crossing);
+              if (trackedBudget.exceeded) maybeAbortToolCallBudget(host);
+            }
             contextPolicy.onUsage(usage);
             const decision = contextPolicy.getDecision();
             if (decision)
@@ -531,6 +546,8 @@ export class PiAgentRuntime implements AgentRuntime {
                           dispatchModel,
                           fallbackState === mainFallbackState ? recordedFallbackReason : undefined,
                         ),
+                      // Handed out at most once per run, when the soft bound is crossed.
+                      runBudgetNote: runBudgetNoteFor(host.toolCallBudget) ?? undefined,
                       onProviderError: (message) => providerFailures.add(message.content),
                     },
                   ),
@@ -1267,7 +1284,7 @@ export class PiAgentRuntime implements AgentRuntime {
           }
         }
         if (budgetExceeded) {
-          const budgetMessage = toolCallBudgetExceededMessage(host.toolCallBudget.limit);
+          const budgetMessage = toolCallBudgetExceededMessage(host.toolCallBudget);
           if (streamed.trim()) {
             const suffix = `\n\n${budgetMessage}`;
             queue.push({ type: "text", text: suffix });

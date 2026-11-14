@@ -3,6 +3,7 @@ import type { Api, Model, Models } from "@earendil-works/pi-ai";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type {
   AdapterContext,
+  AgentRunBudgetCrossing,
   AgentRunRequest,
   AgentRuntimeEvent,
   AgentToolCompletion,
@@ -46,13 +47,36 @@ import { textContentArg } from "./tool-text.js";
 import { isVerbatimMcpResult } from "./verbatim-mcp-result.js";
 import { positiveIntegerArg } from "./workspace-file-tools.js";
 
+export type RunBudgetBound = AgentRunBudgetCrossing["bound"];
+
+/**
+ * One composite budget per run: the tool-call fuse plus token and cost bounds,
+ * metered from the same per-call usage the runtime already records. Process-local:
+ * continueRun on another worker starts at zero.
+ */
 export interface ToolCallBudget {
-  count: number;
-  exceeded: boolean;
-  limit: number;
+  toolCalls: { used: number; limit: number };
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  /** Hard token bound, over input + output tokens. 0 means unlimited. */
+  tokenLimit: number;
+  /** Soft token bound: crossing it earns the model a one-time wrap-up note. 0 means none. */
+  tokenSoftLimit: number;
+  /** Hard cost bound in USD. 0 means unlimited. */
+  costLimitUsd: number;
+  /**
+   * Whether the token and cost bounds stop the run (RUN_BUDGET_ENFORCE). The
+   * tool-call fuse predates the switch and always enforces when its limit is set.
+   */
+  enforce: boolean;
+  /** The first hard bound crossed under enforcement; the fuse plumbing stops the run on it. */
+  exceeded: RunBudgetBound | null;
+  /** The first hard token/cost crossing while measuring only: audited, never stops the run. */
+  wouldExceed: AgentRunBudgetCrossing | null;
+  softNotified: boolean;
   inFlight: number;
 }
-// Optional fuse is process-local. continueRun on another worker starts at zero.
 const toolCallBudgetsByRun = new Map<string, ToolCallBudget>();
 
 // Pi forwards these names to OpenAI Responses, whose function-name contract is
@@ -68,6 +92,127 @@ export function maxToolCallsPerTurn(env: NodeJS.ProcessEnv = process.env): numbe
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.floor(parsed);
+}
+
+function positiveBudgetNumber(raw: string | undefined): number {
+  if (!raw?.trim()) return 0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/** Whether the token and cost bounds stop runs or only measure them. Default off. */
+export function runBudgetEnforced(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.RUN_BUDGET_ENFORCE?.trim().toLowerCase();
+  return raw === "on" || raw === "true" || raw === "1";
+}
+
+export interface RunBudgetLimits {
+  toolCallLimit: number;
+  tokenLimit: number;
+  tokenSoftLimit: number;
+  costLimitUsd: number;
+  enforce: boolean;
+}
+
+/**
+ * The budget limits for one run, from deployment env only. Unset, empty, or
+ * invalid values mean unlimited, matching the tool-call fuse. Routine runs use
+ * their tighter token bound when one is set: an unattended runaway is pure
+ * waste. The soft bound defaults to 80% of the hard bound and never exceeds it.
+ */
+export function runBudgetLimits(
+  env: NodeJS.ProcessEnv = process.env,
+  options?: { routine?: boolean },
+): RunBudgetLimits {
+  const routineHard = options?.routine
+    ? Math.floor(positiveBudgetNumber(env.ROUTINE_RUN_TOKEN_BUDGET_HARD))
+    : 0;
+  const tokenLimit =
+    routineHard > 0 ? routineHard : Math.floor(positiveBudgetNumber(env.RUN_TOKEN_BUDGET_HARD));
+  const explicitSoft = Math.floor(positiveBudgetNumber(env.RUN_TOKEN_BUDGET_SOFT));
+  let tokenSoftLimit = explicitSoft > 0 ? explicitSoft : Math.floor(tokenLimit * 0.8);
+  if (tokenLimit <= 0) tokenSoftLimit = 0;
+  else if (tokenSoftLimit > tokenLimit) tokenSoftLimit = tokenLimit;
+  return {
+    toolCallLimit: maxToolCallsPerTurn(env),
+    tokenLimit,
+    tokenSoftLimit,
+    costLimitUsd: positiveBudgetNumber(env.RUN_COST_BUDGET_USD_HARD),
+    enforce: runBudgetEnforced(env),
+  };
+}
+
+function applyRunBudgetLimits(budget: ToolCallBudget, limits: RunBudgetLimits): void {
+  budget.toolCalls.limit = limits.toolCallLimit;
+  budget.tokenLimit = limits.tokenLimit;
+  budget.tokenSoftLimit = limits.tokenSoftLimit;
+  budget.costLimitUsd = limits.costLimitUsd;
+  budget.enforce = limits.enforce;
+}
+
+/**
+ * Accumulate one model call's usage into the run budget: the same numbers the
+ * usage stream persists as usage records, with unknown (null) amounts counting
+ * as zero. Returns the first hard token/cost crossing, or null. Under
+ * enforcement the crossing also sets `exceeded`, which the fuse plumbing turns
+ * into a stop; while measuring only it is kept in `wouldExceed` instead and the
+ * run continues. Cache tokens are not in the token bound (input + output only);
+ * their spend is still bounded, through the reported cost.
+ */
+export function recordRunUsage(
+  budget: ToolCallBudget,
+  usage: {
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    costUsd?: number | null;
+  },
+): AgentRunBudgetCrossing | null {
+  budget.inputTokens += usage.inputTokens ?? 0;
+  budget.outputTokens += usage.outputTokens ?? 0;
+  budget.costUsd += usage.costUsd ?? 0;
+  if (budget.exceeded || budget.wouldExceed) return null;
+  const totalTokens = budget.inputTokens + budget.outputTokens;
+  const crossing: AgentRunBudgetCrossing | null =
+    budget.tokenLimit > 0 && totalTokens >= budget.tokenLimit
+      ? { bound: "tokens", used: totalTokens, limit: budget.tokenLimit, enforced: budget.enforce }
+      : budget.costLimitUsd > 0 && budget.costUsd >= budget.costLimitUsd
+        ? {
+            bound: "cost",
+            used: budget.costUsd,
+            limit: budget.costLimitUsd,
+            enforced: budget.enforce,
+          }
+        : null;
+  if (!crossing) return null;
+  if (crossing.enforced) budget.exceeded = crossing.bound;
+  else budget.wouldExceed = crossing;
+  return crossing;
+}
+
+/**
+ * The one-time wrap-up note for a run that crossed its soft token bound, or
+ * null. Handing the note out marks it notified, so later attempts do not repeat
+ * it. Measuring-only runs never see the note: it exists to change behavior.
+ */
+export function runBudgetNoteFor(budget: ToolCallBudget): string | null {
+  if (!budget.enforce || budget.softNotified || budget.exceeded) return null;
+  if (budget.tokenSoftLimit <= 0) return null;
+  const totalTokens = budget.inputTokens + budget.outputTokens;
+  if (totalTokens < budget.tokenSoftLimit) return null;
+  budget.softNotified = true;
+  return `You are near this run's token budget (${totalTokens} of ${budget.tokenLimit} tokens used). Finish the current step and summarize what you have.`;
+}
+
+/** Fire the run's budget-crossing callback, if any. Never throws: the crossing already happened. */
+export function notifyRunBudgetExceeded(
+  request: AgentRunRequest,
+  crossing: AgentRunBudgetCrossing,
+): void {
+  try {
+    void Promise.resolve(request.onRunBudgetExceeded?.(crossing)).catch(() => undefined);
+  } catch {
+    /* A broken audit sink must not break the run. */
+  }
 }
 
 export function toAgentTools(toolDefs: readonly ConnectorTool[], host: ToolHost): AgentTool[] {
@@ -828,8 +973,22 @@ export interface ToolHost {
   modelResponses?: number;
 }
 
-export function toolCallBudgetExceededMessage(limit: number) {
-  return `I stopped after reaching the limit of ${limit} tool calls in this turn. Send another message to continue.`;
+function formatBudgetUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+/** The user-visible stop message for a spent budget, naming the bound that was hit. */
+export function toolCallBudgetExceededMessage(budget: ToolCallBudget) {
+  switch (budget.exceeded) {
+    case "tokens": {
+      const used = budget.inputTokens + budget.outputTokens;
+      return `I stopped after reaching this run's limit of ${budget.tokenLimit} tokens (${used} used). Send another message to continue.`;
+    }
+    case "cost":
+      return `I stopped after reaching this run's cost limit of ${formatBudgetUsd(budget.costLimitUsd)} (${formatBudgetUsd(budget.costUsd)} used). Send another message to continue.`;
+    default:
+      return `I stopped after reaching the limit of ${budget.toolCalls.limit} tool calls in this turn. Send another message to continue.`;
+  }
 }
 
 /**
@@ -901,20 +1060,34 @@ export function redactAskUserDetailInMessage(
   }
 }
 
-export function toolCallBudgetFor(runId: string): ToolCallBudget {
+export function toolCallBudgetFor(runId: string, options?: { routine?: boolean }): ToolCallBudget {
+  const limits = runBudgetLimits(process.env, options);
   const existing = toolCallBudgetsByRun.get(runId);
   if (existing) {
     existing.inFlight = 0;
-    existing.limit = maxToolCallsPerTurn();
+    applyRunBudgetLimits(existing, limits);
     return existing;
   }
   const budget: ToolCallBudget = {
-    count: 0,
-    exceeded: false,
-    limit: maxToolCallsPerTurn(),
+    toolCalls: { used: 0, limit: limits.toolCallLimit },
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    tokenLimit: limits.tokenLimit,
+    tokenSoftLimit: limits.tokenSoftLimit,
+    costLimitUsd: limits.costLimitUsd,
+    enforce: limits.enforce,
+    exceeded: null,
+    wouldExceed: null,
+    softNotified: false,
     inFlight: 0,
   };
-  if (budget.limit > 0) toolCallBudgetsByRun.set(runId, budget);
+  // A budget with no bound configured is not kept in the map: nothing can
+  // cross, and the usage records already hold its totals. Kept budgets persist
+  // across a pause/resume of the same run, counts included.
+  if (limits.toolCallLimit > 0 || limits.tokenLimit > 0 || limits.costLimitUsd > 0) {
+    toolCallBudgetsByRun.set(runId, budget);
+  }
   return budget;
 }
 
@@ -922,7 +1095,7 @@ export function releaseToolCallBudget(runId: string, keepForResume: boolean) {
   if (!keepForResume) toolCallBudgetsByRun.delete(runId);
 }
 
-function maybeAbortToolCallBudget(host: ToolHost) {
+export function maybeAbortToolCallBudget(host: ToolHost) {
   if (host.toolCallBudget.exceeded && host.toolCallBudget.inFlight === 0) {
     host.abortTurn();
   }
@@ -930,26 +1103,27 @@ function maybeAbortToolCallBudget(host: ToolHost) {
 
 function beginToolCall(host: ToolHost): boolean {
   const budget = host.toolCallBudget;
-  if (budget.limit <= 0) {
-    budget.count += 1;
-    return true;
-  }
   if (budget.exceeded) {
     maybeAbortToolCallBudget(host);
     return false;
   }
-  budget.count += 1;
-  if (budget.count <= budget.limit) {
+  budget.toolCalls.used += 1;
+  if (budget.toolCalls.limit <= 0) return true;
+  if (budget.toolCalls.used <= budget.toolCalls.limit) {
     budget.inFlight += 1;
     return true;
   }
-  if (!budget.exceeded) {
-    budget.exceeded = true;
-    host.queue.push({
-      type: "progress",
-      text: `Stopped: more than ${budget.limit} tool calls in one turn.`,
-    });
-  }
+  budget.exceeded = "tool_calls";
+  host.queue.push({
+    type: "progress",
+    text: `Stopped: more than ${budget.toolCalls.limit} tool calls in one turn.`,
+  });
+  notifyRunBudgetExceeded(host.request, {
+    bound: "tool_calls",
+    used: budget.toolCalls.used,
+    limit: budget.toolCalls.limit,
+    enforced: true,
+  });
   maybeAbortToolCallBudget(host);
   return false;
 }

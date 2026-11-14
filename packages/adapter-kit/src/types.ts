@@ -553,12 +553,29 @@ export interface AgentRunModel {
   };
 }
 
+/** A hard bound of a run's composite budget, crossed once. Amounts are scalars only. */
+export interface AgentRunBudgetCrossing {
+  bound: "tool_calls" | "tokens" | "cost";
+  /** The accumulated amount at the crossing: calls, tokens, or USD for the cost bound. */
+  used: number;
+  /** The configured limit that was crossed, in the same unit as `used`. */
+  limit: number;
+  /** False when budgets are measured but not enforced: the run continued. */
+  enforced: boolean;
+}
+
 export type AgentContextStrategy = "current" | "retrieval" | "snapshots" | "cache-aware";
 export const DEFAULT_CONTEXT_STRATEGY: AgentContextStrategy = "retrieval";
 
 export interface AgentRunRequest {
   /** Awaited producer-side accounting, independent of event-consumer cancellation. */
   onUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
+  /**
+   * The run's composite budget (tool calls, tokens, cost) crossed a hard bound.
+   * Fired once per run, at the crossing. `enforced` is false when the runtime is
+   * measuring only: the run was allowed to continue past the bound.
+   */
+  onRunBudgetExceeded?: (crossing: AgentRunBudgetCrossing) => void | Promise<void>;
   contextStrategy?: AgentContextStrategy;
   /**
    * MCP servers that must return tool results whole. Direct tools match `slugs`
