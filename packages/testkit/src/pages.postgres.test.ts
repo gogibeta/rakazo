@@ -672,9 +672,22 @@ describePages("pages", () => {
     const start = Date.now();
     let blocks: unknown[] = [];
     while (Date.now() - start < 20_000) {
-      const snap = await rpc<ThreadSnapshot>(app, cookie, "threads/get", { botId: builder.id });
-      blocks = snap.messages.flatMap((message) => message.blocks.filter((b) => b.kind === "page"));
-      if (blocks.length) break;
+      // F4: the answer runs in Builder's delegation session, so that
+      // session's history — reached by naming it — is where the page shows.
+      const session = await db().thread.findFirst({
+        where: { botId: builder.id, kind: "delegation" },
+        select: { id: true },
+      });
+      if (session) {
+        const snap = await rpc<ThreadSnapshot>(app, cookie, "threads/get", {
+          botId: builder.id,
+          threadId: session.id,
+        });
+        blocks = snap.messages.flatMap((message) =>
+          message.blocks.filter((b) => b.kind === "page"),
+        );
+        if (blocks.length) break;
+      }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(blocks).toEqual([

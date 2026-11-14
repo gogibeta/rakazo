@@ -218,17 +218,16 @@ export async function wakeRoutine(deps: ExecutorDeps, routineId: string, schedul
             },
           ],
         },
-        select: { id: true, kind: true, groupId: true },
+        select: { id: true },
       })
     : null;
-  // A routine fires in its own session: the thread it is bound to when that
-  // is a group thread or its dedicated routine session. Anything else — no
-  // binding, or a binding to an ordinary conversation — resolves to the
-  // dedicated session, created on first fire and bound for later ones.
-  const thread =
-    targetThread && (targetThread.groupId != null || targetThread.kind === "routine")
-      ? targetThread
-      : await routineSession(deps, routine, bot);
+  // A routine fires where it is bound: a schedule created in a conversation
+  // (a group thread, or the 1:1 thread it was made in) keeps firing there —
+  // the binding is also what pending-tick coalescing matches on. Only an
+  // unbound routine (or a binding that no longer resolves) gets the
+  // dedicated routine session, created on first fire and bound for later
+  // ones.
+  const thread = targetThread ?? (await routineSession(deps, routine, bot));
   // A change trigger checks first, without a model; only news becomes a run.
   const watchTick =
     routine.watch == null
