@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { WalletSummary, WalletUseSummary } from "@rakazo/contracts";
+import type { WalletSummary, WalletUseSummary, WalletVaultStatus } from "@rakazo/contracts";
 import { Button, Field, FieldLabel, Input, Spinner } from "@rakazo/ui-web";
 import type { FormEvent } from "react";
 import { useEffect, useId, useState } from "react";
@@ -13,6 +13,148 @@ import { SuccessPop } from "./ai/primitives";
  * which is never shown again. A bot can ask to type a wallet's secret into a
  * page, and the person approves each fill; the history below is those fills.
  */
+/**
+ * The wallet password: the cryptographic lock on every saved wallet key.
+ * Setting it stores only a verifier on the server; the password itself is
+ * never stored or read back, and there is no recovery — a forgotten password
+ * means importing the wallets again under a new one.
+ */
+function WalletPasswordSettings() {
+  const { t } = useLingui();
+  const formId = useId();
+  const [status, setStatus] = useState<WalletVaultStatus | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [pending, setPending] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    rpc.wallets
+      .vaultStatus()
+      .then((next) => {
+        if (alive) setStatus(next);
+      })
+      .catch((caught: unknown) => {
+        if (alive) setError(errorText(caught, t`Could not load the wallet password state`));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [t]);
+
+  const configured = status?.configured ?? false;
+  const canSubmit =
+    status !== null &&
+    password.length >= 8 &&
+    password === confirmation &&
+    (!configured || currentPassword.length > 0);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (pending || !canSubmit) return;
+    setPending(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const next = configured
+        ? await rpc.wallets.changeVaultPassword({ currentPassword, newPassword: password })
+        : await rpc.wallets.setVaultPassword({ password });
+      setStatus(next);
+      setCurrentPassword("");
+      setPassword("");
+      setConfirmation("");
+      setSaved(true);
+    } catch (caught) {
+      setError(
+        errorText(
+          caught,
+          configured
+            ? t`Could not change the wallet password`
+            : t`Could not set the wallet password`,
+        ),
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-3 rounded-xl border border-border px-4 py-4">
+      <div className="text-body text-foreground">
+        <Trans>Wallet password</Trans>
+      </div>
+      <p className="text-body-sm text-muted-foreground">
+        <Trans>
+          This password locks your wallet keys. It cannot be recovered: if you forget it, you will
+          need to import your wallets again.
+        </Trans>
+      </p>
+      {status === null ? (
+        <Spinner />
+      ) : (
+        <>
+          {configured ? (
+            <Field>
+              <FieldLabel htmlFor={`${formId}-current`}>
+                <Trans>Current wallet password</Trans>
+              </FieldLabel>
+              <Input
+                id={`${formId}-current`}
+                type="password"
+                value={currentPassword}
+                onChange={(event) => setCurrentPassword(event.target.value)}
+                autoComplete="current-password"
+                required
+              />
+            </Field>
+          ) : null}
+          <Field>
+            <FieldLabel htmlFor={`${formId}-password`}>
+              {configured ? <Trans>New wallet password</Trans> : <Trans>Wallet password</Trans>}
+            </FieldLabel>
+            <Input
+              id={`${formId}-password`}
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="new-password"
+              required
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor={`${formId}-confirm`}>
+              <Trans>Confirm wallet password</Trans>
+            </FieldLabel>
+            <Input
+              id={`${formId}-confirm`}
+              type="password"
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              autoComplete="new-password"
+              required
+            />
+          </Field>
+        </>
+      )}
+      {error ? (
+        <p role="alert" className="text-body-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex items-center gap-3">
+        <Button type="submit" size="sm" disabled={pending || !canSubmit}>
+          {pending ? <Spinner /> : null}
+          {configured ? <Trans>Change wallet password</Trans> : <Trans>Set wallet password</Trans>}
+        </Button>
+        {saved ? <SuccessPop label={t`Saved`} /> : null}
+      </div>
+    </form>
+  );
+}
+
 export function WalletsSettings() {
   const { t } = useLingui();
   const formId = useId();
@@ -100,6 +242,7 @@ export function WalletsSettings() {
       <p className="text-body-sm text-muted-foreground">
         <Trans>Use burner wallets only — never a wallet that holds real funds.</Trans>
       </p>
+      <WalletPasswordSettings />
       <form onSubmit={add} className="space-y-3 rounded-xl border border-border px-4 py-4">
         <Field>
           <FieldLabel htmlFor={`${formId}-name`}>

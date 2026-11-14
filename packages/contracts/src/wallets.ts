@@ -41,6 +41,29 @@ export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 export const WalletRemoveInput = z.object({ walletId: Id });
 export type WalletRemoveInput = z.infer<typeof WalletRemoveInput>;
 
+export const WALLET_PASSWORD_MIN_LENGTH = 8;
+export const WALLET_PASSWORD_MAX_LENGTH = 1_024;
+
+const WalletPassword = z.string().min(WALLET_PASSWORD_MIN_LENGTH).max(WALLET_PASSWORD_MAX_LENGTH);
+
+/** Setting the wallet password: the password itself, nothing else. It is never stored or read back. */
+export const WalletVaultPasswordSetupInput = z.object({ password: WalletPassword });
+export type WalletVaultPasswordSetupInput = z.infer<typeof WalletVaultPasswordSetupInput>;
+
+/** Changing the wallet password always takes the current one, even while the vault is unlocked. */
+export const WalletVaultPasswordChangeInput = z.object({
+  currentPassword: z.string().min(1).max(WALLET_PASSWORD_MAX_LENGTH),
+  newPassword: WalletPassword,
+});
+export type WalletVaultPasswordChangeInput = z.infer<typeof WalletVaultPasswordChangeInput>;
+
+/** What the settings surface may know about the wallet password: that it exists, and when it last changed. */
+export const WalletVaultStatusSchema = z.object({
+  configured: z.boolean(),
+  changedAt: z.string().nullable(),
+});
+export type WalletVaultStatus = z.infer<typeof WalletVaultStatusSchema>;
+
 export const WalletUsesInput = z.object({ walletId: Id });
 export type WalletUsesInput = z.infer<typeof WalletUsesInput>;
 

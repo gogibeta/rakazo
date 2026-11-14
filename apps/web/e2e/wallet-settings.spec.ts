@@ -36,3 +36,36 @@ test("adds a wallet from its key, shows the derived address, and never returns t
   await wallet.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(settings.locator("li", { hasText: "Airdrop burner" })).toHaveCount(0);
 });
+
+test("sets and changes the wallet password, and rejects a wrong current password", async ({
+  page,
+}, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `wallet-vault-${stamp}@rakazo.test`, "password12", "Vault Owner");
+  await completeOnboarding(page);
+  const settings = await openUserSettings(page, "wallets");
+
+  await settings.getByLabel("Wallet password", { exact: true }).fill("vault-password-one");
+  await settings.getByLabel("Confirm wallet password", { exact: true }).fill("vault-password-one");
+  await settings.getByRole("button", { name: "Set wallet password", exact: true }).click();
+
+  // Set: the form becomes the change form, and the status the server returns
+  // says only that a password exists — never the password.
+  await expect(settings.getByLabel("Current wallet password", { exact: true })).toBeVisible();
+  const status = JSON.stringify(await rpc(page, "wallets/vaultStatus", {}));
+  expect(status).toContain('"configured":true');
+  expect(status).not.toContain("vault-password-one");
+  await captureScreenshot(page, testInfo, "wallet-vault-password");
+
+  // A wrong current password gets the one generic rejection.
+  await settings.getByLabel("Current wallet password", { exact: true }).fill("vault-password-nope");
+  await settings.getByLabel("New wallet password", { exact: true }).fill("vault-password-two");
+  await settings.getByLabel("Confirm wallet password", { exact: true }).fill("vault-password-two");
+  await settings.getByRole("button", { name: "Change wallet password", exact: true }).click();
+  await expect(settings.getByText("The wallet password could not be verified.")).toBeVisible();
+
+  // The right current password changes it.
+  await settings.getByLabel("Current wallet password", { exact: true }).fill("vault-password-one");
+  await settings.getByRole("button", { name: "Change wallet password", exact: true }).click();
+  await expect(settings.getByText("Saved")).toBeVisible();
+});
