@@ -73,7 +73,7 @@ function pendingTimerFixture(reuse = true) {
   const prisma = {
     user: { findUnique: vi.fn(async () => null) },
     routine: { findUnique: vi.fn(async () => routine) },
-    bot: { findUnique: vi.fn(async () => ({ id: "bot-1", thread: { id: "thread-1" } })) },
+    bot: { findUnique: vi.fn(async () => ({ id: "bot-1", threads: [{ id: "thread-1" }] })) },
     agentSkill: { findMany: vi.fn(async () => []) },
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(tx)),
   };

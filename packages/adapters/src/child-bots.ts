@@ -116,15 +116,15 @@ export async function spawnBot(
           spawnKey: input.spawnKey,
         },
       },
-      include: { thread: true },
+      include: { threads: { where: { isPrimary: true }, take: 1 } },
     });
     if (!existing) throw error;
-    if (!existing.thread) throw new Error(`Spawned bot ${existing.id} is missing its thread`);
+    if (!existing.threads[0]) throw new Error(`Spawned bot ${existing.id} is missing its thread`);
     duplicate = true;
     created = {
       id: existing.id,
       name: existing.name,
-      threadId: existing.thread.id,
+      threadId: existing.threads[0].id,
     };
   }
 

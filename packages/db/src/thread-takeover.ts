@@ -254,9 +254,9 @@ export async function finalizeComputerControlRelease(
 
     const bot = await tx.bot.findFirst({
       where: { id: input.botId, spaceId: input.spaceId },
-      select: { thread: { select: { id: true } } },
+      select: { threads: { where: { isPrimary: true }, take: 1, select: { id: true } } },
     });
-    if (!bot?.thread) return { threadId: null, seq: null, runId };
+    if (!bot?.threads[0]) return { threadId: null, seq: null, runId };
 
     // Group cards live on the run's thread. Stopped runs cannot write history.
     if (controlRunId && runThreadId && waiting?.status !== "cancelled") {
@@ -271,7 +271,7 @@ export async function finalizeComputerControlRelease(
 
     const event = await appendEventInTransaction(tx, {
       spaceId: input.spaceId,
-      threadId: runThreadId ?? bot.thread.id,
+      threadId: runThreadId ?? bot.threads[0].id,
       botId: input.botId,
       runId: runId ?? undefined,
       type: "computer.takeover.released",

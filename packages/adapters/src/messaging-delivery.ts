@@ -29,6 +29,7 @@ import {
   CrossSpaceCommunicationBlockedError,
   createThreadMessageInTransaction,
   crossSpaceCommunicationAllowed,
+  getPrimaryThread,
   runAsSystem,
   SpaceDeletionInProgressError,
   THREAD_LOCK_TRANSACTION_OPTIONS,
@@ -734,9 +735,7 @@ async function fanOutToPeers(
       if (!peerIdentity || (await accountDeactivated(deps.prisma, peerIdentity.userId))) continue;
       if (!(await crossSpaceCommunicationAllowed(deps.prisma, identity.botId, peerIdentity.botId)))
         continue;
-      const peerThread = await deps.prisma.thread.findFirst({
-        where: { botId: peerIdentity.botId },
-      });
+      const peerThread = await getPrimaryThread(deps.prisma, peerIdentity.botId);
       if (!peerThread) continue;
       const peerBot = await deps.prisma.bot.findUnique({
         where: { id: peerIdentity.botId },

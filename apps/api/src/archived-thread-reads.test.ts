@@ -17,7 +17,7 @@ function fixture() {
     userId: actor.userId,
     spaceId: actor.spaceId,
     archivedAt: new Date(),
-    thread: { id: "thread-1" },
+    threads: [{ id: "thread-1" }],
     computer: null,
   };
   const findBot = vi.fn(

@@ -671,7 +671,7 @@ describe("thread lock transaction budget", () => {
         findFirst: vi.fn().mockResolvedValue(null),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
-      bot: { findFirst: vi.fn().mockResolvedValue({ thread: { id: "thread-1" } }) },
+      bot: { findFirst: vi.fn().mockResolvedValue({ threads: [{ id: "thread-1" }] }) },
       thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 2 }) },
       event: { create: vi.fn().mockResolvedValue(event(1)) },
     };
@@ -838,7 +838,7 @@ describe("finalizeComputerControlRelease", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           computerId: "computer-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         }),
       },
       run: {
@@ -923,7 +923,7 @@ describe("finalizeComputerControlRelease", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           computerId: "computer-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         }),
       },
       run: {
@@ -994,7 +994,7 @@ describe("finalizeComputerControlRelease", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       bot: {
-        findFirst: vi.fn().mockResolvedValue({ thread: { id: "thread-1" } }),
+        findFirst: vi.fn().mockResolvedValue({ threads: [{ id: "thread-1" }] }),
       },
       run: {
         findUnique: vi.fn().mockResolvedValue({ threadId: "thread-1", status: "waiting_takeover" }),
@@ -1076,7 +1076,7 @@ describe("finalizeComputerControlRelease", () => {
       },
       bot: {
         findFirst: vi.fn().mockResolvedValue({
-          thread: { id: "bot-thread" },
+          threads: [{ id: "bot-thread" }],
         }),
       },
       run: {
@@ -1197,7 +1197,7 @@ describe("finalizeComputerControlRelease", () => {
         findFirst: vi.fn().mockResolvedValue({ controlRunId: "run-1" }),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
-      bot: { findFirst: vi.fn().mockResolvedValue({ thread: { id: "bot-thread" } }) },
+      bot: { findFirst: vi.fn().mockResolvedValue({ threads: [{ id: "bot-thread" }] }) },
       run: {
         findUnique: vi.fn().mockResolvedValue({
           threadId: "group-thread",

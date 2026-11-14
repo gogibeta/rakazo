@@ -26,7 +26,12 @@ import {
 } from "@rakazo/adapters";
 import { MESSAGING_SLASH_COMMANDS } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { commitBotUpdate, provisionMessagingIdentity, runAsSystem } from "@rakazo/db";
+import {
+  commitBotUpdate,
+  getPrimaryThread,
+  provisionMessagingIdentity,
+  runAsSystem,
+} from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import type { Hono } from "hono";
 import { storeInboundAttachment } from "./artifacts.js";
@@ -145,10 +150,7 @@ export async function startMessagingRuntime({
         return resolved.ok ? { provider: resolved.provider, model: resolved.model } : null;
       },
       apply: async (scope, bot, choice) => {
-        const thread = await prisma.thread.findFirst({
-          where: { botId: bot.id },
-          select: { id: true },
-        });
+        const thread = await getPrimaryThread(prisma, bot.id);
         if (!thread) return { ok: false as const, error: "This bot has no conversation yet." };
         const validated = await validateBotModelChange(modelChangeDeps, {
           userId: scope.userId,

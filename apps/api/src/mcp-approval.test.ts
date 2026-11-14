@@ -43,7 +43,7 @@ function fixture(blocks: unknown[]) {
   };
   const deps = {
     prisma: {
-      bot: { findFirst: vi.fn(async () => ({ id: "bot", thread: { id: "main-thread" } })) },
+      bot: { findFirst: vi.fn(async () => ({ id: "bot", threads: [{ id: "main-thread" }] })) },
       thread: { findMany: vi.fn(async () => [{ id: "group-thread" }]) },
       mcpServer: { findFirst: vi.fn(async () => ({ id: "srv-a" })) },
       $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),

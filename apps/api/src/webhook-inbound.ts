@@ -200,12 +200,16 @@ export async function loadWebhookTarget(
       spaceId: true,
       userId: true,
       webhookSecretId: true,
-      thread: { select: { id: true } },
+      threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
     },
   });
 
   // A deactivated owner's bot takes no deliveries; callers see the usual unauthorized reply.
-  if (!bot?.thread || !bot.webhookSecretId || (await accountDeactivated(deps.prisma, bot.userId))) {
+  if (
+    !bot?.threads[0] ||
+    !bot.webhookSecretId ||
+    (await accountDeactivated(deps.prisma, bot.userId))
+  ) {
     cache.delete(botId);
     return null;
   }
@@ -245,7 +249,7 @@ export async function loadWebhookTarget(
       userId: bot.userId,
       webhookSecretId: bot.webhookSecretId,
     },
-    threadId: bot.thread.id,
+    threadId: bot.threads[0].id,
     expected,
   };
 }

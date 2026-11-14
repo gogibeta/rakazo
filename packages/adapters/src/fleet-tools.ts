@@ -344,7 +344,7 @@ async function prepareChildRoutine(
 
   const child = await resolveBot(deps.prisma, run, args);
   if ("error" in child) return child;
-  if (!child.thread) return refuse("That bot has no thread.");
+  if (!child.threads[0]) return refuse("That bot has no thread.");
 
   const when = formatTime(resolved.nextRunAt, timezone);
   return {
@@ -352,7 +352,7 @@ async function prepareChildRoutine(
     canonical: {
       botId: child.id,
       botName: child.name,
-      threadId: child.thread.id,
+      threadId: child.threads[0].id,
       name,
       prompt,
       timezone,
@@ -402,7 +402,7 @@ async function prepareChildInstructions(
   if (hidden) return refuse(hidden);
   const child = await resolveBot(deps.prisma, run, args);
   if ("error" in child) return child;
-  if (!child.thread) return refuse(NOT_FOUND);
+  if (!child.threads[0]) return refuse(NOT_FOUND);
   // Checked before the card too, so a second edit never asks the owner for nothing.
   if (await wroteInstructionsThisRun(deps.prisma, run, child.id)) {
     return refuse(ALREADY_WROTE_INSTRUCTIONS);
@@ -655,7 +655,7 @@ export async function organizeBot(
     if (bot) {
       const target = await resolveBot(deps.prisma, run, args);
       if ("error" in target) return { error: target.error };
-      if (!target.thread) return { error: NOT_FOUND };
+      if (!target.threads[0]) return { error: NOT_FOUND };
       // A named section is always the user's own: found or created by name in their scope.
       if (section) {
         await createRepos(deps.prisma).createBotSection(actor, { botId: target.id, name: section });
@@ -664,7 +664,7 @@ export async function organizeBot(
         prisma: deps.prisma,
         notify: (threadId, seq) => deps.events.notify(threadId, seq),
         spaceId: run.spaceId,
-        threadId: target.thread.id,
+        threadId: target.threads[0].id,
         botId: target.id,
         emitBotUpdated: true,
         data: {
@@ -827,7 +827,7 @@ export async function updateChildBot(
   if ("error" in child) {
     return { error: child.error };
   }
-  if (!child.thread) return { error: NOT_FOUND };
+  if (!child.threads[0]) return { error: NOT_FOUND };
 
   let patch: UpdateBotPatch = {};
   if (Object.values(profile).some((value) => value !== undefined)) {
@@ -853,7 +853,7 @@ export async function updateChildBot(
     prisma: deps.prisma,
     notify: (threadId, seq) => deps.events.notify(threadId, seq),
     spaceId: run.spaceId,
-    threadId: child.thread.id,
+    threadId: child.threads[0].id,
     botId: child.id,
     emitBotUpdated: true,
     data: patch,
@@ -873,7 +873,7 @@ export async function setChildInstructions(
   if (!instructions || !expectedVersion) return { error: "The approved change is incomplete." };
   const child = await resolveBot(deps.prisma, run, { bot_id: canonical.botId });
   if ("error" in child) return { error: child.error };
-  if (!child.thread) return { error: NOT_FOUND };
+  if (!child.threads[0]) return { error: NOT_FOUND };
   if (await wroteInstructionsThisRun(deps.prisma, run, child.id)) {
     return { error: ALREADY_WROTE_INSTRUCTIONS };
   }
@@ -891,7 +891,7 @@ export async function setChildInstructions(
       prisma: deps.prisma,
       notify: (threadId, seq) => deps.events.notify(threadId, seq),
       spaceId: run.spaceId,
-      threadId: child.thread.id,
+      threadId: child.threads[0].id,
       botId: child.id,
       emitBotUpdated: true,
       data: { instructions },
@@ -937,7 +937,7 @@ export async function setChildBotModel(
 > {
   const child = await resolveBot(deps.prisma, run, { bot_id: canonical.botId });
   if ("error" in child) return { error: child.error };
-  if (!child.thread) return { error: NOT_FOUND };
+  if (!child.threads[0]) return { error: NOT_FOUND };
   const previous = asRecord(canonical.previous);
   if (
     (previous?.provider ?? null) !== child.modelProvider ||
@@ -963,7 +963,7 @@ export async function setChildBotModel(
       prisma: deps.prisma,
       notify: (threadId, seq) => deps.events.notify(threadId, seq),
       spaceId: run.spaceId,
-      threadId: child.thread.id,
+      threadId: child.threads[0].id,
       botId: child.id,
       emitBotUpdated: true,
       expectedSettings: {
@@ -1006,7 +1006,7 @@ export async function createChildRoutine(
   if (!name || !prompt || !schedule) return { error: "The approved routine is incomplete." };
   const child = await resolveBot(deps.prisma, run, { bot_id: canonical.botId });
   if ("error" in child) return { error: child.error };
-  if (!child.thread || child.thread.id !== canonical.threadId) return { error: NOT_FOUND };
+  if (!child.threads[0] || child.threads[0].id !== canonical.threadId) return { error: NOT_FOUND };
 
   const runAt = text(schedule.runAt);
   const cron = runAt ? ONCE_ROUTINE_CRON : text(schedule.cron);
@@ -1024,7 +1024,7 @@ export async function createChildRoutine(
       spaceId: run.spaceId,
       userId: run.userId,
       botId: child.id,
-      threadId: child.thread.id,
+      threadId: child.threads[0].id,
       name,
       prompt,
       timezone: replayTimezone,
@@ -1051,7 +1051,7 @@ export async function createChildRoutine(
     botId: run.botId,
     userId: run.userId,
     threadId: run.threadId,
-    target: { botId: child.id, threadId: child.thread.id },
+    target: { botId: child.id, threadId: child.threads[0].id },
     name,
     prompt,
     ...(pinnedTimezone === undefined ? {} : { timezone: pinnedTimezone }),
@@ -1103,7 +1103,7 @@ const botSelect = {
   modelProvider: true,
   modelId: true,
   thinkingLevel: true,
-  thread: { select: { id: true } },
+  threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
 } satisfies Prisma.BotSelect;
 
 function activeBotsWhere(run: FleetRun): Prisma.BotWhereInput {

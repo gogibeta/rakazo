@@ -92,7 +92,7 @@ export async function createThreadMessageInTransaction(
 ) {
   const thread = await tx.thread.update({
     where: { id: input.threadId },
-    data: { nextMessageSeq: { increment: 1 } },
+    data: { nextMessageSeq: { increment: 1 }, lastMessageAt: new Date() },
     select: { nextMessageSeq: true, spaceId: true },
   });
   await assertRunCanWriteHistory(tx, input.runId, {

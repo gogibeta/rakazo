@@ -6,6 +6,7 @@ import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { isUniqueViolation } from "./prisma-errors.js";
 import { createRepos } from "./repos.js";
+import { getPrimaryThread } from "./thread-sessions.js";
 
 export interface MessagingIdentityRequest {
   /** Messaging platform hosting the conversation (sendblue, slack, …). */
@@ -61,7 +62,7 @@ export async function provisionMessagingIdentity(
   const where = { provider_address: { provider, address } } as const;
   const existing = await prisma.messagingIdentity.findUnique({ where });
   if (existing) {
-    const thread = await prisma.thread.findFirst({ where: { botId: existing.botId } });
+    const thread = await getPrimaryThread(prisma, existing.botId);
     if (!thread) throw new Error(`messaging identity ${existing.id} has no thread`);
     return {
       provider,
@@ -129,7 +130,7 @@ export async function provisionMessagingIdentity(
     botId = bot.id;
   }
 
-  const thread = await prisma.thread.findFirst({ where: { botId } });
+  const thread = await getPrimaryThread(prisma, botId);
   if (!thread) throw new Error(`bot ${botId} has no thread after createBot`);
 
   try {
@@ -152,9 +153,7 @@ export async function provisionMessagingIdentity(
     // The winner's bot can differ from the bot this attempt found or
     // created; pair the result with the winning bot's own thread.
     const winnerThread =
-      winner.botId === botId
-        ? thread
-        : await prisma.thread.findFirst({ where: { botId: winner.botId } });
+      winner.botId === botId ? thread : await getPrimaryThread(prisma, winner.botId);
     if (!winnerThread) throw new Error(`bot ${winner.botId} has no thread`);
     return {
       provider,

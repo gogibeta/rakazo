@@ -103,11 +103,11 @@ describePostgres("each member's own read state (PostgreSQL)", () => {
         userId: ada,
         name: "Planner",
         color: "blue",
-        thread: { create: { spaceId: space, userId: ada } },
+        threads: { create: { spaceId: space, userId: ada, isPrimary: true } },
       },
-      include: { thread: true },
+      include: { threads: true },
     });
-    threadId = bot.thread!.id;
+    threadId = bot.threads[0]!.id;
   });
 
   afterAll(async () => {
