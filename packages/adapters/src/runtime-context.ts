@@ -129,6 +129,13 @@ export function createRuntimeContextPolicy(
     cacheTracker?: ContextCacheTracker;
     imageTokens?: ContextBudget["imageTokens"];
     credentialScope?: string;
+    /**
+     * Tokens held back from the input budget for text stamped onto the outgoing copy
+     * after preparation (the serving-model note). Preparation trims against the window
+     * before that text exists, so without the reserve a request trimmed to exactly the
+     * limit would go out over it once stamped.
+     */
+    extraReserveTokens?: number;
   } = {},
 ) {
   const cache = options.cacheTracker ?? sharedCacheTracker;
@@ -182,7 +189,7 @@ export function createRuntimeContextPolicy(
         contextWindow,
       });
     }
-    return reserve;
+    return reserve + (options.extraReserveTokens ?? 0);
   }
   let sent: SentTranscript | undefined;
   // Only remember shortening actually sent, never speculative rebuild candidates.

@@ -60,6 +60,47 @@ async function run(usage?: object) {
 }
 
 describe("Pi usage accounting", () => {
+  it("resolves the serving note from the dispatch model and serializes it into the payload", async () => {
+    const seen: Model<Api>[] = [];
+    const bodies: string[] = [];
+    // No system prompt and no leading system message: the note rides on a synthesized
+    // system message whose content is empty, so only a serializer that renders message
+    // sections (not just content) puts it on the wire.
+    const context: Context = { messages: [{ role: "user", content: "test", timestamp: 1 }] };
+    const stream = await observedPiStream(
+      builtinModels(),
+      model,
+      context,
+      {
+        apiKey: "fixture",
+        fetch: async (_url, init) => {
+          bodies.push(String(init?.body ?? ""));
+          return new Response(sse(), { headers: { "content-type": "text/event-stream" } });
+        },
+      },
+      () => {},
+      undefined,
+      { operationKind: "answer" },
+      {
+        servingModelNote: (dispatchModel) => {
+          seen.push(dispatchModel);
+          return "SENTINEL SERVING NOTE";
+        },
+      },
+    );
+    for await (const _event of stream) {
+      /* Real Pi provider parser consumes synthetic endpoint. */
+    }
+    await stream.result();
+    // The resolver received the exact model object handed to the provider.
+    expect(seen).toEqual([model]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toContain("SENTINEL SERVING NOTE");
+    // The caller's context object was not mutated by the stamping.
+    expect(context.messages).toHaveLength(1);
+    expect(context.messages[0]?.role).toBe("user");
+  });
+
   it.each([false, true])(
     "acknowledges a producer sink only after successful accounting (fails=%s)",
     async (fails) => {

@@ -245,3 +245,78 @@ describe("history on the wire", () => {
     ]);
   });
 });
+
+describe("serving-model note on the wire", () => {
+  it("serializes the note into the system message of a chat-completions payload", async () => {
+    const body = await wireBody(compatible, completionsReply, { history: directChat });
+    const [first] = texts(body.messages);
+    expect(first?.role).toBe("system");
+    expect(first?.text).toContain("Answer briefly.");
+    expect(first?.text).toContain("You are currently being served by openai-compatible/fixture.");
+    expect(first?.text.split("You are currently being served by")).toHaveLength(2);
+  });
+
+  it("serializes the note into the system field of an Anthropic payload", async () => {
+    const body = await wireBody(anthropic, anthropicReply, { history: directChat });
+    const system = JSON.stringify(body.system ?? "");
+    expect(system).toContain("Answer briefly.");
+    expect(system).toContain("You are currently being served by anthropic/claude-sonnet-4-5.");
+  });
+
+  it("names the backup in the payload after an HTTP 503 switches the run", async () => {
+    const bodies: Array<{ model?: string; messages: WireMessage[] }> = [];
+    const runtime = new PiAgentRuntime({
+      modelFetch: async (_input, init) => {
+        const body = JSON.parse(String(init?.body)) as {
+          model?: string;
+          messages: WireMessage[];
+        };
+        bodies.push(body);
+        return body.model === "backup-fixture"
+          ? completionsReply()
+          : new Response(JSON.stringify({ error: { message: "service unavailable" } }), {
+              status: 503,
+              headers: { "content-type": "application/json" },
+            });
+      },
+    });
+    const backup = { ...compatible, id: "backup-fixture" } as const;
+    for await (const _event of runtime.run(
+      {
+        botId: "bot",
+        threadId: "thread",
+        runId: `run-${Math.random()}`,
+        prompt: "What was the token?",
+        instructions: "Answer briefly.",
+        history: [],
+        tools: [],
+        model: { ...compatible, id: "primary-fixture" },
+        fallbackModels: [{ provider: backup.provider, id: backup.id }],
+        resolveFallbackModel: async () => ({ ...backup }),
+      },
+      {
+        operationId: "wire-test",
+        traceId: "wire-test",
+        spaceId: "space",
+        userId: "user",
+        signal: new AbortController().signal,
+      },
+    )) {
+      // exhaust runtime
+    }
+    expect(bodies.map((body) => body.model)).toEqual(["primary-fixture", "backup-fixture"]);
+    const [primarySystem] = texts(bodies[0]!.messages);
+    expect(primarySystem?.text).toContain(
+      "You are currently being served by openai-compatible/primary-fixture.",
+    );
+    expect(primarySystem?.text).not.toContain("backup model is answering");
+    const [backupSystem] = texts(bodies[1]!.messages);
+    expect(backupSystem?.text).toContain(
+      "You are currently being served by openai-compatible/backup-fixture.",
+    );
+    expect(backupSystem?.text).toContain(
+      "The configured model openai-compatible/primary-fixture was unavailable",
+    );
+    expect(backupSystem?.text.split("You are currently being served by")).toHaveLength(2);
+  });
+});

@@ -33,6 +33,7 @@ import {
 } from "./approval-effect.js";
 import { automated, withAutomatedLabels } from "./automated-messages.js";
 import { withCloudflareAuth } from "./cloudflare-ai-gateway.js";
+import { estimateContextTokens } from "./context-selection.js";
 import { neutralizeSpeakerLabels } from "./history-speakers.js";
 import { estimatePiImageTokens } from "./pi-image-context.js";
 import {
@@ -144,17 +145,27 @@ export const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT = automated(
  * The factual note stamped onto every model call so the model knows which model is
  * actually serving it. A run's context is built from the configured model, so after a
  * fallback switch the model would otherwise keep answering identity questions from its
- * settings. Recomputed per attempt from the active target, so a switch replaces the note
- * instead of stacking a second one.
+ * settings. Recomputed per attempt from the model the attempt is dispatched to, so a
+ * switch replaces the note instead of stacking a second one.
+ *
+ * Identity is provider + model id only: a switch to the same model on another key or
+ * connection is still the same serving model, so it takes the first wording. The
+ * "unavailable" wording is used only when the fallback engine recorded why it left the
+ * configured model (`fallbackReason`); a dispatch that differs for any other reason —
+ * a computer-mode detour, a deliberate override — gets the neutral wording, which
+ * states the two identities without inventing a cause.
  */
 export function servingModelNote(
-  configured: AgentRunRequest["model"],
-  active: AgentRunRequest["model"],
+  configured: Pick<AgentRunRequest["model"], "provider" | "id">,
+  active: Pick<Model<Api>, "provider" | "id">,
+  fallbackReason?: string,
 ): string {
   const serving = `${active.provider}/${active.id}`;
-  return sameModelTarget(active, configured)
-    ? `You are currently being served by ${serving}. If asked which model you are, answer with this serving model, not with a model named in your instructions or settings.`
-    : `You are currently being served by ${serving}. The configured model ${configured.provider}/${configured.id} was unavailable, so this backup model is answering instead. If asked which model you are, answer with the serving model and mention the switch.`;
+  if (active.provider === configured.provider && active.id === configured.id)
+    return `You are currently being served by ${serving}. If asked which model you are, answer with this serving model, not with a model named in your instructions or settings.`;
+  return fallbackReason
+    ? `You are currently being served by ${serving}. The configured model ${configured.provider}/${configured.id} was unavailable, so this backup model is answering instead. If asked which model you are, answer with the serving model and mention the switch.`
+    : `You are currently being served by ${serving}. The configured model is ${configured.provider}/${configured.id}; this request is using ${serving}. If asked which model you are, answer with the serving model.`;
 }
 
 // Shown as a failed-run error, not an assistant message. Asking the user to
@@ -419,14 +430,22 @@ export class PiAgentRuntime implements AgentRuntime {
           }
         }
 
+        // The serving-model note is stamped onto the outgoing copy after preparation
+        // trims against the model's window, so preparation would not account for its
+        // tokens. Hold them back from the policy's budget instead: the note measured
+        // here carries a stand-in reason, reserving the longest wording for the target.
+        const servingNoteReserve = (target: RuntimeModelTarget) =>
+          estimateContextTokens(servingModelNote(request.model, target.model, "recorded"));
         let contextPolicy = createRuntimeContextPolicy(request, context, {
           credentialScope: apiKey,
           imageTokens: estimatePiImageTokens,
+          extraReserveTokens: servingNoteReserve(host.activeModel),
         });
         const contextPolicyFor = (target: RuntimeModelTarget) =>
           createRuntimeContextPolicy({ ...request, model: target.config }, context, {
             credentialScope: target.credentials?.accessToken ?? target.apiKey,
             imageTokens: estimatePiImageTokens,
+            extraReserveTokens: servingNoteReserve(target),
           });
         let sentContext: { context: Context; sourceLength: number } | undefined;
         const prepareContext = (ctx: Context, m: Model<Api>) => {
@@ -455,6 +474,10 @@ export class PiAgentRuntime implements AgentRuntime {
         const hasBackups = Boolean(request.fallbackModels?.length);
         let agent: Agent;
         let activeStreamTarget = host.activeModel;
+        // Why the fallback engine left the configured model, latched at the switch: the
+        // engine records it on the state before switching and clears its own copy on the
+        // next success, so latch it here or later calls on the backup lose the fact.
+        let recordedFallbackReason: string | undefined;
         // A tool result that ended the turn carries the reply the user must still see.
         let terminatedReply: string | undefined;
         let fallbackState: FallbackStreamState = {
@@ -495,9 +518,19 @@ export class PiAgentRuntime implements AgentRuntime {
                     {
                       ...usageHooks,
                       prepareContext,
-                      // Stamped per attempt from the fallback state's active target, so a
-                      // switch mid-call still names the model this attempt is sent to.
-                      servingModelNote: servingModelNote(request.model, target.config),
+                      // Built at the dispatch boundary: observedPiStream invokes this
+                      // with the exact model it hands to the provider, so a target
+                      // rebuilt between attempts (output budget, thinking map, context
+                      // resize) or a pooled key rotation cannot leave the note describing
+                      // a model that is not serving this call. A computer-mode dispatch
+                      // is a deliberate detour, not a fallback, so it never inherits the
+                      // recorded fallback reason.
+                      servingModelNote: (dispatchModel) =>
+                        servingModelNote(
+                          request.model,
+                          dispatchModel,
+                          fallbackState === mainFallbackState ? recordedFallbackReason : undefined,
+                        ),
                       onProviderError: (message) => providerFailures.add(message.content),
                     },
                   ),
@@ -522,6 +555,9 @@ export class PiAgentRuntime implements AgentRuntime {
             ...withLeadingUser(contextPolicyFor(target).prepareContext(ctx, target.model)),
           }),
           onSwitch: async (target) => {
+            // The engine recorded why it is leaving the current model on the state
+            // before this switch; latch the first reason for the note's wording.
+            recordedFallbackReason ??= mainFallbackState.primaryFailure;
             await request.onModelChange?.(
               target.config.provider,
               target.config.id,
