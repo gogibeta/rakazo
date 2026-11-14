@@ -1,5 +1,14 @@
 import { ORPCError } from "@orpc/server";
+import {
+  changeWalletVaultPassword,
+  setupWalletVaultPassword,
+  WalletVaultAlreadyConfiguredError,
+  WalletVaultPasswordError,
+  walletVaultStatus,
+} from "@rakazo/adapters/wallet-vault";
 import type { WalletChain, WalletSummary, WalletUseSummary } from "@rakazo/contracts";
+import { recordSecurityEvent } from "@rakazo/db";
+import { walletVaultPasswordRejectedEvent } from "../security-audit.js";
 import { evmWalletFromSecret, WalletSecretError } from "../wallet-address.js";
 import type { RouterContext } from "./context.js";
 
@@ -116,6 +125,38 @@ export function walletsRoutes(ctx: RouterContext) {
         }));
         return { uses };
       }),
+      // The wallet-vault password: only its existence and last change are
+      // ever read back. Passwords arrive over the signed-in session and go
+      // straight to the vault state; they are never stored or logged.
+      vaultStatus: authed.wallets.vaultStatus.handler(async ({ context }) =>
+        walletVaultStatus(deps.prisma, context.actor.userId),
+      ),
+      setVaultPassword: authed.wallets.setVaultPassword.handler(async ({ context, input }) => {
+        try {
+          return await setupWalletVaultPassword(deps.prisma, context.actor.userId, input.password);
+        } catch (error) {
+          if (error instanceof WalletVaultAlreadyConfiguredError) {
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          }
+          throw error;
+        }
+      }),
+      changeVaultPassword: authed.wallets.changeVaultPassword.handler(
+        async ({ context, input }) => {
+          try {
+            return await changeWalletVaultPassword(deps.prisma, context.actor.userId, input, {
+              onRejected: async (info) => {
+                await recordSecurityEvent(walletVaultPasswordRejectedEvent(context.actor, info));
+              },
+            });
+          } catch (error) {
+            if (error instanceof WalletVaultPasswordError) {
+              throw new ORPCError("BAD_REQUEST", { message: error.message });
+            }
+            throw error;
+          }
+        },
+      ),
     },
   };
 }

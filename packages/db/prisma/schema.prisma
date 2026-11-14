@@ -68,6 +68,7 @@ model User {
   proxies                     UserProxy[]
   wallets                     UserWallet[]
   walletUses                  UserWalletUse[]
+  walletVault                 WalletVault?
   voiceCredentials            UserVoiceCredential[]
   paymentWallet               PaymentWallet?
   spendingLimit               SpendingLimit?
@@ -932,6 +933,10 @@ model UserWallet {
   chain        String   @default("evm")
   address      String
   secretCipher String
+  /// Where this wallet stands on the move to password protection:
+  /// "legacy_server_only" until migration wraps its key under the owner's
+  /// wallet password ("password_protected"), or "migration_failed".
+  migrationStatus String @default("legacy_server_only")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   uses         UserWalletUse[]
@@ -960,6 +965,29 @@ model UserWalletUse {
   @@index([walletId, createdAt])
   @@index([userId, createdAt])
   @@map("user_wallet_uses")
+}
+
+/// A person's wallet-vault password state, one row per person. The verifier
+/// is a password hash with its own salt (see the pw-v1 verifier in the wallet
+/// envelope helpers); it is never the password and never an encryption key —
+/// it only lets a wrong password fail cleanly. `passwordEpoch` moves on every
+/// password change and is what revokes unlock grants minted under the old
+/// password. `failedAttempts` and `lockedUntil` are the throttle: repeated
+/// wrong passwords lock further attempts for a bounded time. The row's
+/// existence means a wallet password is configured; grants themselves never
+/// live in the database.
+model WalletVault {
+  userId          String    @id
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verifier        String
+  verifierVersion Int       @default(1)
+  passwordEpoch   Int       @default(1)
+  configuredAt    DateTime  @default(now())
+  changedAt       DateTime
+  failedAttempts  Int       @default(0)
+  lockedUntil     DateTime?
+
+  @@map("wallet_vaults")
 }
 
 /// A problem or suggestion a user asked their bot to send to the people who run this server.

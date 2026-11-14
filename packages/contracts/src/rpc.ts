@@ -229,6 +229,9 @@ import {
   WalletSummarySchema,
   WalletUseSummarySchema,
   WalletUsesInput,
+  WalletVaultPasswordChangeInput,
+  WalletVaultPasswordSetupInput,
+  WalletVaultStatusSchema,
 } from "./wallets.js";
 
 const botId = z.object({ botId: Id });
@@ -531,6 +534,9 @@ export const appContract = {
     add: oc.input(WalletAddInput).output(WalletSummarySchema),
     remove: oc.input(WalletRemoveInput).output(z.object({ ok: z.literal(true) })),
     uses: oc.input(WalletUsesInput).output(z.object({ uses: z.array(WalletUseSummarySchema) })),
+    vaultStatus: oc.output(WalletVaultStatusSchema),
+    setVaultPassword: oc.input(WalletVaultPasswordSetupInput).output(WalletVaultStatusSchema),
+    changeVaultPassword: oc.input(WalletVaultPasswordChangeInput).output(WalletVaultStatusSchema),
   },
   /** Deployment-owner view of the append-only security event log, newest first. */
   security: {

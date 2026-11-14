@@ -55,7 +55,15 @@ describe("wallets rpc contract", () => {
     expect(JSON.stringify(use)).not.toContain(KEY);
   });
 
-  it("exposes exactly list, add, remove and uses", () => {
-    expect(Object.keys(appContract.wallets).sort()).toEqual(["add", "list", "remove", "uses"]);
+  it("exposes exactly list, add, remove, uses and the vault password calls", () => {
+    expect(Object.keys(appContract.wallets).sort()).toEqual([
+      "add",
+      "changeVaultPassword",
+      "list",
+      "remove",
+      "setVaultPassword",
+      "uses",
+      "vaultStatus",
+    ]);
   });
 });

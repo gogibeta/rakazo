@@ -62,6 +62,10 @@ export const AUDITED_PROCEDURES: Record<string, AuditedProcedure> = {
   "memory.disconnectProvider": { type: "credential.deleted", kind: "memory" },
   // Starting a sign-in replaces any wallet already connected.
   "paymentWallet.connect": { type: "credential.changed", kind: "payment_wallet" },
+  // The wallet-vault password guards every saved wallet key. No fields: a
+  // password is a value the user typed, never metadata.
+  "wallets.setVaultPassword": { type: "credential.created", kind: "wallet_vault" },
+  "wallets.changeVaultPassword": { type: "credential.changed", kind: "wallet_vault" },
   "paymentWallet.disconnect": { type: "credential.deleted", kind: "payment_wallet" },
   "deployment.update": {
     type: "deployment.settings.changed",
@@ -196,6 +200,25 @@ export function createAuthResponseAudit(now: () => number = Date.now) {
       ip,
       metadata: { path, status: response.status, reason: await errorCode(response) },
     });
+  };
+}
+
+/** A wallet-vault password attempt the vault rejected: counts only, never the password. */
+export function walletVaultPasswordRejectedEvent(
+  actor: { userId: string; spaceId: string },
+  info: { failedAttempts: number; lockedUntil: Date | null },
+): SecurityEventInput {
+  return {
+    type: "credential.changed",
+    userId: actor.userId,
+    spaceId: actor.spaceId,
+    metadata: {
+      procedure: "wallets.changeVaultPassword",
+      kind: "wallet_vault",
+      outcome: "rejected",
+      failedAttempts: info.failedAttempts,
+      locked: info.lockedUntil !== null,
+    },
   };
 }
 

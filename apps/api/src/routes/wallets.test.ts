@@ -32,6 +32,7 @@ function routes(prisma: unknown, secrets: unknown) {
 
 function walletStore() {
   let rows: Row[] = [];
+  const vaultRows = new Map<string, VaultRow>();
   let next = 0;
   const puts: Array<{ plaintext: string; recordId?: string }> = [];
   const secrets = {
@@ -80,9 +81,44 @@ function walletStore() {
       }),
     },
     userWalletUse: { findMany: vi.fn(async () => []) },
+    walletVault: {
+      findUnique: vi.fn(async ({ where }: { where: { userId: string } }) =>
+        vaultRows.has(where.userId) ? { ...vaultRows.get(where.userId)! } : null,
+      ),
+      create: vi.fn(async ({ data }: { data: VaultRow }) => {
+        vaultRows.set(data.userId, { ...data });
+        return { ...data };
+      }),
+      update: vi.fn(
+        async ({ where, data }: { where: { userId: string }; data: Record<string, unknown> }) => {
+          const row = vaultRows.get(where.userId)!;
+          const record = row as unknown as Record<string, unknown>;
+          for (const [key, value] of Object.entries(data)) {
+            if (value && typeof value === "object" && "increment" in value) {
+              record[key] = (record[key] as number) + (value as { increment: number }).increment;
+            } else {
+              record[key] = value;
+            }
+          }
+          return { ...row };
+        },
+      ),
+    },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
   };
-  return { prisma, secrets, puts, rows: () => rows };
+  return { prisma, secrets, puts, rows: () => rows, vaultRows: () => vaultRows };
 }
+
+type VaultRow = {
+  userId: string;
+  verifier: string;
+  verifierVersion: number;
+  passwordEpoch: number;
+  configuredAt: Date;
+  changedAt: Date;
+  failedAttempts: number;
+  lockedUntil: Date | null;
+};
 
 const context = { actor: { userId: "u", spaceId: "s" }, signal: undefined };
 
@@ -141,5 +177,44 @@ describe("wallets routes", () => {
       "seal failed",
     );
     expect(store.rows()).toEqual([]);
+  });
+
+  it("sets and changes the wallet password, storing only a verifier and answering generically", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    const password = "route-vault-password-one";
+    const nextPassword = "route-vault-password-two";
+
+    expect(await api.vaultStatus!({ context })).toEqual({ configured: false, changedAt: null });
+
+    const set = await api.setVaultPassword!({ context, input: { password } });
+    expect(set).toMatchObject({ configured: true });
+    const row = [...store.vaultRows().values()][0]!;
+    expect(row.verifier.startsWith("pw-v1:")).toBe(true);
+    expect(JSON.stringify(row)).not.toContain(password);
+    // No response carries the password or the verifier.
+    for (const response of [set, await api.vaultStatus!({ context })]) {
+      expect(JSON.stringify(response)).not.toContain(password);
+      expect(JSON.stringify(response)).not.toContain("pw-v1:");
+    }
+
+    await expect(api.setVaultPassword!({ context, input: { password } })).rejects.toThrow(
+      /already set/,
+    );
+    // A wrong current password is refused with the one generic message.
+    await expect(
+      api.changeVaultPassword!({
+        context,
+        input: { currentPassword: "route-vault-password-wrong", newPassword: nextPassword },
+      }),
+    ).rejects.toThrow("The wallet password could not be verified.");
+
+    const changed = await api.changeVaultPassword!({
+      context,
+      input: { currentPassword: password, newPassword: nextPassword },
+    });
+    expect(changed).toMatchObject({ configured: true });
+    expect(row.passwordEpoch).toBe(2);
+    expect(JSON.stringify(changed)).not.toContain(nextPassword);
   });
 });
