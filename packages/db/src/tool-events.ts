@@ -36,10 +36,12 @@ export interface ToolEventInput {
 }
 
 let store: ToolEventDb | undefined;
+let missingStoreWarned = false;
 
-/** Composition roots install the database once; until then events only reach the log on failure. */
+/** Composition roots install the database once, before any run starts. */
 export function installToolEventStore(db: ToolEventDb | undefined): void {
   store = db;
+  if (db) missingStoreWarned = false;
 }
 
 /**
@@ -51,7 +53,16 @@ export function installToolEventStore(db: ToolEventDb | undefined): void {
  */
 export async function recordToolEvent(input: ToolEventInput): Promise<void> {
   const db = store;
-  if (!db) return;
+  if (!db) {
+    // Every composition root installs the store before runs start, so a
+    // dispatch with none installed means recording is off for the whole
+    // process. Warn once instead of dropping every event without a trace.
+    if (!missingStoreWarned) {
+      missingStoreWarned = true;
+      getLogger().warn("tool.event.store_missing", { tool: input.toolName });
+    }
+    return;
+  }
   try {
     await runAsSystem("append a tool event", async () => {
       const data = {
