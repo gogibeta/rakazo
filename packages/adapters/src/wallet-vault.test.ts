@@ -31,13 +31,12 @@ type VaultRow = {
 function vaultStore() {
   const rows = new Map<string, VaultRow>();
   const apply = (row: VaultRow, data: Record<string, unknown>) => {
+    const record = row as unknown as Record<string, unknown>;
     for (const [key, value] of Object.entries(data)) {
       if (value && typeof value === "object" && "increment" in value) {
-        (row as unknown as Record<string, number>)[key] += (
-          value as { increment: number }
-        ).increment;
+        record[key] = (record[key] as number) + (value as { increment: number }).increment;
       } else {
-        (row as unknown as Record<string, unknown>)[key] = value;
+        record[key] = value;
       }
     }
     return row;
