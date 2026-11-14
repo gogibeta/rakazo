@@ -124,7 +124,7 @@ export interface ToolCall {
 export type ToolHandler = (ctx: RunContext, call: ToolCall) => Promise<unknown>;
 export type ToolHandlers = Record<string, ToolHandler>;
 
-type GateOutcome = { result: unknown } | { call: ToolCall };
+type GateOutcome = { result: unknown; effectId?: string } | { call: ToolCall };
 
 type ToolReview = {
   name: string;
@@ -376,6 +376,7 @@ export async function gateToolCall(
   // Nobody is there to approve a purchase a webhook run reaches.
   if (paying && run.trigger === "webhook" && plan !== "deny") {
     await auditToolCall(ctx, name, "denied", { reason: "purchase_unattended" });
+    await auditGateDecision(ctx, name, "deny", { reason: "purchase_unattended" });
     return {
       result: refusal(
         "purchase_needs_approval_unattended",
@@ -386,6 +387,7 @@ export async function gateToolCall(
   // Nobody is there to approve a wallet fill a webhook run reaches, either.
   if (walletAsk && run.trigger === "webhook" && plan !== "deny") {
     await auditToolCall(ctx, name, "denied", { reason: "wallet_unattended" });
+    await auditGateDecision(ctx, name, "deny", { reason: "wallet_unattended" });
     return {
       result: refusal(
         "wallet_needs_approval_unattended",
@@ -396,6 +398,7 @@ export async function gateToolCall(
   // Nor a host restart: it takes the whole deployment down, so a person approves it in person.
   if (name === "restart_host" && run.trigger === "webhook" && plan !== "deny") {
     await auditToolCall(ctx, name, "denied", { reason: "host_restart_unattended" });
+    await auditGateDecision(ctx, name, "deny", { reason: "host_restart_unattended" });
     return {
       result: refusal(
         "host_restart_needs_approval_unattended",
@@ -405,6 +408,9 @@ export async function gateToolCall(
   }
   if (plan === "deny") {
     await auditToolCall(ctx, name, "denied", {
+      reason: approvalResolved.decision === "deny" ? "rule" : "never_asks",
+    });
+    await auditGateDecision(ctx, name, "deny", {
       reason: approvalResolved.decision === "deny" ? "rule" : "never_asks",
     });
     return {
@@ -430,11 +436,15 @@ export async function gateToolCall(
     const refused = await pagePaymentPrecheck(deps.prisma, spender, spends);
     if (refused) {
       await auditToolCall(ctx, name, "denied", { reason: "spending_limit" });
+      await auditGateDecision(ctx, name, "deny", { reason: "spending_limit" });
       return { result: refusal("spending_limit", refused) };
     }
   }
   let reviewReason: string | undefined;
   let gateDecision: "ask" | "allow" = plan === "ask" ? "ask" : "allow";
+  // Set when the reviewer passed this call, fresh or by a stored verdict, so the
+  // gate's decision can be audited at the end.
+  let autoReviewPass: { model: string | undefined; reused: boolean } | undefined;
   const needsApprovalEarly = plan === "ask" || plan === "judge";
   // A resumed approval keeps its key even if "Always allow" changed the policy.
   const usesApprovalKey =
@@ -518,7 +528,10 @@ export async function gateToolCall(
       where: { id: applied.effect.id, status: "intended" },
       data: { status: "denied", result: { refused: "repeat" } },
     });
-    return { result: refusal("action_denied_repeat", DENIED_ACTION_ERROR) };
+    return {
+      result: refusal("action_denied_repeat", DENIED_ACTION_ERROR),
+      effectId: applied.effect.id,
+    };
   }
 
   const runAutoReview = async () => {
@@ -539,6 +552,9 @@ export async function gateToolCall(
     if (!judged) return;
     reviewReason = judged.reason;
     gateDecision = judged.decision;
+    if (judged.judgeDecision === "pass") {
+      autoReviewPass = { model: judged.reviewModel, reused: false };
+    }
   };
 
   if (applied && plan === "judge" && (injectedReview || checker)) {
@@ -554,6 +570,11 @@ export async function gateToolCall(
         reviewReason =
           typeof applied.effect.reviewReason === "string" ? applied.effect.reviewReason : undefined;
         gateDecision = "allow";
+        autoReviewPass = {
+          model:
+            typeof applied.effect.reviewModel === "string" ? applied.effect.reviewModel : undefined,
+          reused: true,
+        };
       } else {
         await runAutoReview();
       }
@@ -561,7 +582,8 @@ export async function gateToolCall(
   } else if (applied?.duplicate && plan === "ask") {
     gateDecision = "ask";
   }
-  if (context.signal.aborted) return { result: pauseForApproval(ctx) };
+  if (context.signal.aborted)
+    return { result: pauseForApproval(ctx), effectId: applied?.effect.id };
   if (
     siteGate === "new" &&
     newSiteOutcome({ trigger: run.trigger, decision: gateDecision }) === "deny"
@@ -572,11 +594,13 @@ export async function gateToolCall(
         data: { status: "denied" },
       });
     }
+    await auditGateDecision(ctx, name, "deny", { reason: "fetch_needs_approval_unattended" });
     return {
       result: refusal(
         "fetch_needs_approval_unattended",
         `Fetching ${fetchSite} needs approval, and a webhook run cannot ask.`,
       ),
+      effectId: applied?.effect.id,
     };
   }
 
@@ -594,6 +618,7 @@ export async function gateToolCall(
         "helper_cannot_ask_approval",
         `${name} needs the owner's approval, and a background helper cannot ask. Don't retry; say in your result what the bot should ask for.`,
       ),
+      effectId: applied?.effect.id,
     };
   }
   const call = createToolCall(ctx, {
@@ -627,7 +652,7 @@ export async function gateToolCall(
           },
           select: { id: true, createdAt: true },
         });
-        if (!replacementSecret) return { result: gate.result };
+        if (!replacementSecret) return { result: gate.result, effectId: applied.effect.id };
         // Crash between persist and delete leaves the same OTP row. Do not
         // resubmit it to the connector; only newer rows are replacements.
         const effectUpdatedAt = applied.effect.updatedAt;
@@ -641,10 +666,10 @@ export async function gateToolCall(
           await deps.prisma.secret.delete({
             where: { id: replacementSecret.id },
           });
-          return { result: gate.result };
+          return { result: gate.result, effectId: applied.effect.id };
         }
       } else {
-        return { result: gate.result };
+        return { result: gate.result, effectId: applied.effect.id };
       }
     }
     if (gate.action === "paused") {
@@ -654,34 +679,37 @@ export async function gateToolCall(
           select: { status: true },
         });
         if (current?.status === "waiting_input") {
-          return { result: pauseForSecret(ctx) };
+          return { result: pauseForSecret(ctx), effectId: applied.effect.id };
         }
         // An intended secret request resumes protected entry below, including
         // recovery after action approval but before the card was committed.
       } else if (!needsApproval) {
         const early = await call.claimOrReturn("intended");
-        if (early !== undefined) return { result: early };
+        if (early !== undefined) return { result: early, effectId: applied.effect.id };
       } else {
         const current = await deps.prisma.run.findUnique({
           where: { id: runId },
           select: { status: true },
         });
         if (current?.status === "waiting_input") {
-          return { result: pauseForApproval(ctx) };
+          return { result: pauseForApproval(ctx), effectId: applied.effect.id };
         }
-        return { result: await requestApproval(ctx, call, card) };
+        return { result: await requestApproval(ctx, call, card), effectId: applied.effect.id };
       }
     } else if (gate.action === "uncertain") {
-      return { result: await settleToolUncertainty(ctx, call, applied.effect.id, gate.toolName) };
+      return {
+        result: await settleToolUncertainty(ctx, call, applied.effect.id, gate.toolName),
+        effectId: applied.effect.id,
+      };
     } else if (gate.action === "execute") {
       const early = await call.claimOrReturn("approved");
-      if (early !== undefined) return { result: early };
+      if (early !== undefined) return { result: early, effectId: applied.effect.id };
     }
   } else if (needsApproval && applied) {
-    return { result: await requestApproval(ctx, call, card) };
+    return { result: await requestApproval(ctx, call, card), effectId: applied.effect.id };
   } else if (call.bypassApproval && applied) {
     const early = await call.claimOrReturn("intended");
-    if (early !== undefined) return { result: early };
+    if (early !== undefined) return { result: early, effectId: applied.effect.id };
   }
   // Past the gate: this destination is now one the run was given. A search result's exact
   // URL trusts only that URL, never the rest of its site.
@@ -689,6 +717,28 @@ export async function gateToolCall(
   if (viaConnector) {
     const trusted = await ctx.trust.loadTrustedConnectors();
     for (const trust of connectorTrusts) trusted.add(trust);
+  }
+  // The gate outcomes the audit log names: the reviewer passed this gated call,
+  // or a saved always-allow rule is what let it through without asking. (A plain
+  // ask leaves no row; the ask and its decision rows cover it.)
+  if (autoReviewPass) {
+    await auditGateDecision(ctx, name, "auto_review_pass", {
+      reviewModel: autoReviewPass.model,
+      ...(autoReviewPass.reused ? { reused: true } : {}),
+    });
+  } else if (
+    gateDecision === "allow" &&
+    gated &&
+    mode !== "never" &&
+    approvalResolved.source === "always_allow"
+  ) {
+    const rule = approvalResolved.matchingRules.find(
+      (candidate) => candidate.effect === "always_allow",
+    );
+    await auditGateDecision(ctx, name, "rule_allow", {
+      ...(rule ? { ruleMatchKind: rule.matchKind, ruleMatchValue: rule.matchValue } : {}),
+      matchingRules: approvalResolved.matchingRules.length,
+    });
   }
   return { call };
 }
@@ -713,6 +763,26 @@ export async function auditToolCall(
     threadId: ctx.thread.id,
     metadata,
   });
+}
+
+/**
+ * One gate decision in the audit log, under its own action so the decisions can
+ * be listed apart from the calls themselves. The specific `tool.call` rows the
+ * denials already write stay; this is the canonical decision record.
+ */
+function auditGateDecision(
+  ctx: RunContext,
+  tool: string,
+  decision: "rule_allow" | "auto_review_pass" | "deny",
+  metadata: AuditEventInput["metadata"],
+): Promise<void> {
+  return auditToolCall(
+    ctx,
+    tool,
+    decision === "deny" ? "denied" : "success",
+    { ...metadata, decision },
+    { action: "tool.gate_decision", actor: { type: "bot", id: ctx.bot.id, label: ctx.bot.name } },
+  );
 }
 
 function blockingRuleSuffix(resolved: ReturnType<typeof resolveActionApprovalForTools>): string {
@@ -855,7 +925,16 @@ async function showApprovalCard(ctx: RunContext, call: ToolCall, card: ApprovalC
 async function reviewToolCall(
   ctx: RunContext,
   review: ToolReview,
-): Promise<{ reason: string | undefined; decision: "ask" | "allow" } | undefined> {
+): Promise<
+  | {
+      reason: string | undefined;
+      decision: "ask" | "allow";
+      /** The reviewer's own verdict, before it is mapped onto ask/allow. */
+      judgeDecision: string;
+      reviewModel: string | undefined;
+    }
+  | undefined
+> {
   const { deps, run, runId, bot, thread, context } = ctx;
   const { name, args, connectorKind, fetchUrl, gated, applied } = review;
   const { injectedReview, checker, reviewSettings, memberChecker } = review;
@@ -866,7 +945,8 @@ async function reviewToolCall(
     // gets only the owner's routine. With no routine to judge against, a person decides.
     const outsideRun = run.trigger === "webhook";
     const ownerWords = outsideRun ? await ctx.trust.loadOwnerWords() : "";
-    if (outsideRun && !ownerWords.trim()) return { reason: undefined, decision: "ask" };
+    if (outsideRun && !ownerWords.trim())
+      return { reason: undefined, decision: "ask", judgeDecision: "ask", reviewModel: undefined };
     // A new site is judged on the full URL and the owner's own words only: the task
     // prompt of a webhook or bot-started run carries text someone else wrote.
     const reviewRequest: AutoReviewRequest =
@@ -951,7 +1031,7 @@ async function reviewToolCall(
       });
     }
     await auditAutoReview(ctx, name, applied, judge.decision, judge.model);
-    return verdict;
+    return { ...verdict, judgeDecision: judge.decision, reviewModel: judge.model };
   } catch {
     // Cancellation must not write a review the next attempt would reuse.
     if (context.signal.aborted) return;
@@ -971,7 +1051,7 @@ async function reviewToolCall(
       });
     }
     await auditAutoReview(ctx, name, applied, "error", reviewModel);
-    return verdict;
+    return { ...verdict, judgeDecision: "error", reviewModel };
   }
 }
 

@@ -371,6 +371,7 @@ async function commitAskAnswer(
     messageId: input.messageId,
     answeredByUserId: identity.userId,
     answer: input.answer,
+    surface: identity.provider,
   });
   if (!answered) {
     await writeAskReceipt(deps, identity, input.messageId, "That question was already answered.");

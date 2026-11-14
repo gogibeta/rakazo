@@ -73,6 +73,7 @@ import {
   describeRowSecurity,
   installAuditEventStore,
   installSecurityEventStore,
+  installToolEventStore,
   isPoolCheckoutTimeout,
   isTooManyDatabaseConnections,
   observeThreadChanges,
@@ -130,6 +131,7 @@ async function main() {
   const telegramOwnerUserIds = await loadTelegramOwnerUserIds(prisma);
   installSecurityEventStore(prisma);
   installAuditEventStore(prisma);
+  installToolEventStore(prisma);
   const unreadableMasterKeys = await verifyContentKeys(prisma);
   if (unreadableMasterKeys.length)
     logger.error("Stored space keys need master keys that are not configured", undefined, {

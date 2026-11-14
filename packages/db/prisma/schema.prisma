@@ -662,6 +662,7 @@ model Space {
   computers                   Computer[]
   computerRuns                ComputerRun[]
   externalEffects             ExternalEffect[]
+  toolEvents                  ToolEvent[]
   mcpServers                  McpServer[]
   mcpOAuthSessions            McpOAuthSession[]
   modelOAuthSessions          ModelOAuthSession[]
@@ -1401,6 +1402,7 @@ model Run {
   updatedAt            DateTime          @updatedAt
   attempts             Attempt[]
   effects              ExternalEffect[]
+  toolEvents           ToolEvent[]
   steeringMessages     SteeringMessage[]
   externalMessage      ExternalMessage?
 
@@ -1616,6 +1618,45 @@ model ExternalEffect {
   @@index([spaceId, kind, status])
   @@index([kind, status, updatedAt])
   @@map("external_effects")
+}
+
+/// One row per tool call a run dispatched, whatever the outcome: the durable,
+/// queryable record the transcript blocks and the audit log only partially keep.
+/// Arguments are stored hashed plus a scalar-only summary, never raw.
+model ToolEvent {
+  id            String   @id @default(cuid())
+  spaceId       String
+  space         Space    @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  threadId      String
+  runId         String
+  run           Run      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  botId         String
+  /// Per-run sequence, allocated by the writer; unique so a clash retries instead of duplicating.
+  seq           Int
+  /// The resolved tool name, as the gate saw it.
+  toolName      String
+  connectorKind String?
+  /// sha256 hex of the canonical arguments (the loop guard's canonicalization).
+  argsHash      String
+  /// Scalar-only projection of the arguments under the audit metadata rules.
+  argsSummary   Json?
+  /// `recall` marks history and memory search calls; anything else is `normal`.
+  kind          String   @default("normal")
+  /// succeeded | failed | refused | paused | denied
+  status        String
+  /// The ExternalEffect this call claimed, when it was gated. A plain column, so
+  /// the record survives the effect's own lifecycle.
+  effectId      String?
+  /// Byte size of the serialized result, when the call produced one.
+  resultBytes   Int?
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+
+  @@unique([runId, seq])
+  @@index([spaceId, createdAt])
+  @@index([threadId, createdAt])
+  @@index([createdAt])
+  @@map("tool_events")
 }
 
 model Routine {
