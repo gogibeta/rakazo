@@ -1,14 +1,23 @@
 import { ORPCError } from "@orpc/server";
 import {
   changeWalletVaultPassword,
+  migrateUserWalletToPasswordEnvelope,
   setupWalletVaultPassword,
+  WalletMigrationError,
+  WalletMigrationNotFoundError,
   WalletVaultAlreadyConfiguredError,
+  WalletVaultNotConfiguredError,
   WalletVaultPasswordError,
   walletVaultStatus,
 } from "@rakazo/adapters/wallet-vault";
-import type { WalletChain, WalletSummary, WalletUseSummary } from "@rakazo/contracts";
+import type {
+  WalletChain,
+  WalletMigrationStatus,
+  WalletSummary,
+  WalletUseSummary,
+} from "@rakazo/contracts";
 import { recordSecurityEvent } from "@rakazo/db";
-import { walletVaultPasswordRejectedEvent } from "../security-audit.js";
+import { walletMigrationEvent, walletVaultPasswordRejectedEvent } from "../security-audit.js";
 import { evmWalletFromSecret, WalletSecretError } from "../wallet-address.js";
 import type { RouterContext } from "./context.js";
 
@@ -17,6 +26,7 @@ type WalletRow = {
   name: string;
   chain: string;
   address: string;
+  migrationStatus: string;
   createdAt: Date;
 };
 
@@ -27,6 +37,7 @@ function summary(row: WalletRow): WalletSummary {
     name: row.name,
     chain: row.chain as WalletChain,
     address: row.address,
+    migrationStatus: row.migrationStatus as WalletMigrationStatus,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -104,6 +115,52 @@ export function walletsRoutes(ctx: RouterContext) {
         });
         if (removed.count === 0) throw new ORPCError("NOT_FOUND", { message: "Wallet not found" });
         return { ok: true as const };
+      }),
+      // Migrating one wallet to its password envelope. Owner-only by
+      // construction: this surface is the signed-in Settings session, the
+      // password arrives with the call, and no bot tool can reach it. The
+      // attempt's start and failure are recorded here; the success is
+      // recorded by the audited-procedure table like every credential
+      // change. None of the events carries the password or any secret.
+      migrate: authed.wallets.migrate.handler(async ({ context, input }) => {
+        try {
+          await migrateUserWalletToPasswordEnvelope({
+            prisma: deps.prisma,
+            secretStore: deps.secrets,
+            userId: context.actor.userId,
+            walletId: input.walletId,
+            password: input.password,
+            deriveAddress: (secret) => evmWalletFromSecret(secret).address,
+            hooks: {
+              onEvent: async (event) => {
+                if (event.outcome === "succeeded") return;
+                await recordSecurityEvent(
+                  walletMigrationEvent(context.actor, event.walletId, event.outcome),
+                );
+              },
+              onPasswordRejected: async (info) => {
+                await recordSecurityEvent(walletVaultPasswordRejectedEvent(context.actor, info));
+              },
+            },
+          });
+        } catch (error) {
+          if (error instanceof WalletMigrationNotFoundError) {
+            throw new ORPCError("NOT_FOUND", { message: error.message });
+          }
+          if (
+            error instanceof WalletVaultNotConfiguredError ||
+            error instanceof WalletVaultPasswordError ||
+            error instanceof WalletMigrationError
+          ) {
+            throw new ORPCError("BAD_REQUEST", { message: error.message });
+          }
+          throw error;
+        }
+        const row = await deps.prisma.userWallet.findFirst({
+          where: { id: input.walletId, userId: context.actor.userId },
+        });
+        if (!row) throw new ORPCError("NOT_FOUND", { message: "Wallet not found" });
+        return summary(row);
       }),
       uses: authed.wallets.uses.handler(async ({ context, input }) => {
         const wallet = await deps.prisma.userWallet.findFirst({

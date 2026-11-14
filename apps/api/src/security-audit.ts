@@ -66,6 +66,9 @@ export const AUDITED_PROCEDURES: Record<string, AuditedProcedure> = {
   // password is a value the user typed, never metadata.
   "wallets.setVaultPassword": { type: "credential.created", kind: "wallet_vault" },
   "wallets.changeVaultPassword": { type: "credential.changed", kind: "wallet_vault" },
+  // Migrating a wallet replaces its server seal with the password
+  // envelope. The wallet id is an identifier; the password is never metadata.
+  "wallets.migrate": { type: "credential.changed", kind: "wallet_migration", fields: ["walletId"] },
   "paymentWallet.disconnect": { type: "credential.deleted", kind: "payment_wallet" },
   "deployment.update": {
     type: "deployment.settings.changed",
@@ -200,6 +203,24 @@ export function createAuthResponseAudit(now: () => number = Date.now) {
       ip,
       metadata: { path, status: response.status, reason: await errorCode(response) },
     });
+  };
+}
+
+/**
+ * One migration attempt's start or failure, recorded by the handler itself
+ * (the procedure table above records the success). Scalars only: the wallet
+ * id and the outcome — never the password, the secret, or any ciphertext.
+ */
+export function walletMigrationEvent(
+  actor: { userId: string; spaceId: string },
+  walletId: string,
+  outcome: "started" | "failed",
+): SecurityEventInput {
+  return {
+    type: "credential.changed",
+    userId: actor.userId,
+    spaceId: actor.spaceId,
+    metadata: { procedure: "wallets.migrate", kind: "wallet_migration", walletId, outcome },
   };
 }
 

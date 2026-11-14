@@ -28,12 +28,25 @@ export const WalletAddInput = z.object({
 });
 export type WalletAddInput = z.infer<typeof WalletAddInput>;
 
+/**
+ * Where a wallet stands on the move to password protection: sealed by the
+ * server alone until the owner migrates it, password-protected after, or
+ * left marked failed by a migration that did not finish.
+ */
+export const WalletMigrationStatusSchema = z.enum([
+  "legacy_server_only",
+  "password_protected",
+  "migration_failed",
+]);
+export type WalletMigrationStatus = z.infer<typeof WalletMigrationStatusSchema>;
+
 /** What lists and responses may show: never the secret, in any form. */
 export const WalletSummarySchema = z.object({
   id: Id,
   name: z.string(),
   chain: WalletChainSchema,
   address: z.string(),
+  migrationStatus: WalletMigrationStatusSchema,
   createdAt: z.string(),
 });
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
@@ -56,6 +69,17 @@ export const WalletVaultPasswordChangeInput = z.object({
   newPassword: WalletPassword,
 });
 export type WalletVaultPasswordChangeInput = z.infer<typeof WalletVaultPasswordChangeInput>;
+
+/**
+ * Migrating one wallet: the wallet and the owner's wallet password. The
+ * password is verified against the vault state and used to wrap the
+ * wallet's key; it is never stored or read back.
+ */
+export const WalletMigrateInput = z.object({
+  walletId: Id,
+  password: z.string().min(1).max(WALLET_PASSWORD_MAX_LENGTH),
+});
+export type WalletMigrateInput = z.infer<typeof WalletMigrateInput>;
 
 /** What the settings surface may know about the wallet password: that it exists, and when it last changed. */
 export const WalletVaultStatusSchema = z.object({

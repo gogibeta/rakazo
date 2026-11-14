@@ -478,6 +478,14 @@ export async function prepareToolRequest(
             "wallet_not_found",
             "No wallet is saved under this name. Check list_wallets.",
           );
+        // A migrated wallet is vault-only: its secret can no longer be
+        // typed into a page, so do not ask the owner to approve a fill
+        // that can never happen.
+        if (row.migrationStatus === "password_protected")
+          return refusal(
+            "wallet_password_protected",
+            "This wallet is protected by the wallet password, so its secret can no longer be typed into a page.",
+          );
         walletUse = {
           ...wantedWallet,
           address: row.address,

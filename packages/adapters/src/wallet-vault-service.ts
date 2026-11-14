@@ -29,9 +29,10 @@ import { WalletVaultNotConfiguredError, WalletVaultPasswordError } from "./walle
  * - The store's unlock rows are an audit trail only. A stored row never
  *   authorizes anything; authorization is the live grant or nothing.
  *
- * Signing and filling are not implemented yet: no wallet is migrated to a
- * password envelope until the migration step lands, so after full grant
- * validation both operations refuse with a typed error rather than pretend.
+ * Signing and filling are not implemented yet: wallets migrate to a
+ * password envelope through Settings, and a migrated wallet passes the
+ * migration check below — but until signing and the fill broker land, both
+ * operations still refuse with a typed error rather than pretend.
  * The validation order is deliberate — grant first, wallet second — so a
  * caller without a live grant learns nothing about wallets.
  *
@@ -387,9 +388,10 @@ export function createWalletVaultService(deps: {
     },
 
     /**
-     * Sign for a wallet under a grant. Not implemented yet — no wallet is
-     * password-protected until migration lands — so after grant and wallet
-     * validation this refuses, typed, rather than pretend to sign.
+     * Sign for a wallet under a grant. Not implemented yet — migration now
+     * lands wallets in password envelopes, but signing itself is a later
+     * step — so after grant and wallet validation this refuses, typed,
+     * rather than pretend to sign.
      */
     async sign(input: { userId: string; grantId: string; walletId: string }): Promise<never> {
       await requireGrant(input.userId, input.grantId, "sign");

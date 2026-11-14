@@ -14,6 +14,9 @@ type Row = {
   chain: string;
   address: string;
   secretCipher: string;
+  keyCiphertext: string | null;
+  passwordWrap: string | null;
+  migrationStatus: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -44,16 +47,53 @@ function walletStore() {
   };
   const prisma = {
     userWallet: {
-      create: vi.fn(async ({ data }: { data: Omit<Row, "id" | "createdAt" | "updatedAt"> }) => {
-        const row: Row = {
-          ...data,
-          id: `w${++next}`,
-          createdAt: new Date("2026-09-01T00:00:00.000Z"),
-          updatedAt: new Date("2026-09-01T00:00:00.000Z"),
-        };
-        rows.push(row);
-        return row;
-      }),
+      create: vi.fn(
+        async ({
+          data,
+        }: {
+          data: Omit<
+            Row,
+            "id" | "createdAt" | "updatedAt" | "keyCiphertext" | "passwordWrap" | "migrationStatus"
+          >;
+        }) => {
+          const row: Row = {
+            keyCiphertext: null,
+            passwordWrap: null,
+            migrationStatus: "legacy_server_only",
+            ...data,
+            id: `w${++next}`,
+            createdAt: new Date("2026-09-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-09-01T00:00:00.000Z"),
+          };
+          rows.push(row);
+          return row;
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          const matches = (row: Row): boolean =>
+            Object.entries(where).every(([key, condition]) => {
+              const value = row[key as keyof Row];
+              if (condition && typeof condition === "object" && "in" in condition) {
+                return (condition as { in: unknown[] }).in.includes(value);
+              }
+              return value === condition;
+            });
+          let count = 0;
+          for (const row of rows) {
+            if (!matches(row)) continue;
+            Object.assign(row, data);
+            count++;
+          }
+          return { count };
+        },
+      ),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Partial<Row> }) => {
         const row = rows.find((entry) => entry.id === where.id)!;
         Object.assign(row, data);
@@ -253,5 +293,73 @@ describe("wallets routes", () => {
     expect(changed).toMatchObject({ configured: true });
     expect(row.passwordEpoch).toBe(2);
     expect(JSON.stringify(changed)).not.toContain(nextPassword);
+  });
+
+  it("migrates a wallet to its password envelope and never returns secret material", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    const password = "route-migration-password";
+    // A cuid-shaped id, as the database generates (the envelope binds it).
+    const walletId = "c000000000000000000000001";
+    store.rows().push({
+      id: walletId,
+      userId: "u",
+      name: "burner",
+      chain: "evm",
+      address: ADDRESS,
+      secretCipher: "v2:sealed-value",
+      keyCiphertext: null,
+      passwordWrap: null,
+      migrationStatus: "legacy_server_only",
+      createdAt: new Date("2026-09-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-09-01T00:00:00.000Z"),
+    });
+
+    // No password set yet: migration cannot start.
+    await expect(api.migrate!({ context, input: { walletId, password } })).rejects.toThrow(
+      /No wallet password is set yet/,
+    );
+
+    await api.setVaultPassword!({ context, input: { password } });
+
+    // A wrong password is the one generic rejection, and nothing changes.
+    await expect(
+      api.migrate!({ context, input: { walletId, password: "route-migration-wrong" } }),
+    ).rejects.toThrow("The wallet password could not be verified.");
+    expect(store.rows()[0]).toMatchObject({
+      migrationStatus: "legacy_server_only",
+      secretCipher: "v2:sealed-value",
+    });
+
+    const migrated = (await api.migrate!({ context, input: { walletId, password } })) as {
+      migrationStatus: string;
+    };
+    expect(migrated.migrationStatus).toBe("password_protected");
+    const row = store.rows()[0]!;
+    expect(row.secretCipher).toBe("");
+    expect(row.keyCiphertext).toMatch(/^pwk-v1:/);
+    expect(row.passwordWrap).toMatch(/^pw-v1:/);
+    for (const response of [migrated, await api.list!({ context })]) {
+      const seen = JSON.stringify(response);
+      expect(seen).not.toContain(KEY);
+      expect(seen).not.toContain(password);
+      expect(seen).not.toContain("pwk-v1:");
+      expect(seen).not.toContain("pw-v1:");
+    }
+
+    // Re-running is a clean no-op.
+    const again = (await api.migrate!({ context, input: { walletId, password } })) as {
+      migrationStatus: string;
+    };
+    expect(again.migrationStatus).toBe("password_protected");
+    expect(store.rows()[0]!.keyCiphertext).toBe(row.keyCiphertext);
+
+    // Another person's wallet is not found, not migrated.
+    await expect(
+      api.migrate!({
+        context: { actor: { userId: "other", spaceId: "s" }, signal: undefined },
+        input: { walletId, password },
+      }),
+    ).rejects.toThrow(/Wallet not found/);
   });
 });

@@ -253,6 +253,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
         },
       ],
       ["wallets/remove", { walletId: "missing-wallet" }],
+      ["wallets/migrate", { walletId: "missing-wallet", password: "not-a-real-password" }],
       ["wallets/uses", { walletId: "missing-wallet" }],
       ["wallets/vaultStatus"],
       ["wallets/setVaultPassword", { password: "not-a-real-password" }],

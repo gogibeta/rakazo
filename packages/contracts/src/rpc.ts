@@ -229,6 +229,7 @@ import {
 } from "./system-files.js";
 import {
   WalletAddInput,
+  WalletMigrateInput,
   WalletRemoveInput,
   WalletSummarySchema,
   WalletUseSummarySchema,
@@ -547,6 +548,7 @@ export const appContract = {
     list: oc.output(z.object({ wallets: z.array(WalletSummarySchema) })),
     add: oc.input(WalletAddInput).output(WalletSummarySchema),
     remove: oc.input(WalletRemoveInput).output(z.object({ ok: z.literal(true) })),
+    migrate: oc.input(WalletMigrateInput).output(WalletSummarySchema),
     uses: oc.input(WalletUsesInput).output(z.object({ uses: z.array(WalletUseSummarySchema) })),
     vaultStatus: oc.output(WalletVaultStatusSchema),
     setVaultPassword: oc.input(WalletVaultPasswordSetupInput).output(WalletVaultStatusSchema),
