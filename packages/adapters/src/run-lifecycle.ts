@@ -231,29 +231,6 @@ export async function startNextWaitingRun(
   if (next) await deps.jobs.enqueue(runContinueJob(next.id));
 }
 
-/**
- * The lease a run waits on belongs to the computer, not the bot: on a shared team
- * computer the next run due may belong to another bot. The run releasing the computer
- * starts it, mirroring {@link startNextWaitingRun} across the computer's bots.
- */
-export async function startNextWaitingRunOnComputer(
-  deps: ExecutorDeps,
-  computerId: string,
-  releasedBy: string,
-): Promise<void> {
-  const next = await deps.prisma.run.findFirst({
-    where: {
-      bot: { computerId },
-      status: "queued",
-      id: { not: releasedBy },
-      OR: [{ wakeAt: null }, { wakeAt: { lte: new Date() } }],
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { id: true },
-  });
-  if (next) await deps.jobs.enqueue(runContinueJob(next.id));
-}
-
 /** Open the model only while this worker still owns the running lease. */
 export function mayOpenModelStream(
   run: { status: string; leaseOwner: string | null; leaseFence: number | null } | null,
@@ -598,13 +575,6 @@ export async function finishRunAttempt(
       await startNextWaitingRun(deps, run.botId, runId).catch((error) =>
         getLogger().error("start next waiting run", error),
       );
-      // The released lease was the computer's: a run of another bot sharing it may
-      // be the one that waited, and only this release can start it promptly.
-      if (computerLease) {
-        await startNextWaitingRunOnComputer(deps, computerLease.computerId, runId).catch((error) =>
-          getLogger().error("start next waiting run on computer", error),
-        );
-      }
     }
   }
   if (deps.shutdownSignal?.aborted) {

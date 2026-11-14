@@ -4273,7 +4273,7 @@ describe("computer screen url", () => {
       },
       computer: { updateMany },
       $executeRaw: endRun,
-      computerExecutionLease: { findFirst: vi.fn().mockResolvedValue(null) },
+      computerExecutionLease: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
     const deps = {
       prisma,
@@ -4431,7 +4431,7 @@ describe("computer terminal and file transfer", () => {
         }),
       },
       computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-      computerExecutionLease: { findFirst: vi.fn().mockResolvedValue(null) },
+      computerExecutionLease: { findUnique: vi.fn().mockResolvedValue(null) },
     } as unknown as PrismaClient;
     const deps = {
       prisma,
@@ -10581,7 +10581,7 @@ describe("quarantined computer stop", () => {
         computerRun: { updateMany: endRun },
         computerExecutionLease: {
           updateMany: vi.fn(async () => ({ count: 0 })),
-          findFirst: vi.fn(async () => null),
+          findUnique: vi.fn(async () => null),
         },
         run: { findFirst: vi.fn(async () => null) },
       } as unknown as PrismaClient;

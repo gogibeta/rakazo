@@ -11,10 +11,7 @@ import { RunJobPublisher, RunStarter, RunWorkerHost, withRunWorker } from "./run
 afterEach(() => vi.useRealTimers());
 
 function fixture() {
-  const rows = new Map<
-    string,
-    { status: string; wakeAt: Date | null; trigger?: string; computerId?: string }
-  >();
+  const rows = new Map<string, { status: string; wakeAt: Date | null; trigger?: string }>();
   const updateMany = vi.fn(async ({ where, data }) => {
     const row = rows.get(where.id);
     if (!row || !where.status.in.includes(row.status) || (where.wakeAt === null && row.wakeAt))
@@ -33,7 +30,7 @@ function fixture() {
               ? args.where.trigger.in.includes(row.trigger ?? "user")
               : !args.where.trigger.notIn!.includes(row.trigger ?? "user")),
         )
-        .map(([id, row]) => ({ id, botId: id, bot: { computerId: row.computerId ?? "computer" } })),
+        .map(([id]) => ({ id, botId: id, bot: { computerId: "computer" } })),
   );
   const leases = vi.fn(
     async () => [] as { computerId: string; botId: string; runId: string; expiresAt: Date }[],
@@ -293,8 +290,7 @@ describe("durable direct run wakeups", () => {
   it("leaves busy runs untouched, dispatches unrelated chats, and recovers when the lease releases", async () => {
     const f = fixture();
     f.rows.set("busy", { status: "queued", wakeAt: null });
-    // The free bot has a computer of its own, so the busy bot's lease is unrelated to it.
-    f.rows.set("free", { status: "queued", wakeAt: null, computerId: "computer-free" });
+    f.rows.set("free", { status: "queued", wakeAt: null });
     f.leases.mockResolvedValue([
       {
         computerId: "computer",
@@ -324,9 +320,7 @@ describe("durable direct run wakeups", () => {
   it("allows a run's own held lease and ignores leases on its previous computer", async () => {
     const f = fixture();
     f.rows.set("resume", { status: "queued", wakeAt: null });
-    // The reassigned bot now has a computer of its own; only the lease left on
-    // its previous computer could wrongly block it.
-    f.rows.set("reassigned", { status: "queued", wakeAt: null, computerId: "new-computer" });
+    f.rows.set("reassigned", { status: "queued", wakeAt: null });
     f.leases.mockResolvedValue([
       {
         computerId: "computer",

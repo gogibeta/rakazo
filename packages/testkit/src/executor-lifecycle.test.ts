@@ -999,9 +999,9 @@ describeIntegration("run executor lifecycle", () => {
       });
       expect(first.fence).toBe(8);
       await releaseComputerExecutionLease(db, first);
-      const leaseKey = { computerId, botId: seeded.bot.id };
+      const leaseKey = { computerId_botId: { computerId, botId: seeded.bot.id } };
       await expect(
-        db.computerExecutionLease.findFirstOrThrow({ where: leaseKey }),
+        db.computerExecutionLease.findUniqueOrThrow({ where: leaseKey }),
       ).resolves.toMatchObject({
         runId: seeded.run.id,
         fence: 8,
@@ -1042,7 +1042,7 @@ describeIntegration("run executor lifecycle", () => {
         }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
       await expect(
-        db.computerExecutionLease.findFirstOrThrow({ where: leaseKey }),
+        db.computerExecutionLease.findUniqueOrThrow({ where: leaseKey }),
       ).resolves.toMatchObject({
         fence: 9,
         runId: laterRun.id,
@@ -1094,7 +1094,7 @@ describeIntegration("run executor lifecycle", () => {
       }
       expect(parallelLeases.map((lease) => lease.fence).sort((a, b) => a - b)).toEqual([10, 11]);
       await expect(
-        db.computerExecutionLease.findFirstOrThrow({ where: leaseKey }),
+        db.computerExecutionLease.findUniqueOrThrow({ where: leaseKey }),
       ).resolves.toMatchObject({
         fence: 11,
         expiresAt: new Date(0),
@@ -1175,8 +1175,8 @@ describeIntegration("run executor lifecycle", () => {
     expect(afterPause.fence).toBe(reclaimed.fence + 1);
     // A stale cleanup must not expire a successor's lease.
     await releaseComputerExecutionLease(db, reclaimed);
-    const held = await db.computerExecutionLease.findFirstOrThrow({
-      where: { computerId, botId: bot.id },
+    const held = await db.computerExecutionLease.findUniqueOrThrow({
+      where: { computerId_botId: { computerId, botId: bot.id } },
     });
     expect(held.fence).toBe(afterPause.fence);
     expect(held.expiresAt.getTime()).toBeGreaterThan(Date.now());
@@ -1240,8 +1240,8 @@ describeIntegration("run executor lifecycle", () => {
         }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
       await expect(
-        db.computerExecutionLease.findFirst({
-          where: { computerId: dedicatedBot.computerId, botId: team.bot.id },
+        db.computerExecutionLease.findUnique({
+          where: { computerId_botId: { computerId: dedicatedBot.computerId, botId: team.bot.id } },
         }),
       ).resolves.toBeNull();
 
@@ -1252,8 +1252,8 @@ describeIntegration("run executor lifecycle", () => {
       });
       expect(teamLease).not.toBeNull();
       if (!teamLease) throw new Error("Team execution did not receive its lease");
-      const teamLeaseBefore = await db.computerExecutionLease.findFirstOrThrow({
-        where: { computerId: teamBot.computerId, botId: team.bot.id },
+      const teamLeaseBefore = await db.computerExecutionLease.findUniqueOrThrow({
+        where: { computerId_botId: { computerId: teamBot.computerId, botId: team.bot.id } },
       });
       await expect(
         acquireDedicatedScreenLeaseFence(db, {
@@ -1264,8 +1264,8 @@ describeIntegration("run executor lifecycle", () => {
           runFence: 1,
         }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
-      const teamLeaseAfter = await db.computerExecutionLease.findFirstOrThrow({
-        where: { computerId: teamBot.computerId, botId: team.bot.id },
+      const teamLeaseAfter = await db.computerExecutionLease.findUniqueOrThrow({
+        where: { computerId_botId: { computerId: teamBot.computerId, botId: team.bot.id } },
       });
       expect(teamLeaseAfter).toMatchObject({ runId: teamLease.runId, fence: teamLease.fence });
       expect(teamLeaseAfter.expiresAt).toEqual(teamLeaseBefore.expiresAt);
@@ -1290,8 +1290,10 @@ describeIntegration("run executor lifecycle", () => {
         }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
       await expect(
-        db.computerExecutionLease.findFirstOrThrow({
-          where: { computerId: dedicatedBot.computerId, botId: dedicated.bot.id },
+        db.computerExecutionLease.findUniqueOrThrow({
+          where: {
+            computerId_botId: { computerId: dedicatedBot.computerId, botId: dedicated.bot.id },
+          },
         }),
       ).resolves.toMatchObject({ ...conflictingLease, expiresAt: heldUntil });
     } finally {

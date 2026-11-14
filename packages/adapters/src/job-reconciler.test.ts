@@ -272,7 +272,7 @@ describe("createJobReconciler", () => {
 
     expect(enqueue).not.toHaveBeenCalledWith(expect.objectContaining({ name: "run.continue" }));
     expect(prisma.computerExecutionLease.findMany).toHaveBeenCalledWith({
-      where: { computerId: { in: ["computer-1"] }, expiresAt: { gt: expect.any(Date) } },
+      where: { botId: { in: ["bot-1"] }, expiresAt: { gt: expect.any(Date) } },
       select: { computerId: true, botId: true, runId: true, expiresAt: true },
     });
 
@@ -291,6 +291,7 @@ describe("createJobReconciler", () => {
   it.each([
     { computerId: "computer-1", botId: "bot-1", runId: "run-lost" },
     { computerId: "old-computer", botId: "bot-1", runId: "run-holder" },
+    { computerId: "computer-1", botId: "other-bot", runId: "run-holder" },
   ])("recovers a lost queued run with a nonblocking lease %j", async (lease) => {
     const prisma = fakePrisma([
       {
@@ -314,39 +315,6 @@ describe("createJobReconciler", () => {
         name: "run.continue",
         payload: { runId: "run-lost" },
         keepExisting: true,
-      }),
-    );
-  });
-
-  it("leaves a queued run waiting when another bot's run holds its computer", async () => {
-    const prisma = fakePrisma([
-      {
-        id: "run-lost",
-        status: "queued",
-        wakeAt: null,
-        updatedAt: new Date(),
-        botId: "bot-1",
-        bot: { computerId: "computer-1" },
-      },
-    ]);
-    // The lease belongs to the computer, so a run of another bot sharing that
-    // computer blocks this one just as a run of its own bot would.
-    vi.mocked(prisma.computerExecutionLease.findMany).mockResolvedValue([
-      {
-        computerId: "computer-1",
-        botId: "other-bot",
-        runId: "run-holder",
-        expiresAt: new Date(Date.now() + 60_000),
-      },
-    ] as never);
-    const { jobs, enqueue } = publisher();
-
-    await createJobReconciler({ prisma, jobs }).reconcileOnce();
-
-    expect(enqueue).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "run.continue",
-        payload: { runId: "run-lost" },
       }),
     );
   });

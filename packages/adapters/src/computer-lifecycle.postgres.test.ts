@@ -503,7 +503,7 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
       await expect(replaceComputer(deps, computerId, "update", context)).resolves.toBeTruthy();
 
       await prisma.computerExecutionLease.upsert({
-        where: { computerId },
+        where: { computerId_botId: { computerId, botId } },
         create: {
           computerId,
           botId,
@@ -1017,8 +1017,8 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
         acquireComputerExecutionLease(prisma, { ...input, runId }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
     }
-    const held = await prisma.computerExecutionLease.findFirstOrThrow({
-      where: { computerId, botId: identity.botId },
+    const held = await prisma.computerExecutionLease.findUniqueOrThrow({
+      where: { computerId_botId: { computerId, botId: identity.botId } },
     });
     expect(held.fence).toBe(first!.fence);
     expect(held.expiresAt.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60_000);
@@ -1053,8 +1053,8 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
     const first = await acquireComputerExecutionLease(prisma, input);
     expect(first).not.toBeNull();
     await expect(holdComputerExecutionLeaseForTakeover(prisma, first)).resolves.toBe(true);
-    const held = await prisma.computerExecutionLease.findFirstOrThrow({
-      where: { computerId, botId },
+    const held = await prisma.computerExecutionLease.findUniqueOrThrow({
+      where: { computerId_botId: { computerId, botId } },
     });
     expect(held.expiresAt.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60_000);
 
@@ -1123,8 +1123,8 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
         ComputerBusyError,
       );
     });
-    const active = await prisma.computerExecutionLease.findFirstOrThrow({
-      where: { computerId, botId },
+    const active = await prisma.computerExecutionLease.findUniqueOrThrow({
+      where: { computerId_botId: { computerId, botId } },
     });
     expect(active.fence).toBe(recovered!.fence);
     expect(active.expiresAt.getTime()).toBeLessThan(Date.now() + 6 * 60_000);
@@ -1139,18 +1139,19 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
     });
   });
 
-  it("lets only one bot at a time execute on a shared team computer", async () => {
+  it("shares the team computer across bots while excluding a second run of the same bot", async () => {
     const { spaceId, userId, threadId } = identity;
-    // A second bot assigned to the fixture's one team computer.
+    // Earlier tests in this suite leave live leases behind; start clean.
+    await expireComputerExecutionLeases(prisma, { computerId });
     const otherBot = await prisma.bot.create({
-      data: { spaceId, userId, name: "Second", color: "test", computerId },
+      data: { spaceId, userId, name: "Lease neighbour", color: "#000000", computerId },
     });
     const task = await prisma.task.create({
       data: {
         spaceId,
-        userId,
         botId: identity.botId,
         threadId,
+        userId,
         prompt: "fixture",
         status: "running",
       },
@@ -1186,15 +1187,30 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
       workerId: "worker-second",
       runFence: 1,
     };
+    const leaseOf = (botId: string) =>
+      prisma.computerExecutionLease.findUniqueOrThrow({
+        where: { computerId_botId: { computerId, botId } },
+      });
     try {
       const first = await acquireComputerExecutionLease(prisma, firstInput);
       expect(first).not.toBeNull();
 
-      // While the first bot's run holds the computer, the second bot's run is
-      // refused — through a worker claim and through a claimless API operation.
-      await expect(acquireComputerExecutionLease(prisma, secondInput)).rejects.toBeInstanceOf(
-        ComputerBusyError,
-      );
+      // The lease is per bot: the neighbouring bot takes its own lease on the
+      // same computer at the same time — the two-bots-on-distinct-screens
+      // case — with an independent fence.
+      const second = await acquireComputerExecutionLease(prisma, secondInput);
+      expect(second).toMatchObject({ runId: secondRun.id });
+
+      // But a second run of either bot is refused while that bot's run holds
+      // its lease: through a worker claim and a claimless API operation.
+      const firstNext = await makeRun(identity.botId, "worker-third");
+      await expect(
+        acquireComputerExecutionLease(prisma, {
+          ...firstInput,
+          runId: firstNext.id,
+          workerId: "worker-third",
+        }),
+      ).rejects.toBeInstanceOf(ComputerBusyError);
       await expect(
         acquireComputerExecutionLease(prisma, {
           computerId,
@@ -1203,34 +1219,36 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
         }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
 
-      // The holder finishing frees the computer; the waiting bot takes it with
-      // the computer's next fence, not a first fence of its own.
+      // Releasing the first bot's lease (a run finishing) lets its next run in
+      // with the next fence and leaves the neighbour's live lease untouched.
       await releaseComputerExecutionLease(prisma, first);
-      const second = await acquireComputerExecutionLease(prisma, secondInput);
-      expect(second).toMatchObject({ runId: secondRun.id, fence: first!.fence + 1 });
+      const firstAgain = await acquireComputerExecutionLease(prisma, {
+        ...firstInput,
+        runId: firstNext.id,
+        workerId: "worker-third",
+      });
+      expect(firstAgain).toMatchObject({ runId: firstNext.id, fence: first!.fence + 1 });
+      await expect(leaseOf(otherBot.id)).resolves.toMatchObject({
+        runId: secondRun.id,
+        fence: second!.fence,
+      });
 
-      // A holder cancelled or stopped frees the computer the same way: the stop
-      // paths expire the lease by run id, and the next bot takes the computer.
+      // The cancel/stop sweep expiring one bot's lease by run id frees only
+      // that bot: its next run takes the next fence, the other lease stands.
       await expireComputerExecutionLeases(prisma, { runId: secondRun.id });
-      const third = await acquireComputerExecutionLease(prisma, firstInput);
-      expect(third).toMatchObject({ runId: firstRun.id, fence: second!.fence + 1 });
-      await releaseComputerExecutionLease(prisma, third);
-
-      // Two claims racing for the freed computer resolve to exactly one holder.
-      const raced = await Promise.allSettled([
-        acquireComputerExecutionLease(prisma, firstInput),
-        acquireComputerExecutionLease(prisma, secondInput),
-      ]);
-      const winners: Array<Awaited<ReturnType<typeof acquireComputerExecutionLease>>> = [];
-      const losers: unknown[] = [];
-      for (const result of raced) {
-        if (result.status === "fulfilled") winners.push(result.value);
-        else losers.push(result.reason);
-      }
-      expect(winners).toHaveLength(1);
-      expect(losers).toHaveLength(1);
-      expect(losers[0]).toBeInstanceOf(ComputerBusyError);
-      await releaseComputerExecutionLease(prisma, winners[0]!);
+      const secondNext = await makeRun(otherBot.id, "worker-fourth");
+      const secondAgain = await acquireComputerExecutionLease(prisma, {
+        ...secondInput,
+        runId: secondNext.id,
+        workerId: "worker-fourth",
+      });
+      expect(secondAgain).toMatchObject({ runId: secondNext.id, fence: second!.fence + 1 });
+      await expect(leaseOf(identity.botId)).resolves.toMatchObject({
+        runId: firstNext.id,
+        fence: firstAgain!.fence,
+      });
+      await releaseComputerExecutionLease(prisma, firstAgain);
+      await releaseComputerExecutionLease(prisma, secondAgain);
     } finally {
       await expireComputerExecutionLeases(prisma, { computerId });
     }

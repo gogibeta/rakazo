@@ -2740,14 +2740,10 @@ describe("computer execution leases", () => {
       expect(tx.computerExecutionLease.updateManyAndReturn).toHaveBeenCalledWith({
         where: {
           computerId: "computer-1",
+          botId: "bot-1",
           OR: [{ expiresAt: { lte: expect.any(Date) } }, { runId: "run-resumed-card" }],
         },
-        data: {
-          botId: "bot-1",
-          runId: "run-resumed-card",
-          expiresAt: expect.any(Date),
-          fence: { increment: 1 },
-        },
+        data: { runId: "run-resumed-card", expiresAt: expect.any(Date), fence: { increment: 1 } },
         select: { fence: true },
       });
       expect(

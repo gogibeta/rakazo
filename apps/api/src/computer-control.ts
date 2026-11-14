@@ -55,8 +55,8 @@ async function leaseHeldByFinishedRun(
   prisma: PrismaClient,
   input: { computerId: string; botId: string },
 ): Promise<boolean> {
-  const lease = await prisma.computerExecutionLease.findFirst({
-    where: { computerId: input.computerId, botId: input.botId },
+  const lease = await prisma.computerExecutionLease.findUnique({
+    where: { computerId_botId: { computerId: input.computerId, botId: input.botId } },
     select: { runId: true, expiresAt: true },
   });
   if (!lease || lease.expiresAt.getTime() <= Date.now()) return false;
@@ -354,8 +354,8 @@ export async function computerScreenContext(
   operationId: string,
 ): Promise<AdapterContext> {
   const context = computerContext(actor, botId, operationId);
-  const lease = await prisma.computerExecutionLease.findFirst({
-    where: { computerId, botId },
+  const lease = await prisma.computerExecutionLease.findUnique({
+    where: { computerId_botId: { computerId, botId } },
     select: { runId: true, fence: true, expiresAt: true },
   });
   if (!lease || lease.expiresAt.getTime() <= Date.now()) return context;
