@@ -27,6 +27,7 @@ install -d -m 750 -o node -g node "$DATA/app"
 if [[ ! -s "$DATA/secrets.env" ]]; then
   {
     for name in BETTER_AUTH_SECRET ENCRYPTION_KEY SCREEN_PROXY_SECRET SANDBOX_SUPERVISOR_TOKEN \
+      VAULT_SERVICE_TOKEN \
       PG_OWNER_PASSWORD PG_APP_PASSWORD; do
       printf '%s=%s\n' "$name" "$(openssl rand -hex 32)"
     done

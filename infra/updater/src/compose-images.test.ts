@@ -36,7 +36,7 @@ const publishWorkflow = parse(readFileSync(publishWorkflowFile, "utf8")) as {
   };
 };
 
-const appServices = ["api", "worker", "web", "supervisor", "migrate"] as const;
+const appServices = ["api", "worker", "web", "supervisor", "vault", "migrate"] as const;
 const FIRST_PARTY_IMAGE = /ghcr\.io\/elie222\/rakazo\/([a-z0-9][a-z0-9._-]*)/g;
 
 function firstPartyImageNames(value: unknown): string[] {
@@ -58,6 +58,7 @@ describe("the images compose file", () => {
       "migrate",
       "postgres",
       "supervisor",
+      "vault",
       "web",
       "worker",
     ]);

@@ -4,9 +4,11 @@ import { verifyPassword } from "./wallet-envelope.js";
 import {
   changeWalletVaultPassword,
   setupWalletVaultPassword,
+  verifyWalletVaultPassword,
   WALLET_VAULT_LOCKOUT_MS,
   WALLET_VAULT_MAX_FAILED_ATTEMPTS,
   WalletVaultAlreadyConfiguredError,
+  WalletVaultNotConfiguredError,
   WalletVaultPasswordError,
   walletVaultStatus,
 } from "./wallet-vault-impl.js";
@@ -207,4 +209,73 @@ describe("wallet vault password state", () => {
       }),
     ).rejects.toThrow("No wallet password is set yet.");
   });
+});
+
+describe("wallet vault unlock verification", () => {
+  it("refuses before setup with the not-configured error", async () => {
+    const store = vaultStore();
+    await expect(verifyWalletVaultPassword(store.prisma, "u1", PASSWORD)).rejects.toThrow(
+      WalletVaultNotConfiguredError,
+    );
+  });
+
+  it("verifies the right password, returns the epoch, and resets the throttle", async () => {
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    await expect(verifyWalletVaultPassword(store.prisma, "u1", WRONG)).rejects.toThrow(
+      WalletVaultPasswordError,
+    );
+    expect(store.rows.get("u1")!.failedAttempts).toBe(1);
+
+    expect(await verifyWalletVaultPassword(store.prisma, "u1", PASSWORD)).toEqual({
+      passwordEpoch: 1,
+    });
+    expect(store.rows.get("u1")!.failedAttempts).toBe(0);
+    expect(store.rows.get("u1")!.lockedUntil).toBeNull();
+  }, 30_000);
+
+  it("counts wrong unlock attempts toward the same lockout as password changes", async () => {
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    const start = new Date("2026-09-01T00:00:00.000Z");
+    const onRejected = vi.fn(async () => undefined);
+    for (let attempt = 1; attempt <= WALLET_VAULT_MAX_FAILED_ATTEMPTS; attempt++) {
+      await expect(
+        verifyWalletVaultPassword(store.prisma, "u1", WRONG, { now: start, onRejected }),
+      ).rejects.toThrow(WalletVaultPasswordError);
+    }
+    const locked = store.rows.get("u1")!;
+    expect(locked.failedAttempts).toBe(WALLET_VAULT_MAX_FAILED_ATTEMPTS);
+    expect(locked.lockedUntil).toEqual(new Date(start.getTime() + WALLET_VAULT_LOCKOUT_MS));
+    expect(onRejected).toHaveBeenLastCalledWith({
+      failedAttempts: WALLET_VAULT_MAX_FAILED_ATTEMPTS,
+      lockedUntil: new Date(start.getTime() + WALLET_VAULT_LOCKOUT_MS),
+    });
+    // The audit hook hears counts only — never a password.
+    expect(JSON.stringify(onRejected.mock.calls)).not.toContain(WRONG);
+
+    // During the lockout even the right password is refused, uncounted, and
+    // a password change draws on the same lockout.
+    await expect(
+      verifyWalletVaultPassword(store.prisma, "u1", PASSWORD, {
+        now: new Date(start.getTime() + 60_000),
+      }),
+    ).rejects.toThrow(WalletVaultPasswordError);
+    await expect(
+      changeWalletVaultPassword(
+        store.prisma,
+        "u1",
+        { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+        { now: new Date(start.getTime() + 60_000) },
+      ),
+    ).rejects.toThrow(WalletVaultPasswordError);
+    expect(store.rows.get("u1")!.failedAttempts).toBe(WALLET_VAULT_MAX_FAILED_ATTEMPTS);
+
+    // Once the lockout runs its course, the right password verifies again.
+    const after = new Date(start.getTime() + WALLET_VAULT_LOCKOUT_MS + 1_000);
+    expect(await verifyWalletVaultPassword(store.prisma, "u1", PASSWORD, { now: after })).toEqual({
+      passwordEpoch: 1,
+    });
+    expect(store.rows.get("u1")!.failedAttempts).toBe(0);
+  }, 30_000);
 });

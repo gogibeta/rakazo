@@ -53,7 +53,7 @@ for a in "$@"; do
       fi
       cat >/dev/null || true
       printf '%s\n' POSTGRES_PASSWORD=x POSTGRES_APP_PASSWORD=x BETTER_AUTH_SECRET=x \
-        ENCRYPTION_KEY=x SCREEN_PROXY_SECRET=x SANDBOX_SUPERVISOR_TOKEN=x
+        ENCRYPTION_KEY=x SCREEN_PROXY_SECRET=x SANDBOX_SUPERVISOR_TOKEN=x VAULT_SERVICE_TOKEN=x
       exit 0
       ;;
     up) [[ -z "${STUB_UP_FAILS:-}" ]] || exit 1 ;;
