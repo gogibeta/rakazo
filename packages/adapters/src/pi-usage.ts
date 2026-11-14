@@ -327,18 +327,27 @@ function usageOperationKind(
  * earlier note under the same name. Only the returned copy changes: the caller's context is
  * the agent loop's live transcript, which the next call reuses verbatim.
  */
-export function withServingModelNote(context: Context, note: string): Context {
+function withContextNote(context: Context, section: string, note: string): Context {
   const [first, ...rest] = context.messages;
   const lead: SystemMessage =
     first?.role === "system"
-      ? { ...first, sections: { ...first.sections, rakazoServingModel: note } }
+      ? { ...first, sections: { ...first.sections, [section]: note } }
       : {
           role: "system",
           content: "",
-          sections: { rakazoServingModel: note },
+          sections: { [section]: note },
           timestamp: 0,
         };
   return { ...context, messages: [lead, ...(first?.role === "system" ? rest : context.messages)] };
+}
+
+export function withServingModelNote(context: Context, note: string): Context {
+  return withContextNote(context, "rakazoServingModel", note);
+}
+
+/** The run-budget wrap-up note, stamped through the same per-attempt channel as the serving-model note. */
+export function withRunBudgetNote(context: Context, note: string): Context {
+  return withContextNote(context, "rakazoRunBudget", note);
 }
 
 /** Guard and account every actual model invocation, including tools, failures and subagents. */
@@ -361,6 +370,8 @@ export function observedPiStream(
     prepareContext?: (context: Context, model: Model<Api>) => Context;
     /** Factual note naming the model serving this call, stamped after context preparation. */
     servingModelNote?: string;
+    /** Wrap-up note for a run near its budget, stamped after the serving-model note. */
+    runBudgetNote?: string;
     imageTokens?: ContextBudget["imageTokens"];
     onUsage?: (usage: AgentUsage) => void;
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
@@ -440,12 +451,13 @@ export function observedPiStream(
         options?.signal?.throwIfAborted();
         // Reject an unsupported declared control before reserving or making any request.
         const cacheRetention = resolvePiCacheRetention(model, options?.cacheRetention);
-        const preparedContext = hooks?.servingModelNote
-          ? withServingModelNote(
-              hooks?.prepareContext?.(context, model) ?? context,
-              hooks.servingModelNote,
-            )
-          : (hooks?.prepareContext?.(context, model) ?? context);
+        const preparedContext = (() => {
+          let prepared = hooks?.prepareContext?.(context, model) ?? context;
+          if (hooks?.servingModelNote)
+            prepared = withServingModelNote(prepared, hooks.servingModelNote);
+          if (hooks?.runBudgetNote) prepared = withRunBudgetNote(prepared, hooks.runBudgetNote);
+          return prepared;
+        })();
         recordPiTelemetryContent(span, "pi.ai.prompt", preparedContext);
         inputTokensEstimate = observer
           ? estimateModelContextTokens(preparedContext, hooks?.imageTokens)
