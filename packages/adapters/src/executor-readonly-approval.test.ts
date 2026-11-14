@@ -732,6 +732,7 @@ function fixture({
         userId: run.userId,
         trigger: "webhook",
         prompt: promptText,
+        clientNonce: "readonly-approval-inbound",
         blocks: inboundMessage.blocks as never,
       });
       if (busyTrigger) {

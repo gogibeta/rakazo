@@ -17,6 +17,7 @@ import {
   sanitizeJsonValue,
 } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
+import { recordAuditEvent } from "./audit-events.js";
 import { cancelRunsInTransaction } from "./cancel-runs.js";
 import { createChatAlerts } from "./chat-alerts.js";
 import type { PrismaClient } from "./client.js";
@@ -50,6 +51,7 @@ import { createRowId } from "./row-id.js";
 import { deleteRunSecretsInTransaction } from "./run-secrets.js";
 import { isRunResponse, readRunTimingFields } from "./run-timing.js";
 import { RUN_TURN_CHECKPOINT_KIND } from "./run-turn-checkpoint.js";
+import { createRetentionPruner } from "./security-events.js";
 import { SpaceDeletionInProgressError, spaceTakesWork } from "./spaces.js";
 import type { AnswerRunInput, PauseRunForInput, RunSecretWriter } from "./thread-ask.js";
 import { answerRunInput, pauseRunForInput } from "./thread-ask.js";
@@ -66,7 +68,11 @@ import type {
   FinalizeComputerControlReleaseResult,
   PauseRunForTakeover,
 } from "./thread-takeover.js";
-import { finalizeComputerControlRelease, pauseRunForTakeover } from "./thread-takeover.js";
+import {
+  finalizeComputerControlRelease,
+  pauseRunForTakeover,
+  settleTakeoverWaitOnCancel,
+} from "./thread-takeover.js";
 import { THREAD_LOCK_TRANSACTION_OPTIONS, withTransactionRetry } from "./transaction-retry.js";
 
 export { THREAD_LOCK_TRANSACTION_OPTIONS };
@@ -93,6 +99,36 @@ export function transientRunEventsWhere(): Prisma.EventWhereInput {
       { type: "thread.meta", payload: { equals: { activity: { thinking: false } } } },
     ],
   };
+}
+
+/** Transient run events are pruned this long after creation; lifecycle events are kept. */
+export const TRANSIENT_EVENT_RETENTION_DAYS = 7;
+
+/**
+ * Delete the transient run events (progress and thinking markers) older than the
+ * retention window. They exist only to render live activity; once a run is long finished
+ * nothing reads them back, while the lifecycle events around them stay for the thread's
+ * whole life.
+ */
+export async function pruneTransientEvents(
+  db: Pick<PrismaClient, "event">,
+  now = new Date(),
+): Promise<number> {
+  const cutoff = new Date(now.getTime() - TRANSIENT_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const result = await db.event.deleteMany({
+    where: { ...transientRunEventsWhere(), createdAt: { lt: cutoff } },
+  });
+  return result.count;
+}
+
+/** Hourly-throttled pruner for the job reconciler, mirroring the security-event pruner. */
+export function createTransientEventPruner(
+  db: Pick<PrismaClient, "event">,
+  options: { now?: () => Date } = {},
+): () => Promise<void> {
+  return createRetentionPruner("thread.transient", () =>
+    pruneTransientEvents(db, options.now?.() ?? new Date()),
+  );
 }
 
 export interface ThreadEvents {
@@ -127,6 +163,12 @@ export interface ClearThreadInput {
   /** Event author and the bot-scoped target for one-to-one chats. */
   botId: string;
   groupId?: string;
+  /**
+   * Who asked for the clear, recorded on the thread.hard_deleted audit event. Clearing is
+   * an explicit, confirmed user action — never an implicit cleanup — so every caller names
+   * its actor; without one the audit falls back to the thread's owner.
+   */
+  actorUserId?: string;
 }
 
 export interface ClearThreadResult {
@@ -175,7 +217,13 @@ export interface SendUserMessageInput {
   blocks: MessageBlock[];
   prompt: string;
   trigger: "user" | "follow_up" | "webhook" | "messaging";
-  clientNonce?: string;
+  /**
+   * Idempotency key for the send, unique per thread: a retried or double-submitted send
+   * replays the original message instead of posting twice. Required — every send path
+   * (composer, messaging, webhook, team chat) derives one deterministically from its own
+   * delivery identity, so a missing nonce is a programming error, not a legacy client.
+   */
+  clientNonce: string;
   linkMessageToRun?: boolean;
   /** Internal bot sender: enforce both bots' cross-space policy in the write transaction. */
   crossSpaceSenderBotId?: string;
@@ -275,10 +323,14 @@ export async function clearThread(
             }),
         status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
       },
-      select: { id: true, taskId: true, userId: true, spaceId: true },
+      select: { id: true, taskId: true, userId: true, spaceId: true, status: true },
     });
     const now = new Date();
     const runIds = (await cancelRunsInTransaction(tx, activeRuns, now)).map((run) => run.id);
+    const cancelledRunIdSet = new Set(runIds);
+    const cancelledTakeoverRunIds = activeRuns
+      .filter((run) => run.status === "waiting_takeover" && cancelledRunIdSet.has(run.id))
+      .map((run) => run.id);
     // Expire as tombstones so a still-open provider screen claim cannot reset fencing to 1.
     await expireComputerExecutionLeases(tx, { runId: { in: runIds } });
     // Helpers start only from the bot's own chat, so every thread the bot's helpers wrote goes
@@ -287,8 +339,8 @@ export async function clearThread(
     const cleared = input.groupId
       ? { threadId: input.threadId }
       : { OR: [{ threadId: input.threadId }, { thread: helperThreads }] };
-    await tx.message.deleteMany({ where: cleared });
-    await tx.event.deleteMany({ where: cleared });
+    const deletedMessages = await tx.message.deleteMany({ where: cleared });
+    const deletedEvents = await tx.event.deleteMany({ where: cleared });
     if (!input.groupId) {
       await tx.thread.updateMany({
         where: { ...helperThreads, historyCompactionSummary: { not: null } },
@@ -333,10 +385,31 @@ export async function clearThread(
       event,
       userId: thread.userId,
       cancelledRunIds: runIds,
+      cancelledTakeoverRunIds,
+      deletedMessageCount: deletedMessages.count,
+      deletedEventCount: deletedEvents.count,
       historyCompactionGeneration: thread.historyCompactionGeneration,
     };
   }, THREAD_LOCK_TRANSACTION_OPTIONS);
   await notifyRealtime(realtime, committed.event.threadId, committed.event.seq);
+  // A hard delete is the one history operation that destroys rows, so it always leaves an
+  // audit record behind: who asked, which thread, and how much went. recordAuditEvent
+  // never throws, so a missing audit store cannot fail a committed clear.
+  await recordAuditEvent({
+    action: "thread.hard_deleted",
+    actor: { type: "user", id: input.actorUserId ?? committed.userId },
+    spaceId: input.spaceId,
+    threadId: input.threadId,
+    target: { type: "thread", id: input.threadId },
+    metadata: {
+      // Key names avoid the audit metadata sanitizer's content words ("message", "text",
+      // …), which are dropped on write by design.
+      historyRowsRemoved: committed.deletedMessageCount,
+      eventRowsRemoved: committed.deletedEventCount,
+      cancelledRunCount: committed.cancelledRunIds.length,
+      ...(input.groupId ? { groupId: input.groupId } : { botId: input.botId }),
+    },
+  });
   if (!input.groupId && committed.userId)
     await realtime?.publish(`incoming-calls:${committed.userId}`, "").catch(() => undefined);
   // Legacy execution bindings point at runs of pre-lease releases, which kept writing
@@ -360,6 +433,17 @@ export async function clearThread(
       getLogger().error("legacy computer binding sweep after thread clear", error);
     });
   }
+  // A run cancelled out of a takeover wait leaves the computer's controlRunId pointing at
+  // a run that can never resume. Settling it needs the computer row, which the clear
+  // transaction must not reach for while holding the thread row (the same lock cycle the
+  // sweep above avoids), so it runs here, one short transaction per run, after commit.
+  for (const runId of committed.cancelledTakeoverRunIds) {
+    await withTransactionRetry(() =>
+      prisma.$transaction((tx) => settleTakeoverWaitOnCancel(tx, runId)),
+    ).catch((error: unknown) => {
+      getLogger().error("takeover wait settle after thread clear", error);
+    });
+  }
   return {
     event: mapProductEvent(committed.event),
     cancelledRunIds: committed.cancelledRunIds,
@@ -373,8 +457,10 @@ export async function sendUserMessage(
   realtime?: RealtimeFanout,
   analytics?: ProductAnalytics,
 ): Promise<SendUserMessageResult> {
+  if (!input.clientNonce) {
+    throw new Error("sendUserMessage requires a clientNonce");
+  }
   const replay = async (): Promise<SendUserMessageResult | null> => {
-    if (!input.clientNonce) return null;
     const message = await prisma.message.findUnique({
       where: {
         threadId_clientNonce: {

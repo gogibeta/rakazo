@@ -337,6 +337,9 @@ function compactionHarness(
         },
       ),
     },
+    continuationSummary: {
+      create: vi.fn(async () => ({})),
+    },
     event: {
       findFirst: vi.fn(async () => (options.wasCleared ? { seq: 0 } : null)),
     },

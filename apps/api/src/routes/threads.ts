@@ -378,6 +378,7 @@ export function threadsRoutes(ctx: RouterContext) {
           spaceId: context.actor.spaceId,
           threadId: target.threadId,
           botId: contextBotId,
+          actorUserId: context.actor.userId,
           ...(target.kind === "group" ? { groupId: target.groupId } : {}),
         });
         const [configuredMemory] = await Promise.all([

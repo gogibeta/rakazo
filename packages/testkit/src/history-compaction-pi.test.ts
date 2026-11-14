@@ -49,8 +49,10 @@ describe("history compaction with real Pi", () => {
     );
     const createMany = vi.fn(async (_args: unknown) => ({ count: 1 }));
     const create = vi.fn();
+    const createContinuationSummary = vi.fn(async (_args: unknown) => ({}));
     const prisma = {
       thread: { findUniqueOrThrow: vi.fn(async () => thread), updateMany },
+      continuationSummary: { create: createContinuationSummary },
       spaceMember: {
         findUnique: vi.fn(async () => ({ userId: thread.userId })),
         count: vi.fn(async () => 1),
@@ -80,6 +82,7 @@ describe("history compaction with real Pi", () => {
 
     await expect(compactHistory(deps, thread.id)).rejects.toThrow("summarizer returned no summary");
     expect(updateMany).not.toHaveBeenCalled();
+    expect(createContinuationSummary).not.toHaveBeenCalled();
     expect(thread.historyCompactedUpToSeq).toBe(49);
     expect(thread.historyCompactionSummary).toBe("Earlier decisions.");
     expect(memoryProviders.resolve).not.toHaveBeenCalled();
@@ -114,6 +117,17 @@ describe("history compaction with real Pi", () => {
         historyCompactedUpToSeq: 50,
         historyCompactionSummary: summary,
         historyCompactionRetryAfterSeq: null,
+      },
+    });
+    expect(createContinuationSummary).toHaveBeenCalledExactlyOnceWith({
+      data: {
+        threadId: thread.id,
+        generation: 0,
+        fromSeq: 49,
+        toSeq: 50,
+        sourceMessageCount: 1,
+        summary,
+        createdByRunId: `compact:${thread.id}:49`,
       },
     });
     expect(memoryProviders.resolve).toHaveBeenCalledOnce();

@@ -1299,6 +1299,7 @@ model Thread {
   tasks                       Task[]
   runs                        Run[]
   routines                    Routine[]
+  continuationSummaries       ContinuationSummary[]
 
   @@index([spaceId])
   @@index([spaceId, userId])
@@ -1306,6 +1307,30 @@ model Thread {
   @@index([spaceId, botId, archivedAt, lastMessageAt])
   @@index([helperBotId])
   @@map("threads")
+}
+
+/// Provenance for one history-compaction batch: which seq range a summary covers and the
+/// generation it was written under. Append-only — a later generation adds rows, never edits
+/// these — while the Thread row keeps the live head (summary/cursor/generation) that context
+/// assembly reads. Summaries never replace the messages they cover; the rows stay.
+model ContinuationSummary {
+  id                 String   @id @default(cuid())
+  threadId           String
+  thread             Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  generation         Int
+  /// First summarized message seq is fromSeq + 1 (exclusive, matching the compaction cursor).
+  fromSeq            Int
+  /// Last summarized message seq (inclusive).
+  toSeq              Int
+  sourceMessageCount Int
+  summary            String   @db.Text
+  /// The compaction job's run id (`compact:<threadId>:<fromSeq>`); not a Run row, so no relation.
+  createdByRunId     String?
+  createdAt          DateTime @default(now())
+
+  @@unique([threadId, generation, toSeq])
+  @@index([threadId, generation])
+  @@map("continuation_summaries")
 }
 
 /// One member's personal state for a chat: how far they've read, and whether they've snoozed

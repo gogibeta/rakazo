@@ -350,8 +350,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["threads/get", { groupId: "missing-group" }],
       ["threads/messages", { botId: "missing-bot", before: 1 }],
       ["threads/subscribe", { botId: "missing-bot", cursor: -1 }],
-      ["threads/send", { botId: "missing-bot", text: "Nope" }],
-      ["threads/send", { groupId: "missing-group", text: "Nope" }],
+      ["threads/send", { botId: "missing-bot", text: "Nope", clientNonce: "nope" }],
+      ["threads/send", { groupId: "missing-group", text: "Nope", clientNonce: "nope" }],
       [
         "threads/sendWithRoutines",
         { botId: "missing-bot", clientNonce: "nope", routineIds: ["missing-routine"] },
@@ -359,7 +359,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["threads/stop", { botId: "missing-bot" }],
       ["threads/stopHelper", { botId: "missing-bot", messageId: "missing-message" }],
       ["threads/clear", { botId: "missing-bot" }],
-      ["threads/followUp", { botId: "missing-bot", text: "Nope" }],
+      ["threads/followUp", { botId: "missing-bot", text: "Nope", clientNonce: "nope" }],
       [
         "threads/answer",
         {

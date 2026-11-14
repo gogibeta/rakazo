@@ -873,6 +873,7 @@ describe("model setup gate", () => {
     const response = await call(handler, actor, "threads/send", {
       botId: "bot-1",
       text: "hello",
+      clientNonce: "nonce-1",
     });
 
     expect(response.status).toBe(400);
@@ -951,6 +952,7 @@ describe("model setup gate", () => {
     const response = await call(handler, actor, "threads/send", {
       botId: "bot-1",
       text: "hello",
+      clientNonce: "nonce-1",
       replyQuote: "just this span",
     });
 
@@ -970,6 +972,7 @@ describe("model setup gate", () => {
     const response = await call(handler, actor, "threads/send", {
       botId: "bot-1",
       text: "hello",
+      clientNonce: "nonce-1",
       replyToMessageId: "parent-1",
       replyQuote: "x".repeat(REPLY_QUOTE_MAX_LENGTH + 1),
     });

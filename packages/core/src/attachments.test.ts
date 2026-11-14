@@ -8,11 +8,13 @@ import {
   blocksToAgentHistoryText,
   decodeAttachmentBase64,
   inferAttachmentMimeType,
+  isRecallToolStep,
   normalizeVoiceTranscript,
   promptTextForAttachments,
   toolStepsHistoryText,
   userTurnMessageForRun,
   validateAttachmentMimeType,
+  withoutRecallToolStepNotes,
 } from "./attachments.js";
 
 describe("attachment helpers", () => {
@@ -274,6 +276,53 @@ describe("attachment helpers", () => {
     ];
     expect(attachmentsForBot(attachments, "bot-two")).toEqual([attachments[1]]);
     expect(attachmentsForBot(attachments, undefined)).toEqual([]);
+  });
+});
+
+describe("recall tool steps", () => {
+  it("recognizes the history and memory retrieval tools by their step labels", () => {
+    expect(isRecallToolStep({ label: "Search history" })).toBe(true);
+    expect(isRecallToolStep({ label: "Read history" })).toBe(true);
+    expect(isRecallToolStep({ label: "Recall memory" })).toBe(true);
+    expect(isRecallToolStep({ label: "Shell" })).toBe(false);
+    expect(isRecallToolStep({ label: "Web search" })).toBe(false);
+    expect(isRecallToolStep({})).toBe(false);
+    expect(isRecallToolStep({ label: 42 })).toBe(false);
+  });
+
+  it("drops recall steps' notes for compaction input but keeps labels and other steps whole", () => {
+    const blocks: MessageBlock[] = [
+      { kind: "text", text: "Let me check what we said." },
+      {
+        kind: "steps",
+        steps: [
+          { label: "Search history", count: 1, note: "the recalled sentence itself" },
+          { label: "Shell", count: 2, note: "ran the export" },
+          { label: "Read history", count: 1 },
+        ],
+      },
+    ];
+    const stripped = withoutRecallToolStepNotes(blocks);
+    expect(stripped).toEqual([
+      { kind: "text", text: "Let me check what we said." },
+      {
+        kind: "steps",
+        steps: [
+          { label: "Search history", count: 1 },
+          { label: "Shell", count: 2, note: "ran the export" },
+          { label: "Read history", count: 1 },
+        ],
+      },
+    ]);
+    // The stored blocks are not mutated.
+    expect(blocks[1]).toMatchObject({
+      steps: [{ note: "the recalled sentence itself" }, {}, {}],
+    });
+    // And the compaction transcript built from the stripped blocks carries the fact of
+    // the search, never the recalled text.
+    const transcript = blocksToAgentHistoryText(stripped);
+    expect(transcript).toContain("Search history");
+    expect(transcript).not.toContain("the recalled sentence itself");
   });
 });
 

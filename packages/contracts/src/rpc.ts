@@ -286,7 +286,9 @@ const threadSendFields = sessionTarget.safeExtend({
   replyQuote: z.string().trim().min(1).max(REPLY_QUOTE_MAX_LENGTH).optional(),
   /** Sent from the open page: a reply to its card that quotes nothing. */
   fromPage: z.literal(true).optional(),
-  clientNonce: z.string().min(1).max(200).optional(),
+  // Required: the nonce is the send's idempotency key — a retry replays the original
+  // message instead of posting twice. Every client derives one per send.
+  clientNonce: z.string().min(1).max(200),
 });
 
 export const threadSendInput = threadSendFields.superRefine((input, ctx) => {
@@ -803,8 +805,11 @@ export const appContract = {
       .input(
         sessionTarget.safeExtend({
           text: z.string().min(1),
-          /** Carries the call id, so a turn taken mid-run stays in the call's card. */
-          clientNonce: z.string().min(1).max(200).optional(),
+          /**
+           * Carries the call id, so a turn taken mid-run stays in the call's card. Required,
+           * like every message send: it is also the send's idempotency key.
+           */
+          clientNonce: z.string().min(1).max(200),
         }),
       )
       .output(z.object({ ok: z.literal(true) })),

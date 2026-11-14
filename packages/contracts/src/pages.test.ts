@@ -60,10 +60,19 @@ describe("PageSourceSchema", () => {
 it("lets a newer client's reply from a page reach an older server, which drops what it does not know", () => {
   const send = appContract.threads.send["~orpc"].inputSchema!;
   // An older server's thread send is this object without fromPage: an unknown key is dropped, not refused.
-  expect(send.parse({ botId: "bot-1", text: "hi", fromPage: true, notYetKnown: true })).toEqual({
+  expect(
+    send.parse({
+      botId: "bot-1",
+      text: "hi",
+      fromPage: true,
+      clientNonce: "nonce-1",
+      notYetKnown: true,
+    }),
+  ).toEqual({
     botId: "bot-1",
     text: "hi",
     fromPage: true,
+    clientNonce: "nonce-1",
   });
 });
 

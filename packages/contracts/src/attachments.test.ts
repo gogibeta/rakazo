@@ -23,6 +23,7 @@ describe("attachment contracts", () => {
       expect(
         schema.safeParse({
           botId: "bot-1",
+          clientNonce: "nonce-1",
           artifactIds: Array.from({ length: count }, (_, i) => `artifact-${i}`),
         }).success,
       ).toBe(true);
@@ -30,6 +31,7 @@ describe("attachment contracts", () => {
     expect(
       schema.safeParse({
         botId: "bot-1",
+        clientNonce: "nonce-1",
         artifactIds: Array.from({ length: 101 }, (_, i) => `artifact-${i}`),
       }).success,
     ).toBe(false);
