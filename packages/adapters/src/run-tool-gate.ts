@@ -303,7 +303,9 @@ export async function gateToolCall(
   const asksEveryTime =
     (commandWatch || scheduleNamesNewSite) && !toolRequiresApproval(name, viaConnector);
   // Never ask runs everything else: only another owner's connection could have been steered into it.
-  const guardedInNeverAsk = name === "respond_agent_connection";
+  // Restarting the host is guarded the same way: it takes every bot down with it, so a run
+  // outside text could have steered must not reach it without the owner's approval either.
+  const guardedInNeverAsk = name === "respond_agent_connection" || name === "restart_host";
   const resolvedRules = resolveActionApprovalForTools({
     tools: approvalToolNames.map((toolName) => ({
       name: toolName,
