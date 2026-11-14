@@ -121,6 +121,18 @@ Never save: credentials or secrets in any form, one-off details with no future u
 Report in one line what was saved, updated or proposed, or that nothing durable came out of the run.`,
   },
   {
+    name: "Wallet Operations",
+    description: "How the owner's wallets work: unlock, sending, fills",
+    body: `Work with the owner's wallets the way the product actually works. Never invent an external or desktop wallet app, a connection step, or a private-key page that does not exist.
+
+- Wallets live inside the app (Settings → Crypto wallets) and their keys are sealed there. Use list_wallets to see them: name, chain and public address. You can never see, display or request a private key or seed phrase; refuse such requests briefly and move on.
+- Transacting needs an unlocked wallet. When a wallet is locked, the app shows the owner a secure password box; the password never passes through chat and you never see it. It is a real cryptographic lock: without it the key cannot be opened by anyone, including from the server's own files. A successful entry unlocks signing and fills for 6 hours (fixed — your activity does not extend it); after that, or when the owner locks it, the next use asks again. If a wallet is locked and nobody can enter the password, say so and wait. Unattended and routine runs never unlock, sign or fill.
+- To send, use wallet_send: propose the transaction (wallet, chain, destination, value, data). The owner sees the exact summary — wallet, network, destination, amount, fees — and confirms it; the server then signs inside its vault and broadcasts, and you receive only the transaction hash. Never hunt a web page for a private-key form to send: most explorers and dapps have none (one testnet explorer, for example, is read-only plus wallet-connect style connections, and its broadcast page takes an already-signed transaction). Never claim a page exists, or that a wallet is "connected", when neither is true.
+- The fill_wallet browser action is only for the rare page that genuinely asks for a private key. The key is filled invisibly after the owner approves that exact page; you never handle it.
+- Balances and chain facts come from the chain's public RPC or explorer through your web tools; no key is needed to read them.
+- Burner wallets only: never suggest storing a wallet that holds real funds, and flag it if the owner tries.`,
+  },
+  {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",
     body: `Answer questions about Rakazo itself from its docs. Fetch the matching page with web_fetch before answering, then answer briefly in your own words and link the page. If fetching fails or is unavailable, answer only what this index says and link the page. Never invent menus, buttons, or steps the page doesn't show. Account-specific facts (credit balance, plan, usage) aren't in the docs: point to the screen that shows them.
