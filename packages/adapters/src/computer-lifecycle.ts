@@ -811,13 +811,15 @@ export async function acquireDedicatedScreenLeaseFence(
     // The current worker ownership check also permits resuming this run's held takeover.
     const now = new Date();
     const expiresAt = new Date(now.getTime() + EXECUTION_LEASE_MS);
+    // The lease row is the computer's one lease, whoever held it last: reclaim it when it
+    // expired or when it already names this run. A live row for another run matches neither
+    // arm, so the create below hits the per-computer unique index and reports busy.
     const [existing] = await tx.computerExecutionLease.updateManyAndReturn({
       where: {
         computerId: input.computerId,
-        botId: input.botId,
         OR: [{ expiresAt: { lte: now } }, { runId: input.runId }],
       },
-      data: { runId: input.runId, expiresAt, fence: { increment: 1 } },
+      data: { botId: input.botId, runId: input.runId, expiresAt, fence: { increment: 1 } },
       select: { fence: true },
     });
     if (existing) {
@@ -894,13 +896,18 @@ export async function acquireComputerExecutionLease(
     if (ownsRun) await lockOwnedRun(tx, input);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + EXECUTION_LEASE_MS);
+    // The lease row is the computer's one lease, whoever held it last: a run reclaims it
+    // when it expired, and the locked current worker claim may also reclaim its own run's
+    // live row. A live row for another bot's or run's work matches neither arm, so the
+    // create below hits the per-computer unique index and reports busy — one active
+    // executor per computer, even when two bots share a team computer.
     const [reclaimed] = await tx.computerExecutionLease.updateManyAndReturn({
       where: {
         computerId: input.computerId,
-        botId: input.botId,
         OR: [{ expiresAt: { lt: now } }, ...(ownsRun ? [{ runId: input.runId }] : [])],
       },
       data: {
+        botId: input.botId,
         runId: input.runId,
         expiresAt,
         fence: { increment: 1 },
@@ -998,7 +1005,7 @@ export async function releaseComputerExecutionLease(
   lease: ComputerExecutionLease | null,
 ): Promise<void> {
   if (!lease) return;
-  // Keep the row as an expired tombstone so the next run for this bot increments
+  // Keep the row as an expired tombstone so the next run on this computer increments
   // its fence. Deleting it resets the fence to 1, which lets a still-open screen
   // session from the previous run reject the new run as stale.
   await expireComputerExecutionLeases(prisma, {

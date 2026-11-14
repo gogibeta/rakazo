@@ -13,16 +13,25 @@ type RecoveryRun = {
 /**
  * Leave resource waits untouched so recovery preserves their age and execution history.
  * A takeover hold whose run ended or was deleted is expired instead: leases have no relation
- * to runs, so nothing else would free the bot's computer before the hold lapses a day later.
+ * to runs, so nothing else would free the computer before the hold lapses a day later.
+ * The lease belongs to the computer, so a run is blocked by any live lease on its computer
+ * held by another run — on a shared team computer the holder may be another bot's run.
  */
 export async function findRunRecoveryBlockers(
   prisma: PrismaClient,
   runs: readonly RecoveryRun[],
   now: Date,
 ): Promise<Map<string, string>> {
-  const leases = runs.length
+  const computerIds = [
+    ...new Set(
+      runs
+        .map((run) => run.bot?.computerId)
+        .filter((computerId): computerId is string => Boolean(computerId)),
+    ),
+  ];
+  const leases = computerIds.length
     ? await prisma.computerExecutionLease.findMany({
-        where: { botId: { in: runs.map((run) => run.botId) }, expiresAt: { gt: now } },
+        where: { computerId: { in: computerIds }, expiresAt: { gt: now } },
         select: { computerId: true, botId: true, runId: true, expiresAt: true },
       })
     : [];
@@ -40,7 +49,6 @@ export async function findRunRecoveryBlockers(
     if (run.trigger === BACKGROUND_HELPER_TRIGGER) continue;
     const lease = leases.find(
       (lease) =>
-        lease.botId === run.botId &&
         lease.computerId === run.bot.computerId &&
         lease.runId !== run.id &&
         !abandoned.has(lease.runId),

@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AdapterContext, JobPublisher } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { asSystem, createDb, provisionMessagingIdentity, runAsSystem } from "@rakazo/db";
+import {
+  asSystem,
+  createDb,
+  expireComputerExecutionLeases,
+  provisionMessagingIdentity,
+  runAsSystem,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sleepComputerIfIdle } from "./computer-idle.js";
 import {
@@ -497,7 +503,7 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
       await expect(replaceComputer(deps, computerId, "update", context)).resolves.toBeTruthy();
 
       await prisma.computerExecutionLease.upsert({
-        where: { computerId_botId: { computerId, botId } },
+        where: { computerId },
         create: {
           computerId,
           botId,
@@ -1011,8 +1017,8 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
         acquireComputerExecutionLease(prisma, { ...input, runId }),
       ).rejects.toBeInstanceOf(ComputerBusyError);
     }
-    const held = await prisma.computerExecutionLease.findUniqueOrThrow({
-      where: { computerId_botId: { computerId, botId: identity.botId } },
+    const held = await prisma.computerExecutionLease.findFirstOrThrow({
+      where: { computerId, botId: identity.botId },
     });
     expect(held.fence).toBe(first!.fence);
     expect(held.expiresAt.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60_000);
@@ -1047,8 +1053,8 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
     const first = await acquireComputerExecutionLease(prisma, input);
     expect(first).not.toBeNull();
     await expect(holdComputerExecutionLeaseForTakeover(prisma, first)).resolves.toBe(true);
-    const held = await prisma.computerExecutionLease.findUniqueOrThrow({
-      where: { computerId_botId: { computerId, botId } },
+    const held = await prisma.computerExecutionLease.findFirstOrThrow({
+      where: { computerId, botId },
     });
     expect(held.expiresAt.getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60_000);
 
@@ -1117,8 +1123,8 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
         ComputerBusyError,
       );
     });
-    const active = await prisma.computerExecutionLease.findUniqueOrThrow({
-      where: { computerId_botId: { computerId, botId } },
+    const active = await prisma.computerExecutionLease.findFirstOrThrow({
+      where: { computerId, botId },
     });
     expect(active.fence).toBe(recovered!.fence);
     expect(active.expiresAt.getTime()).toBeLessThan(Date.now() + 6 * 60_000);
@@ -1131,5 +1137,102 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
       runId: other.id,
       fence: recovered!.fence + 1,
     });
+  });
+
+  it("lets only one bot at a time execute on a shared team computer", async () => {
+    const { spaceId, userId, threadId } = identity;
+    // A second bot assigned to the fixture's one team computer.
+    const otherBot = await prisma.bot.create({
+      data: { spaceId, userId, name: "Second", color: "test", computerId },
+    });
+    const task = await prisma.task.create({
+      data: {
+        spaceId,
+        userId,
+        botId: identity.botId,
+        threadId,
+        prompt: "fixture",
+        status: "running",
+      },
+    });
+    const makeRun = (botId: string, workerId: string) =>
+      prisma.run.create({
+        data: {
+          spaceId,
+          userId,
+          botId,
+          threadId,
+          taskId: task.id,
+          status: "running",
+          trigger: "user",
+          leaseOwner: workerId,
+          leaseFence: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+    const firstRun = await makeRun(identity.botId, "worker-first");
+    const secondRun = await makeRun(otherBot.id, "worker-second");
+    const firstInput = {
+      computerId,
+      botId: identity.botId,
+      runId: firstRun.id,
+      workerId: "worker-first",
+      runFence: 1,
+    };
+    const secondInput = {
+      computerId,
+      botId: otherBot.id,
+      runId: secondRun.id,
+      workerId: "worker-second",
+      runFence: 1,
+    };
+    try {
+      const first = await acquireComputerExecutionLease(prisma, firstInput);
+      expect(first).not.toBeNull();
+
+      // While the first bot's run holds the computer, the second bot's run is
+      // refused — through a worker claim and through a claimless API operation.
+      await expect(acquireComputerExecutionLease(prisma, secondInput)).rejects.toBeInstanceOf(
+        ComputerBusyError,
+      );
+      await expect(
+        acquireComputerExecutionLease(prisma, {
+          computerId,
+          botId: otherBot.id,
+          runId: "boot:fixture",
+        }),
+      ).rejects.toBeInstanceOf(ComputerBusyError);
+
+      // The holder finishing frees the computer; the waiting bot takes it with
+      // the computer's next fence, not a first fence of its own.
+      await releaseComputerExecutionLease(prisma, first);
+      const second = await acquireComputerExecutionLease(prisma, secondInput);
+      expect(second).toMatchObject({ runId: secondRun.id, fence: first!.fence + 1 });
+
+      // A holder cancelled or stopped frees the computer the same way: the stop
+      // paths expire the lease by run id, and the next bot takes the computer.
+      await expireComputerExecutionLeases(prisma, { runId: secondRun.id });
+      const third = await acquireComputerExecutionLease(prisma, firstInput);
+      expect(third).toMatchObject({ runId: firstRun.id, fence: second!.fence + 1 });
+      await releaseComputerExecutionLease(prisma, third);
+
+      // Two claims racing for the freed computer resolve to exactly one holder.
+      const raced = await Promise.allSettled([
+        acquireComputerExecutionLease(prisma, firstInput),
+        acquireComputerExecutionLease(prisma, secondInput),
+      ]);
+      const winners: Array<Awaited<ReturnType<typeof acquireComputerExecutionLease>>> = [];
+      const losers: unknown[] = [];
+      for (const result of raced) {
+        if (result.status === "fulfilled") winners.push(result.value);
+        else losers.push(result.reason);
+      }
+      expect(winners).toHaveLength(1);
+      expect(losers).toHaveLength(1);
+      expect(losers[0]).toBeInstanceOf(ComputerBusyError);
+      await releaseComputerExecutionLease(prisma, winners[0]!);
+    } finally {
+      await expireComputerExecutionLeases(prisma, { computerId });
+    }
   });
 });

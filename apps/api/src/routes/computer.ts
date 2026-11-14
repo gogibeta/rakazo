@@ -76,8 +76,8 @@ async function waitingTakeoverRun(
   computerId: string,
   botId: string,
 ) {
-  const lease = await deps.prisma.computerExecutionLease.findUnique({
-    where: { computerId_botId: { computerId, botId } },
+  const lease = await deps.prisma.computerExecutionLease.findFirst({
+    where: { computerId, botId },
     select: { runId: true },
   });
   if (!lease) return null;
@@ -405,8 +405,8 @@ export function computerRoutes(ctx: RouterContext) {
           throw new ORPCError("BAD_REQUEST", { message: "computer must be running" });
         }
 
-        const executionLease = await deps.prisma.computerExecutionLease.findUnique({
-          where: { computerId_botId: { computerId: bot.computer.id, botId: bot.id } },
+        const executionLease = await deps.prisma.computerExecutionLease.findFirst({
+          where: { computerId: bot.computer.id, botId: bot.id },
         });
         const executionRun = executionLease
           ? await deps.prisma.run.findUnique({

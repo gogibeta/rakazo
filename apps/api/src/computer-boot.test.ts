@@ -89,7 +89,7 @@ describe("computer boot", () => {
         create: busy
           ? vi.fn().mockRejectedValue(Object.assign(new Error("unique"), { code: "P2002" }))
           : vi.fn().mockResolvedValue({ fence: 1 }),
-        findUnique: vi.fn().mockResolvedValue({
+        findFirst: vi.fn().mockResolvedValue({
           runId: "run-1",
           expiresAt: new Date(Date.now() + 60_000),
         }),
@@ -109,7 +109,6 @@ describe("computer boot", () => {
       expect.objectContaining({
         where: {
           computerId: "computer-1",
-          botId: "bot-1",
           OR: [{ expiresAt: { lt: expect.any(Date) } }],
         },
       }),
@@ -135,7 +134,7 @@ describe("computer boot", () => {
       spaceMember: { count: vi.fn(async () => 1) },
       bot: { findFirst: vi.fn().mockResolvedValue(stoppedBot) },
       computerExecutionLease: {
-        findUnique: vi.fn().mockResolvedValue({
+        findFirst: vi.fn().mockResolvedValue({
           runId: "run-1",
           expiresAt: new Date(Date.now() + 60_000),
         }),
@@ -145,9 +144,9 @@ describe("computer boot", () => {
 
     await boot(prisma);
 
-    expect(prisma.computerExecutionLease.findUnique).toHaveBeenCalledWith(
+    expect(prisma.computerExecutionLease.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { computerId_botId: { computerId: "computer-1", botId: "bot-1" } },
+        where: { computerId: "computer-1", botId: "bot-1" },
       }),
     );
     expect(lifecycle.acquireComputerExecutionLease).toHaveBeenCalledTimes(2);
@@ -160,7 +159,7 @@ describe("computer boot", () => {
       spaceMember: { count: vi.fn(async () => 1) },
       bot: { findFirst: vi.fn().mockResolvedValue(stoppedBot) },
       computerExecutionLease: {
-        findUnique: vi.fn().mockResolvedValue({
+        findFirst: vi.fn().mockResolvedValue({
           runId: "run-1",
           expiresAt: new Date(Date.now() + 60_000),
         }),
@@ -239,7 +238,7 @@ describe("computer stop", () => {
       computerExecutionLease: {
         updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         deleteMany: vi.fn(),
-        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
       },
       computerRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     } as unknown as PrismaClient;

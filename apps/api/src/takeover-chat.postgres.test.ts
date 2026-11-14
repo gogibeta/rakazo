@@ -1124,19 +1124,13 @@ describePostgres("chat replies during screen takeover (PostgreSQL)", () => {
       },
     });
     const leaseOf = (botId: string) =>
-      system.computerExecutionLease.findUniqueOrThrow({
-        where: { computerId_botId: { computerId: computer.id, botId } },
+      system.computerExecutionLease.findFirstOrThrow({
+        where: { computerId: computer.id, botId },
       });
     const adaLease = await leaseOf(ada.id);
-    const benLease = await system.computerExecutionLease.create({
-      data: {
-        computerId: computer.id,
-        botId: ben.id,
-        runId: benRun.id,
-        fence: 1,
-        expiresAt: new Date(Date.now() + 60_000),
-      },
-    });
+    // Ben shares Ada's computer but holds no lease of his own: the execution lease
+    // belongs to the computer, and Ada's takeover hold is it. Ben's run waits for
+    // the computer like any other run that finds it held.
     const removeAda = { groupId: group.id, botIds: [ben.id, cy.id] };
     const saveFromSettings = async (prismaClient = prisma, route = "update") => {
       const { response } = await new RPCHandler(
@@ -1168,6 +1162,10 @@ describePostgres("chat replies during screen takeover (PostgreSQL)", () => {
       );
     /** The removed bot's next chat gets the computer now, not when the takeover hold ends. */
     const expectComputerFreed = async () => {
+      // The cancelled run's lease stays as the computer's expired tombstone.
+      const tombstone = await leaseOf(ada.id);
+      expect(tombstone.runId).toBe(run.id);
+      expect(tombstone.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
       await expect(
         runAsSystem("test lease", () =>
           acquireComputerExecutionLease(prisma, {
@@ -1177,8 +1175,10 @@ describePostgres("chat replies during screen takeover (PostgreSQL)", () => {
           }),
         ),
       ).resolves.toMatchObject({ fence: 2 });
-      // Ben stays in the group, so his run keeps its computer.
-      expect(await leaseOf(ben.id)).toEqual(benLease);
+      // Ben stays in the group, so his run was never cancelled.
+      await expect(
+        system.run.findUniqueOrThrow({ where: { id: benRun.id } }),
+      ).resolves.toMatchObject({ status: "running" });
     };
     const groupUpdates = () => system.event.count({ where: { threadId, type: "group.updated" } });
     return {

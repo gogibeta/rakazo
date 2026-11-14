@@ -37,8 +37,8 @@ export async function resolveBusyBotName(
   },
 ): Promise<string | null> {
   if (!input.computerId) return null;
-  const lease = await prisma.computerExecutionLease.findUnique({
-    where: { computerId_botId: { computerId: input.computerId, botId: input.botId } },
+  const lease = await prisma.computerExecutionLease.findFirst({
+    where: { computerId: input.computerId, botId: input.botId },
     select: { expiresAt: true, runId: true, computer: { select: { controlRunId: true } } },
   });
   if (!lease) return null;

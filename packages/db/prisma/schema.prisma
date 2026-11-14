@@ -2162,7 +2162,7 @@ model ComputerExecutionLease {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  @@unique([computerId, botId])
+  @@unique([computerId])
   @@index([runId])
   @@index([computerId, expiresAt])
   @@index([botId, expiresAt])

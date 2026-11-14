@@ -2,7 +2,11 @@ import { runContinueJob } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import { returnHelperOutcome } from "./background-helpers.js";
 import type { ExecutorDeps } from "./executor-deps.js";
-import { failRunBeforeTurn, startNextWaitingRun } from "./run-lifecycle.js";
+import {
+  failRunBeforeTurn,
+  startNextWaitingRun,
+  startNextWaitingRunOnComputer,
+} from "./run-lifecycle.js";
 import { notifyRun } from "./run-notifications.js";
 
 vi.mock("./run-notifications.js", () => ({ notifyRun: vi.fn(async () => undefined) }));
@@ -43,6 +47,35 @@ describe("starting the next run waiting for a bot's computer", () => {
   it("does nothing when no run is waiting", async () => {
     const f = deps(null);
     await startNextWaitingRun(f.deps, "bot", "finished");
+    expect(f.enqueue).not.toHaveBeenCalled();
+  });
+});
+
+describe("starting the next run waiting for a shared computer", () => {
+  it("starts the oldest other due run on the computer, whichever bot it belongs to", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-28T12:00:00Z") });
+    try {
+      const f = deps({ id: "waiting" });
+      await startNextWaitingRunOnComputer(f.deps, "computer", "finished");
+      expect(f.findFirst).toHaveBeenCalledWith({
+        where: {
+          bot: { computerId: "computer" },
+          status: "queued",
+          id: { not: "finished" },
+          OR: [{ wakeAt: null }, { wakeAt: { lte: new Date("2026-10-28T12:00:00Z") } }],
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { id: true },
+      });
+      expect(f.enqueue).toHaveBeenCalledExactlyOnceWith(runContinueJob("waiting"));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does nothing when no run is waiting", async () => {
+    const f = deps(null);
+    await startNextWaitingRunOnComputer(f.deps, "computer", "finished");
     expect(f.enqueue).not.toHaveBeenCalled();
   });
 });

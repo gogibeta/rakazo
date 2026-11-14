@@ -380,31 +380,36 @@ describePostgres("direct run dispatch (PostgreSQL)", () => {
   });
 
   it("frees a computer held for a takeover by a run that was deleted or ended", async () => {
-    const computer = await system.computer.create({
-      data: {
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        scopeKey: `dispatch-abandoned-${randomUUID()}`,
-        homeKey: `dispatch-abandoned-${randomUUID()}`,
-        kind: "fake",
-      },
-    });
+    // One lease per computer, so each hold gets a computer of its own.
+    const newComputer = () =>
+      system.computer.create({
+        data: {
+          spaceId: identity.spaceId,
+          userId: identity.userId,
+          scopeKey: `dispatch-abandoned-${randomUUID()}`,
+          homeKey: `dispatch-abandoned-${randomUUID()}`,
+          kind: "fake",
+        },
+      });
+    const computer = await newComputer();
+    const endedComputer = await newComputer();
+    const bootingComputer = await newComputer();
     const bot = await system.bot.update({
       where: { id: identity.botId },
       data: { computerId: computer.id },
     });
-    const otherBot = (name: string) =>
+    const otherBot = (name: string, computerId: string) =>
       system.bot.create({
         data: {
           spaceId: identity.spaceId,
           userId: identity.userId,
           name,
           color: "test",
-          computerId: computer.id,
+          computerId,
         },
       });
-    const ended = await otherBot("Ended");
-    const booting = await otherBot("Booting");
+    const ended = await otherBot("Ended", endedComputer.id);
+    const booting = await otherBot("Booting", bootingComputer.id);
     const cancelled = await system.run.update({
       where: { id: (await createRun({ status: "cancelled" })).id },
       data: { botId: ended.id },
@@ -421,12 +426,12 @@ describePostgres("direct run dispatch (PostgreSQL)", () => {
       },
     });
     const stale = await system.computerExecutionLease.create({
-      data: { computerId: computer.id, botId: ended.id, runId: cancelled.id, expiresAt: day },
+      data: { computerId: endedComputer.id, botId: ended.id, runId: cancelled.id, expiresAt: day },
     });
     // A computer operation holds a short lease under an id that is not a run.
     const operation = await system.computerExecutionLease.create({
       data: {
-        computerId: computer.id,
+        computerId: bootingComputer.id,
         botId: booting.id,
         runId: `boot:${randomUUID()}`,
         expiresAt: new Date(Date.now() + 5 * 60_000),

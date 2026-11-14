@@ -394,10 +394,11 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
       } catch (error) {
         if (!(error instanceof ComputerBusyError)) throw error;
         // Maintenance or suspension sends no release, so only a held lease waits for one.
+        // The lease is the computer's, so the holder may be another bot's run on a
+        // shared team computer; waiting for its release is the same either way.
         const heldByAnotherRun = await deps.prisma.computerExecutionLease.findFirst({
           where: {
             computerId: leaseTarget.computerId,
-            botId: run.botId,
             runId: { not: runId },
             expiresAt: { gt: new Date() },
           },
