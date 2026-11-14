@@ -7,7 +7,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const queryState = vi.hoisted(() => ({ data: [] as ThreadSession[] }));
+const listState = vi.hoisted(() => ({ data: [] as ThreadSession[] }));
 
 vi.mock("@lingui/react/macro", () => ({
   useLingui: () => ({
@@ -23,12 +23,6 @@ vi.mock("@rakazo/ui-web", () => ({
     ...props
   }: ComponentProps<"button"> & Record<string, unknown>) => <button type="button" {...props} />,
   SectionHeading: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-}));
-vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: queryState.data, isPending: false }),
-  QueryClient: class {
-    invalidateQueries() {}
-  },
 }));
 
 import { SidebarSessions } from "./sidebar-sessions";
@@ -77,22 +71,18 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
-  queryState.data = [];
+  listState.data = [];
   vi.unstubAllGlobals();
 });
 
-function renderSessions(sessionId?: string) {
+async function renderSessions(sessionId?: string) {
   const rpc = {
     threads: {
+      listSessions: vi.fn(async () => listState.data),
       createSession: vi.fn(async () => ({ threadId: "thread-new", botId: "bot-1" })),
       renameSession: vi.fn(async () => second),
       archiveSession: vi.fn(async () => ({ ok: true as const })),
       unarchiveSession: vi.fn(async () => ({ ok: true as const })),
-    },
-  };
-  const queries = {
-    threads: {
-      listSessions: { queryOptions: () => ({}), queryKey: () => ["listSessions"] },
     },
   };
   const onSelect = vi.fn();
@@ -100,7 +90,6 @@ function renderSessions(sessionId?: string) {
     root.render(
       <SidebarSessions
         rpc={rpc as never}
-        queries={queries as never}
         botId="bot-1"
         botName="Chief"
         sessionId={sessionId}
@@ -108,6 +97,8 @@ function renderSessions(sessionId?: string) {
       />,
     ),
   );
+  // Flush the session list load.
+  await act(async () => {});
   return { rpc, onSelect };
 }
 
@@ -121,15 +112,19 @@ function click(element: Element) {
   act(() => element.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 }
 
-it("lists the sessions with the bot's name for the untitled primary and folds archived ones away", () => {
-  queryState.data = [primary, second, archived];
-  renderSessions();
+it("lists the sessions with the bot's name for the untitled primary and folds archived ones away", async () => {
+  listState.data = [primary, second, archived];
+  await renderSessions();
 
   expect(container.textContent).toContain("Conversations");
   expect(container.textContent).toContain("Chief");
   expect(container.textContent).toContain("Trip planning");
   expect(container.textContent).toContain("Archived (1)");
   expect(container.textContent).not.toContain("Old topic");
+  // Session rows are labelled as conversations, never with the bare bot
+  // name the roster button uses.
+  expect(buttonByLabel("Conversation: Chief")).not.toBeNull();
+  expect(buttonByLabel("Conversation: Trip planning")).not.toBeNull();
   // The primary session cannot be archived; the other live one can.
   expect(container.querySelector('button[aria-label="Archive Chief"]')).toBeNull();
   expect(container.querySelector('button[aria-label="Archive Trip planning"]')).not.toBeNull();
@@ -140,26 +135,20 @@ it("lists the sessions with the bot's name for the untitled primary and folds ar
   expect(container.textContent).toContain("Old topic");
 });
 
-it("opens the clicked session and returns to the primary from its row", () => {
-  queryState.data = [primary, second];
-  const { onSelect } = renderSessions();
+it("opens the clicked session and returns to the primary from its row", async () => {
+  listState.data = [primary, second];
+  const { onSelect } = await renderSessions();
 
-  const row = [...container.querySelectorAll("button")].find((b) =>
-    b.textContent?.includes("Trip planning"),
-  )!;
-  click(row);
+  click(buttonByLabel("Conversation: Trip planning"));
   expect(onSelect).toHaveBeenCalledWith("thread-2");
 
-  const primaryRow = [...container.querySelectorAll("button")].find((b) =>
-    b.textContent?.includes("Chief"),
-  )!;
-  click(primaryRow);
+  click(buttonByLabel("Conversation: Chief"));
   expect(onSelect).toHaveBeenCalledWith(null);
 });
 
 it("starts a new conversation and opens it", async () => {
-  queryState.data = [primary];
-  const { rpc, onSelect } = renderSessions();
+  listState.data = [primary];
+  const { rpc, onSelect } = await renderSessions();
 
   click(buttonByLabel("New conversation"));
   await act(async () => {});
@@ -169,8 +158,8 @@ it("starts a new conversation and opens it", async () => {
 });
 
 it("archiving the open session returns to the primary", async () => {
-  queryState.data = [primary, second];
-  const { rpc, onSelect } = renderSessions("thread-2");
+  listState.data = [primary, second];
+  const { rpc, onSelect } = await renderSessions("thread-2");
 
   click(buttonByLabel("Archive Trip planning"));
   await act(async () => {});

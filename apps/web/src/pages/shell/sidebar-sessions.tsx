@@ -1,11 +1,8 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import type { ThreadSession } from "@rakazo/contracts";
 import { Button, SectionHeading } from "@rakazo/ui-web";
-import { useQuery } from "@tanstack/react-query";
 import { Archive, ArchiveRestore, Check, Pencil, Plus, X } from "lucide-react";
-import { useState } from "react";
-import type { SpaceQueries } from "../../lib/query";
-import { queryClient } from "../../lib/query";
+import { useCallback, useEffect, useState } from "react";
 import { formatRelativeTime } from "../../lib/relative-time";
 import type { createSpaceRpc } from "../../lib/rpc";
 
@@ -17,14 +14,12 @@ import type { createSpaceRpc } from "../../lib/rpc";
  */
 export function SidebarSessions({
   rpc,
-  queries,
   botId,
   botName,
   sessionId,
   onSelect,
 }: {
   rpc: ReturnType<typeof createSpaceRpc>;
-  queries: SpaceQueries;
   botId: string;
   botName: string;
   /** The open session's thread id; undefined while the primary session is open. */
@@ -32,20 +27,29 @@ export function SidebarSessions({
   onSelect: (threadId: string | null) => void;
 }) {
   const { t } = useLingui();
-  const list = useQuery(queries.threads.listSessions.queryOptions({ input: { botId } }));
-  const sessions = list.data ?? [];
+  const [sessions, setSessions] = useState<ThreadSession[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [showArchived, setShowArchived] = useState(false);
 
-  const refresh = () =>
-    queryClient.invalidateQueries({
-      queryKey: queries.threads.listSessions.queryKey({ input: { botId } }),
-    });
+  // Loaded imperatively, like the archived-chats shelf: a query subscription
+  // would cancel its fetch when the sidebar unmounts on a bot switch, and a
+  // cancelled request reads as a failed one.
+  const load = useCallback(async () => {
+    try {
+      setSessions(await rpc.threads.listSessions({ botId }));
+    } catch {
+      // Keep the last list; a failed refresh is not fatal.
+    }
+  }, [rpc, botId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const startNew = async () => {
     const created = await rpc.threads.createSession({ botId });
-    void refresh();
+    void load();
     if (created.threadId) onSelect(created.threadId);
   };
 
@@ -54,13 +58,13 @@ export function SidebarSessions({
     setEditingId(null);
     if (!title || title === session.title) return;
     await rpc.threads.renameSession({ botId, threadId: session.id, title });
-    void refresh();
+    void load();
   };
 
   const setArchived = async (session: ThreadSession, archived: boolean) => {
     if (archived) await rpc.threads.archiveSession({ botId, threadId: session.id });
     else await rpc.threads.unarchiveSession({ botId, threadId: session.id });
-    void refresh();
+    void load();
     // Archiving the open session returns to the primary one.
     if (archived && sessionId === session.id) onSelect(null);
   };
@@ -111,6 +115,7 @@ export function SidebarSessions({
             <button
               type="button"
               className="min-w-0 flex-1 text-left"
+              aria-label={t`Conversation: ${title}`}
               onClick={() => onSelect(session.isPrimary ? null : session.id)}
             >
               <span className="block truncate text-body text-foreground/75" dir="auto">
