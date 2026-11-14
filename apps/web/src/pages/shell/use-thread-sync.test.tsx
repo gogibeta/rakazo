@@ -82,6 +82,7 @@ function syncInput({
     groupId: inGroup ? "group-1" : undefined,
     activeBotId: ref(inGroup ? undefined : "bot-1"),
     activeGroupId: ref(inGroup ? "group-1" : undefined),
+    sessionId: undefined,
     botsRef: ref([]),
     searchParamsRef: ref(new URLSearchParams()),
     refreshBots,

@@ -43,6 +43,8 @@ function createDeps(
     identityUpdateError?: Error;
     createTopic?: MessagingInboundDeps["createTopic"] | null;
     withModels?: boolean;
+    /** A delivered bot message a DM can reply to: its provider handle and its session. */
+    replyTo?: { handle: string; messageThreadId: string };
   } = {},
 ) {
   const identity =
@@ -56,6 +58,7 @@ function createDeps(
           userId: "user-1",
           spaceId: "ws-1",
           botId: "bot-1",
+          activeThreadId: null,
           installationId: null,
           outboundSinceInbound: 0,
           lastInboundAt: null,
@@ -64,6 +67,7 @@ function createDeps(
   const outboundRows: Array<Record<string, unknown>> = [];
   const steeringRows: Array<Record<string, unknown>> = [];
   const threadMessages: Array<Record<string, unknown>> = [];
+  const createdThreads: Array<Record<string, unknown>> = [];
   const channelUpserts: Array<Record<string, unknown>> = [];
   const activeRuns = overrides.activeRun
     ? [
@@ -102,7 +106,11 @@ function createDeps(
       return { count };
     }),
     aggregate: vi.fn(async () => ({ _max: { createdAt: null } })),
-    findFirst: vi.fn(async () => null),
+    findFirst: vi.fn(async ({ where }: { where: { providerHandle?: string } }) =>
+      overrides.replyTo && where.providerHandle === overrides.replyTo.handle
+        ? { sourceMessageId: "msg-old" }
+        : null,
+    ),
   };
   const messagingIdentity = {
     findUnique: vi.fn(
@@ -251,9 +259,24 @@ function createDeps(
         deactivatedAt: null,
       })),
     },
-    thread: { findFirst: vi.fn(async () => ({ id: "thread-1" })) },
+    thread: {
+      findFirst: vi.fn(async ({ where }: { where: { id?: string } }) =>
+        overrides.replyTo && where.id === overrides.replyTo.messageThreadId
+          ? { id: overrides.replyTo.messageThreadId }
+          : { id: "thread-1" },
+      ),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        const row = { id: "thread-new-session", ...data };
+        createdThreads.push(row);
+        return row;
+      }),
+    },
     message: {
-      findUnique: vi.fn(async () => null),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        overrides.replyTo && where.id === "msg-old"
+          ? { threadId: overrides.replyTo.messageThreadId }
+          : null,
+      ),
       findFirst: vi.fn(async () => null),
       findMany: vi.fn(async () => []),
     },
@@ -291,14 +314,8 @@ function createDeps(
     runId: "run-new",
     seq: 4,
   }));
-  const clearThread = vi.fn(async () => ({
-    event: { seq: 8 },
-    cancelledRunIds: ["run-old"],
-    historyCompactionGeneration: 3,
-  }));
   const enqueue = vi.fn(async () => undefined);
   const apply = vi.fn(async () => ({ ok: true as const }));
-  const afterThreadClear = vi.fn(async () => undefined);
   const createTopic =
     overrides.createTopic === null
       ? undefined
@@ -309,7 +326,6 @@ function createDeps(
       sendUserMessage,
       notify: vi.fn(async () => undefined),
       answerRunInput: vi.fn(async () => true),
-      clearThread,
     },
     jobs: { enqueue },
     sandbox: {},
@@ -342,29 +358,26 @@ function createDeps(
           },
         }),
     ...(createTopic ? { createTopic } : {}),
-    afterThreadClear,
   } as unknown as MessagingInboundDeps & {
     sendUserMessage: typeof sendUserMessage;
-    clearThread: typeof clearThread;
     enqueue: typeof enqueue;
     apply: typeof apply;
-    afterThreadClear: typeof afterThreadClear;
     outboundRows: typeof outboundRows;
     steeringRows: typeof steeringRows;
     threadMessages: typeof threadMessages;
+    createdThreads: typeof createdThreads;
     channelUpserts: typeof channelUpserts;
     identityUpdates: typeof messagingIdentity.update;
     createTopic: typeof createTopic;
   };
   Object.assign(deps, {
     sendUserMessage,
-    clearThread,
     enqueue,
     apply,
-    afterThreadClear,
     outboundRows,
     steeringRows,
     threadMessages,
+    createdThreads,
     channelUpserts,
     identityUpdates: messagingIdentity.update,
     createTopic,
@@ -437,6 +450,28 @@ describe("messaging slash commands in a DM", () => {
     expect(deps.outboundRows).toEqual([]);
   });
 
+  it("a reply to a bot message in another session lands in that session", async () => {
+    const deps = createDeps({ replyTo: { handle: "4242:11", messageThreadId: "thread-old" } });
+    await createMessagingInboundHandler(deps)({
+      ...dm("following up on that"),
+      replyToHandle: "4242:11",
+    });
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ threadId: "thread-old", trigger: "messaging" }),
+    );
+  });
+
+  it("a reply to an unknown message stays on the active session", async () => {
+    const deps = createDeps();
+    await createMessagingInboundHandler(deps)({
+      ...dm("following up"),
+      replyToHandle: "4242:99",
+    });
+    expect(deps.sendUserMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ threadId: "thread-1", trigger: "messaging" }),
+    );
+  });
+
   it("a slash word mid-message is a normal message", async () => {
     const deps = createDeps();
     await createMessagingInboundHandler(deps)(dm("what does /model do?"));
@@ -467,7 +502,7 @@ describe("messaging slash commands in a DM", () => {
     await createMessagingInboundHandler(deps)(dm("/bot Research"));
     expect(deps.identityUpdates).toHaveBeenCalledWith({
       where: { id: "mi-1" },
-      data: { botId: "bot-2", spaceId: "ws-1" },
+      data: { botId: "bot-2", spaceId: "ws-1", activeThreadId: "thread-1" },
     });
     expect(deps.outboundRows).toEqual([
       expect.objectContaining({ body: "This chat now talks to Research." }),
@@ -505,7 +540,7 @@ describe("messaging slash commands in a DM", () => {
     expect(handled).toBe(true);
     expect(deps.identityUpdates).toHaveBeenCalledWith({
       where: { id: "mi-1" },
-      data: { botId: "bot-2", spaceId: "ws-1" },
+      data: { botId: "bot-2", spaceId: "ws-1", activeThreadId: "thread-1" },
     });
     expect(deps.outboundRows).toEqual([
       expect.objectContaining({ body: "This chat now talks to Research." }),
@@ -525,23 +560,26 @@ describe("messaging slash commands in a DM", () => {
     expect(handled).toBe(false);
   });
 
-  it("/new clears the conversation through the app's clear path and follows through", async () => {
+  it("/new opens a fresh session and makes it active; the old one is untouched", async () => {
     const deps = createDeps();
     await createMessagingInboundHandler(deps)(dm("/new"));
-    expect(deps.clearThread).toHaveBeenCalledExactlyOnceWith({
-      spaceId: "ws-1",
-      threadId: "thread-1",
-      botId: "bot-1",
-    });
-    expect(deps.afterThreadClear).toHaveBeenCalledExactlyOnceWith(
+    expect(deps.createdThreads).toEqual([
       expect.objectContaining({
-        cancelledRunIds: ["run-old"],
-        historyCompactionGeneration: 3,
+        spaceId: "ws-1",
+        userId: "user-1",
+        botId: "bot-1",
+        kind: "direct",
+        origin: "telegram",
+        isPrimary: false,
       }),
-    );
+    ]);
+    expect(deps.identityUpdates).toHaveBeenCalledWith({
+      where: { id: "mi-1" },
+      data: { activeThreadId: "thread-new-session" },
+    });
     expect(deps.outboundRows).toEqual([
       expect.objectContaining({
-        body: "Started a fresh conversation with Chief.",
+        body: "Started a fresh conversation with Chief. The previous conversation is still in the app.",
       }),
     ]);
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
@@ -680,7 +718,7 @@ describe("messaging slash commands in a linked group", () => {
     await createMessagingInboundHandler(deps)(group("/bot Research"));
     expect(deps.identityUpdates).toHaveBeenCalledWith({
       where: { id: "mi-1" },
-      data: { botId: "bot-2", spaceId: "ws-1" },
+      data: { botId: "bot-2", spaceId: "ws-1", activeThreadId: "thread-1" },
     });
     expect(deps.outboundRows).toEqual([
       expect.objectContaining({
@@ -718,7 +756,7 @@ describe("messaging slash commands in a linked group", () => {
         }),
       ]),
     );
-    expect(deps.clearThread).not.toHaveBeenCalled();
+    expect(deps.createdThreads).toEqual([]);
   });
 
   it("/new without topic support says so in the group", async () => {
@@ -730,7 +768,7 @@ describe("messaging slash commands in a linked group", () => {
         body: expect.stringContaining("Separate threads aren't available"),
       }),
     ]);
-    expect(deps.clearThread).not.toHaveBeenCalled();
+    expect(deps.createdThreads).toEqual([]);
   });
 
   it("/help works in a group too", async () => {

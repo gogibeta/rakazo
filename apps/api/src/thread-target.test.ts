@@ -3,6 +3,7 @@ import type { Actor, MessageBlock } from "@rakazo/contracts";
 import { callClientNonce } from "@rakazo/core";
 import type * as MessageQuoteModule from "@rakazo/core/message-quote";
 import type { PrismaClient } from "@rakazo/db";
+import { IsolationError } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { reactToThreadMessage } from "./thread-reactions.js";
 import { threadSnapshot } from "./thread-snapshot.js";
@@ -12,6 +13,8 @@ import {
   cancelSupersededQueuedRuns,
   latestWaitingRun,
   replyParentBotId,
+  resolveNewConversationBotId,
+  resolveThreadTarget,
   sendTargetBotIds,
   sendThreadMessage,
   threadHead,
@@ -5216,5 +5219,143 @@ describe("latestWaitingRun", () => {
     const tied = [run("x", "waiting_input", 3), run("y", "waiting_input", 3)];
     expect(latestWaitingRun(tied)?.id).toBe("y");
     expect(latestWaitingRun([...tied].reverse())?.id).toBe("y");
+  });
+});
+
+describe("resolveThreadTarget with sessions", () => {
+  const actor = { userId: "user-1", spaceId: "space-1" } as Actor;
+  const primary = { id: "thread-primary", archivedAt: null as Date | null };
+  function botPrisma(session: { id: string; archivedAt: Date | null } | null) {
+    return {
+      bot: {
+        findFirst: vi.fn(async () => ({
+          id: "bot-1",
+          spaceId: "space-1",
+          userId: "user-1",
+          name: "Chief",
+          color: "red",
+          threads: [primary],
+          computer: null,
+        })),
+      },
+      thread: { findFirst: vi.fn(async () => session) },
+    } as unknown as PrismaClient;
+  }
+
+  it("resolves the primary session without a threadId", async () => {
+    const target = await resolveThreadTarget(botPrisma(null), actor, { botId: "bot-1" });
+    expect(target).toMatchObject({
+      kind: "bot",
+      threadId: "thread-primary",
+      threadArchived: false,
+    });
+  });
+
+  it("resolves a named session of the bot and reports it archived", async () => {
+    const target = await resolveThreadTarget(
+      botPrisma({ id: "thread-2", archivedAt: new Date() }),
+      actor,
+      { botId: "bot-1", threadId: "thread-2" },
+    );
+    expect(target).toMatchObject({ kind: "bot", threadId: "thread-2", threadArchived: true });
+  });
+
+  it("refuses a threadId that is not one of the bot's sessions", async () => {
+    await expect(
+      resolveThreadTarget(botPrisma(null), actor, { botId: "bot-1", threadId: "thread-x" }),
+    ).rejects.toBeInstanceOf(IsolationError);
+  });
+
+  it("refuses a threadId naming another thread for a group", async () => {
+    const prisma = {
+      chatGroup: {
+        findFirst: vi.fn(async () => ({
+          id: "group-1",
+          name: "Study",
+          thread: { id: "thread-group", archivedAt: null },
+          members: [
+            { bot: { id: "bot-1", name: "Chief", color: "red", archivedAt: null, runs: [] } },
+            { bot: { id: "bot-2", name: "Research", color: "blue", archivedAt: null, runs: [] } },
+          ],
+        })),
+      },
+    } as unknown as PrismaClient;
+    await expect(
+      resolveThreadTarget(prisma, actor, { groupId: "group-1", threadId: "thread-other" }),
+    ).rejects.toBeInstanceOf(IsolationError);
+    const target = await resolveThreadTarget(prisma, actor, {
+      groupId: "group-1",
+      threadId: "thread-group",
+    });
+    expect(target).toMatchObject({
+      kind: "group",
+      threadId: "thread-group",
+      threadArchived: false,
+    });
+  });
+});
+
+describe("resolveNewConversationBotId", () => {
+  const actor = { userId: "user-1", spaceId: "space-1" } as Actor;
+  const botRow = (id: string, userId: string, lastMessageAt: Date | null) => ({
+    id,
+    userId,
+    threads: [{ lastMessageAt }],
+  });
+  function prismaWith({
+    orchestratorBotId = null as string | null,
+    orchestratorLive = true,
+    bots = [] as Array<ReturnType<typeof botRow>>,
+  } = {}) {
+    return {
+      space: { findFirst: vi.fn(async () => ({ orchestratorBotId })) },
+      bot: {
+        findFirst: vi.fn(async () =>
+          orchestratorLive && orchestratorBotId ? { id: orchestratorBotId } : null,
+        ),
+        findMany: vi.fn(async () => bots),
+      },
+    } as unknown as PrismaClient;
+  }
+
+  it("prefers the space's live orchestrator", async () => {
+    const prisma = prismaWith({
+      orchestratorBotId: "bot-9",
+      bots: [botRow("bot-1", "user-1", new Date())],
+    });
+    await expect(resolveNewConversationBotId(prisma, actor)).resolves.toBe("bot-9");
+  });
+
+  it("ignores a stale orchestrator and uses the most recently active bot", async () => {
+    const prisma = prismaWith({
+      orchestratorBotId: "bot-gone",
+      orchestratorLive: false,
+      bots: [
+        botRow("bot-1", "user-1", new Date("2026-01-01T00:00:00Z")),
+        botRow("bot-2", "user-1", new Date("2026-02-01T00:00:00Z")),
+      ],
+    });
+    await expect(resolveNewConversationBotId(prisma, actor)).resolves.toBe("bot-2");
+  });
+
+  it("prefers the actor's own bots when judging activity", async () => {
+    const prisma = prismaWith({
+      bots: [
+        botRow("bot-1", "user-1", new Date("2026-01-01T00:00:00Z")),
+        botRow("bot-2", "user-2", new Date("2026-03-01T00:00:00Z")),
+      ],
+    });
+    await expect(resolveNewConversationBotId(prisma, actor)).resolves.toBe("bot-1");
+  });
+
+  it("falls back to the first bot when nothing has activity", async () => {
+    const prisma = prismaWith({
+      bots: [botRow("bot-1", "user-1", null), botRow("bot-2", "user-1", null)],
+    });
+    await expect(resolveNewConversationBotId(prisma, actor)).resolves.toBe("bot-1");
+  });
+
+  it("returns null for a space without bots", async () => {
+    await expect(resolveNewConversationBotId(prismaWith(), actor)).resolves.toBeNull();
   });
 });

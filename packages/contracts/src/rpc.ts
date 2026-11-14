@@ -100,6 +100,8 @@ import {
   DeploymentSettingsSchema,
   ExportManifestSchema,
   ExternalConversationPolicySchema,
+  GROUP_MEMBER_MAX,
+  GROUP_MEMBER_MIN,
   GroupDetailSchema,
   GroupSchema,
   IncomingBotCallSchema,
@@ -128,6 +130,7 @@ import {
   RoutineSchema,
   ScratchpadItemSchema,
   ScratchpadItemStatusSchema,
+  SESSION_TITLE_MAX_LENGTH,
   ServerUpdateCheckSchema,
   ServerUpdateRequestSchema,
   ServerUpdateRunSchema,
@@ -144,6 +147,7 @@ import {
   TeachRecordingEventSchema,
   THREAD_MESSAGE_TEXT_MAX_LENGTH,
   ThreadMessagePageSchema,
+  ThreadSessionSchema,
   ThreadSnapshotSchema,
   TimeZoneSchema,
   UpdateAgentSkillInput,
@@ -254,6 +258,14 @@ const threadTarget = z
     }
   });
 
+/**
+ * A thread target that may name one session of the bot. Without `threadId`
+ * the bot's primary session is meant, exactly as before sessions existed.
+ * A group's threadId must name the group's own thread — groups keep
+ * exactly one session.
+ */
+const sessionTarget = threadTarget.safeExtend({ threadId: Id.optional() });
+
 const structuredMentionTarget = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("bot"), id: Id }),
   z.object({ kind: z.literal("group"), id: Id }),
@@ -261,7 +273,7 @@ const structuredMentionTarget = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("connector"), id: Id }),
 ]);
 
-const threadSendFields = threadTarget.safeExtend({
+const threadSendFields = sessionTarget.safeExtend({
   imageHandling: z.enum(["confirm", "file"]).optional(),
   text: z.string().max(THREAD_MESSAGE_TEXT_MAX_LENGTH).optional(),
   artifactIds: z.array(Id).max(ATTACHMENT_COUNT_CEILING).optional(),
@@ -739,16 +751,16 @@ export const appContract = {
     ),
   },
   threads: {
-    head: oc.input(threadTarget).output(
+    head: oc.input(sessionTarget).output(
       z.object({
         threadId: Id,
         cursor: z.number().int().min(-1),
       }),
     ),
-    get: oc.input(threadTarget).output(ThreadSnapshotSchema),
+    get: oc.input(sessionTarget).output(ThreadSnapshotSchema),
     messages: oc
       .input(
-        threadTarget.safeExtend({
+        sessionTarget.safeExtend({
           before: z.number().int().nonnegative().optional(),
           includePeerRuns: z.boolean().optional(),
           includePeerReceipts: z.boolean().optional(),
@@ -762,7 +774,7 @@ export const appContract = {
       )
       .output(ThreadMessagePageSchema),
     subscribe: oc
-      .input(threadTarget.safeExtend({ cursor: z.number().int().min(-1) }))
+      .input(sessionTarget.safeExtend({ cursor: z.number().int().min(-1) }))
       .output(eventIterator(ProductEventSchema)),
     send: oc.input(threadSendInput).output(threadSendOutput),
     /**
@@ -775,21 +787,21 @@ export const appContract = {
       .output(z.object({ routineRunIds: z.array(Id), send: threadSendOutput.optional() })),
     react: oc
       .input(
-        threadTarget.safeExtend({
+        sessionTarget.safeExtend({
           messageId: Id,
           reaction: MessageReactionSchema,
           clientNonce: z.string().min(1).max(200),
         }),
       )
       .output(z.object({ ok: z.literal(true), runIds: z.array(Id).optional() })),
-    stop: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
+    stop: oc.input(sessionTarget).output(z.object({ ok: z.literal(true) })),
     // Its own route, so a server without it refuses rather than stopping the whole chat.
     stopHelper: oc
-      .input(threadTarget.safeExtend({ messageId: Id }))
+      .input(sessionTarget.safeExtend({ messageId: Id }))
       .output(z.object({ ok: z.literal(true) })),
     followUp: oc
       .input(
-        threadTarget.safeExtend({
+        sessionTarget.safeExtend({
           text: z.string().min(1),
           /** Carries the call id, so a turn taken mid-run stays in the call's card. */
           clientNonce: z.string().min(1).max(200).optional(),
@@ -841,10 +853,10 @@ export const appContract = {
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
-    clear: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
+    clear: oc.input(sessionTarget).output(z.object({ ok: z.literal(true) })),
     answer: oc
       .input(
-        threadTarget
+        sessionTarget
           .safeExtend({
             runId: Id,
             messageId: Id,
@@ -880,15 +892,65 @@ export const appContract = {
       .output(z.object({ ok: z.literal(true) })),
     /** `unreadAfterSeq`: the seq read up to before this call, null when nothing was unread. */
     markRead: oc
-      .input(threadTarget)
+      .input(sessionTarget)
       .output(z.object({ ok: z.literal(true), unreadAfterSeq: z.number().int().nullable() })),
     /** With `messageId`, the chat reads as unread from that message: the next open puts New above it. */
     markUnread: oc
-      .input(threadTarget.and(z.object({ messageId: Id.optional() })))
+      .input(sessionTarget.and(z.object({ messageId: Id.optional() })))
       .output(z.object({ ok: z.literal(true) })),
     /** Hides the chat from the caller's list until `until`; null wakes it now. */
     snooze: oc
-      .input(threadTarget.and(z.object({ until: z.iso.datetime({ offset: true }).nullable() })))
+      .input(sessionTarget.and(z.object({ until: z.iso.datetime({ offset: true }).nullable() })))
+      .output(z.object({ ok: z.literal(true) })),
+    /** The bot's conversations for the session list, most recently active first, archived included. */
+    listSessions: oc.input(botId).output(z.array(ThreadSessionSchema)),
+    /**
+     * Start a new conversation. With one bot: a fresh session of theirs.
+     * With several: their group's session, created or reused. With none:
+     * the space's designated orchestrator, else the caller's most recently
+     * active bot, else their first bot by position.
+     */
+    createSession: oc
+      .input(
+        z
+          .object({
+            botId: Id.optional(),
+            botIds: z.array(Id).min(GROUP_MEMBER_MIN).max(GROUP_MEMBER_MAX).optional(),
+          })
+          .superRefine((input, ctx) => {
+            if (input.botId && input.botIds) {
+              ctx.addIssue({
+                code: "custom",
+                message: "Provide either botId or botIds, not both",
+                path: ["botId"],
+              });
+            }
+            if (input.botIds && new Set(input.botIds).size !== input.botIds.length) {
+              ctx.addIssue({
+                code: "custom",
+                message: "botIds must be distinct",
+                path: ["botIds"],
+              });
+            }
+          }),
+      )
+      .output(z.object({ threadId: Id, botId: Id.optional(), groupId: Id.optional() })),
+    /** Rename one of the bot's sessions; the list and the chat header show the title. */
+    renameSession: oc
+      .input(
+        z.object({
+          botId: Id,
+          threadId: Id,
+          title: z.string().trim().min(1).max(SESSION_TITLE_MAX_LENGTH),
+        }),
+      )
+      .output(ThreadSessionSchema),
+    /** Archive a session: it stays readable and leaves the active list. The primary session cannot be archived. */
+    archiveSession: oc
+      .input(z.object({ botId: Id, threadId: Id }))
+      .output(z.object({ ok: z.literal(true) })),
+    unarchiveSession: oc
+      .input(z.object({ botId: Id, threadId: Id }))
       .output(z.object({ ok: z.literal(true) })),
   },
   computer: {
