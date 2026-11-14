@@ -64,8 +64,12 @@ export type ThreadTarget =
       botId: string;
       threadId: string;
       bot: Awaited<ReturnType<ReturnType<typeof createRepos>["getBot"]>>;
-      /** The resolved session is archived: readable, but a user send into it is refused. */
-      threadArchived: boolean;
+      /**
+       * The resolved session is archived: readable, but a user send into it
+       * is refused. resolveThreadTarget always sets it; hand-built targets
+       * in older callers omit it and mean not archived.
+       */
+      threadArchived?: boolean;
     }
   | {
       kind: "group";
@@ -74,7 +78,8 @@ export type ThreadTarget =
       groupName: string;
       members: GroupMember[];
       memberBotIds: string[];
-      threadArchived: boolean;
+      /** The group's session is archived: readable, but a user send into it is refused. */
+      threadArchived?: boolean;
     };
 
 export const RUNS_NEEDING_CONTINUE = new Set(["queued", "waiting_takeover"]);

@@ -1304,7 +1304,7 @@ describeJourneys("required product journeys", () => {
     await rpc(app, cookie, "computer/release", { botId: winner.id });
   });
 
-  it("5: a routine wakes the bot and posts into the existing thread", async () => {
+  it("5: a routine wakes the bot and posts into its dedicated routine session", async () => {
     const cookie = await signup(app, `routine-j-${stamp}@rakazo.test`, "Routine");
     const bot = await rpc<Bot>(app, cookie, "bots/create", {
       name: "Chief",
@@ -1341,14 +1341,32 @@ describeJourneys("required product journeys", () => {
       name: "routine.wakeup",
       payload: { routineId: routine.id, scheduledFor: dueAt.toISOString() },
     });
-    const snap = await waitFor(app, cookie, bot.id, (s) =>
-      s.messages.some(
+    // F4: a routine with no thread binding fires in its dedicated routine
+    // session — created on first fire and bound to the routine — so the
+    // message lands there, not in the bot's main conversation.
+    let routineThreadId: string | null = null;
+    await waitForDatabase(async () => {
+      const stored = await prisma.routine.findUnique({ where: { id: routine.id } });
+      routineThreadId = stored?.threadId ?? null;
+      return routineThreadId != null;
+    });
+    const start = Date.now();
+    let snap: Snap | null = null;
+    let found = false;
+    while (Date.now() - start < 20_000 && !found) {
+      snap = await rpc<Snap>(app, cookie, "threads/get", {
+        botId: bot.id,
+        threadId: routineThreadId!,
+      });
+      found = snap.messages.some(
         (m) =>
           JSON.stringify(m.blocks).includes("routine-ok") ||
           JSON.stringify(m.blocks).includes("writing"),
-      ),
-    );
-    expect(snap.messages.length).toBeGreaterThan(0);
+      );
+      if (!found) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(found, `routine session snapshot: ${JSON.stringify(snap)}`).toBe(true);
+    expect(snap!.messages.length).toBeGreaterThan(0);
     const routineRuns = await prisma.run.count({
       where: { botId: bot.id, trigger: "routine" },
     });

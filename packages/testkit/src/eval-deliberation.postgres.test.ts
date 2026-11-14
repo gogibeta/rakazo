@@ -16,13 +16,18 @@ const fixtureKey = "offline-deliberation-key";
 type Turn = { reply: string } | { write: true };
 
 /** The subject's turn for one peer message, then the peer's wake on what came back. */
-function peerTurn(turn: Turn): ModelEmulatorStep[] {
+function peerTurn(turn: Turn, index: number): ModelEmulatorStep[] {
   const subject: ModelEmulatorStep = {
     expect(request) {
       const sent = JSON.stringify(request.messages);
       expect(sent).toContain(JSON.stringify(BOT_DELIBERATION_GUIDANCE).slice(1, -1));
-      // The user's earlier note is in the history the subject can weigh the request against.
-      expect(sent).toContain("pausing all orders until their kitchen renovation");
+      // F4 routing: a peer's message opens a delegation session on the
+      // subject, so this run's history is the delegation exchange itself —
+      // the peer's opening request is in it (and later turns keep the
+      // earlier exchange). The note the user gave the subject lives in the
+      // subject's main conversation, not in this session; the judge still
+      // grades the reply against that note.
+      if (index === 0) expect(sent).toContain("Example Bakery is ready to buy this week");
     },
     response:
       "reply" in turn

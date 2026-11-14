@@ -958,6 +958,14 @@ export async function runTrial(
             !realtime.failed && observed.some((event) => event.type === "run.completed"),
           scheduled,
         });
+        // The owner catches up between wakes: viewing a conversation clears
+        // its unread mark. A bot's sessions are separate threads now (F4), so
+        // clear them all — the next wake's no-unread check then measures only
+        // what that wake itself caused.
+        await prisma.threadRead.updateMany({
+          where: { thread: { botId } },
+          data: { unread: false },
+        });
       }
       if (/Eval spend cap|stopped scheduling inference|no configured pricing/i.test(lastText))
         throw new EvalFailure("incomplete", lastText);
