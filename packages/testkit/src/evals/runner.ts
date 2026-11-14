@@ -351,7 +351,10 @@ export async function runTrial(
     if (scenario.history) {
       const thread = group
         ? { id: group.threadId }
-        : await prisma.thread.findUniqueOrThrow({ where: { botId }, select: { id: true } });
+        : await prisma.thread.findFirstOrThrow({
+            where: { botId, isPrimary: true },
+            select: { id: true },
+          });
       seededThreadId = thread.id;
       // Attachments go through the product's upload path so their bytes are stored as uploads are.
       const files = new Map<
@@ -1000,8 +1003,12 @@ export async function runTrial(
     const deliveries = await deliveredBySubject(prisma, botId, [
       ...(peer
         ? [
-            (await prisma.thread.findUnique({ where: { botId: peer.id }, select: { id: true } }))
-              ?.id,
+            (
+              await prisma.thread.findFirst({
+                where: { botId: peer.id, isPrimary: true },
+                select: { id: true },
+              })
+            )?.id,
           ]
         : []),
       group?.threadId,
@@ -1285,10 +1292,15 @@ async function deliverPeerMessage(
   targetBotId: string,
   text: string,
 ) {
-  const { spaceId, userId, thread } = await prisma.bot.findUniqueOrThrow({
+  const { spaceId, userId, threads } = await prisma.bot.findUniqueOrThrow({
     where: { id: peer.id },
-    select: { spaceId: true, userId: true, thread: { select: { id: true } } },
+    select: {
+      spaceId: true,
+      userId: true,
+      threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
+    },
   });
+  const thread = threads[0];
   if (!thread) throw new EvalFailure("harness", "Peer bot has no chat");
   const task = await prisma.task.create({
     data: {

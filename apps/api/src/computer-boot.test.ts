@@ -68,7 +68,7 @@ async function boot(prisma: PrismaClient) {
 
 const stoppedBot = {
   id: "bot-1",
-  thread: { id: "thread-1" },
+  threads: [{ id: "thread-1" }],
   computer: { id: "computer-1", state: "stopped", providerRef: null, scope: "team" },
 };
 

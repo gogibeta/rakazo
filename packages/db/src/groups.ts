@@ -439,6 +439,7 @@ export function createGroupRepos(prisma: PrismaClient) {
             spaceId: actor.spaceId,
             groupId: group.id,
             userId: actor.userId,
+            kind: "group",
           },
         });
         const loaded = await tx.chatGroup.findFirstOrThrow({

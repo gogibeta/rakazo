@@ -79,7 +79,7 @@ function fakeFleet(input: {
     instructions: "",
     instructionHistory: [],
     ...bot,
-    thread: { id: `thread-${bot.id}` },
+    threads: [{ id: `thread-${bot.id}` }],
   }));
   const groups = input.groups ?? [];
   const prisma = {

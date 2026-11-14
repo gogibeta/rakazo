@@ -293,8 +293,8 @@ async function seedRun(
   completedAt?: Date | null,
   threadId?: string,
 ) {
-  const thread = await prisma.thread.findUniqueOrThrow({
-    where: threadId ? { id: threadId } : { botId },
+  const thread = await prisma.thread.findFirstOrThrow({
+    where: threadId ? { id: threadId } : { botId, isPrimary: true },
   });
   const task = await prisma.task.create({
     data: {
@@ -353,7 +353,7 @@ async function raw(app: App, cookie: string, proc: string, body: unknown) {
 }
 
 async function bridgedThread(prisma: PrismaClient, botId: string, externalKey: string) {
-  const direct = await prisma.thread.findUniqueOrThrow({ where: { botId } });
+  const direct = await prisma.thread.findFirstOrThrow({ where: { botId, isPrimary: true } });
   const conversation = await prisma.externalConversation.create({
     data: {
       provider: "team-chat",

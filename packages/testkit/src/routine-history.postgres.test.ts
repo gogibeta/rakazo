@@ -58,7 +58,9 @@ describeHistory("routines.history late starts", () => {
       active: false,
       notify: false,
     });
-    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const thread = await prisma.thread.findFirstOrThrow({
+      where: { botId: bot.id, isPrimary: true },
+    });
     const seed = async (clientNonce: string, lateSince: Date | null, startedAt: Date) => {
       const task = await prisma.task.create({
         data: {

@@ -32,11 +32,11 @@ postgres("tool effects under the run lease (PostgreSQL)", () => {
           userId,
           name: "Effects",
           color: "ink",
-          thread: { create: { spaceId, userId } },
+          threads: { create: { spaceId, userId, isPrimary: true } },
         },
-        include: { thread: true },
+        include: { threads: true },
       });
-      const threadId = bot.thread!.id;
+      const threadId = bot.threads[0]!.id;
       const task = await prisma.task.create({
         data: {
           spaceId,

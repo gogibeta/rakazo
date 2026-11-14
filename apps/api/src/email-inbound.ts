@@ -82,13 +82,13 @@ export async function receiveBotEmail(deps: EmailInboundDeps, recipient: string,
           spaceId: true,
           userId: true,
           archivedAt: true,
-          thread: { select: { id: true } },
+          threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
         },
       },
     },
   });
   const bot = claimed?.bot;
-  if (!bot || bot.archivedAt || !bot.thread) return ignored("no such bot");
+  if (!bot || bot.archivedAt || !bot.threads[0]) return ignored("no such bot");
   dropped.botId = bot.id;
   // A routine takes the owner's address as given: it starts only that owner's own bot, and servers
   // without email verify no one. Mail that starts the bot with no routine needs it confirmed.
@@ -187,7 +187,7 @@ export async function receiveBotEmail(deps: EmailInboundDeps, recipient: string,
     if (!email.authenticated && sender === ownerEmail && addressed) {
       await noteUnverifiedOwnerMail(
         deps,
-        { id: bot.id, spaceId: bot.spaceId, threadId: bot.thread.id },
+        { id: bot.id, spaceId: bot.spaceId, threadId: bot.threads[0].id },
         target,
       );
     }
@@ -229,7 +229,7 @@ export async function receiveBotEmail(deps: EmailInboundDeps, recipient: string,
 
   return deliverWebhookEvent(
     deps,
-    { bot: { id: bot.id, spaceId: bot.spaceId, userId: bot.userId }, threadId: bot.thread.id },
+    { bot: { id: bot.id, spaceId: bot.spaceId, userId: bot.userId }, threadId: bot.threads[0].id },
     { prompt, artifacts, routines: matched, source: "email", idempotencyKey: email.key },
   ).catch((error: unknown) => {
     if (error instanceof SpaceDeletionInProgressError) return ignored("space being deleted");

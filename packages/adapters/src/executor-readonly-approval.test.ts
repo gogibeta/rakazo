@@ -100,7 +100,7 @@ function fixture({
   existingSharedMemory,
   advanceRevisionAfterRead = false,
   fleetManagement = false,
-  fleetBots = [] as { id: string; name: string; thread?: { id: string } }[],
+  fleetBots = [] as { id: string; name: string; threads?: { id: string }[] }[],
   secondResource = false,
   routines = [] as { name: string; prompt: string }[],
   connectedApps = [] as string[],
@@ -127,7 +127,7 @@ function fixture({
   /** The switch as the run starts; `liveBot` is what a later read sees. */
   fleetManagement?: boolean;
   /** Other active bots of the same user, found by id or exact name. */
-  fleetBots?: { id: string; name: string; thread?: { id: string } }[];
+  fleetBots?: { id: string; name: string; threads?: { id: string }[] }[];
   parallelCalls?: boolean;
   sourceRole?: string;
   builtin?: boolean;
@@ -2423,7 +2423,7 @@ describe("bot management approvals", () => {
       fleetManagement: true,
       autoReview: true,
       rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "create_child_routine" }],
-      fleetBots: [{ id: "bot-a", name: "Alpha", thread: { id: "thread-a" } }],
+      fleetBots: [{ id: "bot-a", name: "Alpha", threads: [{ id: "thread-a" }] }],
     });
     f.setCalls([
       { name: "web_search", args: { query: "news" }, executionId: "call-1" },

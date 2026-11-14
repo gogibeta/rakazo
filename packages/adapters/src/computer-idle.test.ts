@@ -2069,7 +2069,7 @@ function idleHarness(
     computerRun: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     $executeRaw: vi.fn().mockResolvedValue(1),
     bot: {
-      findMany: vi.fn().mockResolvedValue([{ id: "bot", thread: { id: "thread" } }]),
+      findMany: vi.fn().mockResolvedValue([{ id: "bot", threads: [{ id: "thread" }] }]),
     },
   };
   const sandbox = {

@@ -90,9 +90,11 @@ describePostgres("unread inbox chat count (PostgreSQL)", () => {
         name: "Fixture",
         color: "blue",
         archivedAt: archived ? new Date() : null,
-        thread: { create: { spaceId, userId: owner, ...readsFor(spaceId, unread) } },
+        threads: {
+          create: { spaceId, userId: owner, ...readsFor(spaceId, unread), isPrimary: true },
+        },
       },
-      include: { thread: true },
+      include: { threads: true },
     });
   }
 
@@ -148,7 +150,7 @@ describePostgres("unread inbox chat count (PostgreSQL)", () => {
     // Unread only for someone else: another member read it, or it was theirs to read.
     const readByThem = await bot(spaceId, userId, false);
     await asSystem(prisma).threadRead.create({
-      data: { threadId: readByThem.thread!.id, spaceId, userId: otherUserId, unread: true },
+      data: { threadId: readByThem.threads[0]!.id, spaceId, userId: otherUserId, unread: true },
     });
     // Snoozed until later: out of the inbox, so not counted. Woken: back, and counted.
     for (const snoozedUntil of [
@@ -157,7 +159,7 @@ describePostgres("unread inbox chat count (PostgreSQL)", () => {
     ]) {
       const snoozed = await bot(spaceId);
       await asSystem(prisma).threadRead.update({
-        where: { threadId_userId: { threadId: snoozed.thread!.id, userId } },
+        where: { threadId_userId: { threadId: snoozed.threads[0]!.id, userId } },
         data: { snoozedUntil },
       });
     }

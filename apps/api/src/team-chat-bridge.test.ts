@@ -2537,7 +2537,7 @@ describe("team chat bridge", () => {
           botId: "bot-1",
           displayName: "Leadership",
           participantNames: ["Ada", "Grace", "Arthur"],
-          thread: { create: { spaceId: "space-1", userId: "owner-1" } },
+          thread: { create: { spaceId: "space-1", userId: "owner-1", kind: "external" } },
         }),
       }),
     );

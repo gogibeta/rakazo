@@ -506,7 +506,7 @@ function controlHarness(
     bot: {
       findUnique: vi.fn().mockResolvedValue({
         id: "bot",
-        thread: { id: "thread" },
+        threads: [{ id: "thread" }],
         computer,
       }),
     },
