@@ -67,12 +67,12 @@ describe.skipIf(!enabled)("typed replies to waiting cards (PostgreSQL)", () => {
         userId: actor.userId,
         name: "Beta",
         color: "primary",
-        thread: { create: { spaceId: actor.spaceId, userId: actor.userId } },
+        threads: { create: { spaceId: actor.spaceId, userId: actor.userId, isPrimary: true } },
       },
-      include: { thread: true },
+      include: { threads: true },
     });
     peerBotId = peer.id;
-    peerThreadId = peer.thread!.id;
+    peerThreadId = peer.threads[0]!.id;
     const group = await system.chatGroup.create({
       data: {
         spaceId: actor.spaceId,

@@ -25,7 +25,11 @@ function setup(ticketBoardEnabled: boolean, status = "todo") {
       })),
     },
     bot: {
-      findFirst: vi.fn(async () => ({ id: "bot-1", userId: "user-1", thread: { id: "thread-1" } })),
+      findFirst: vi.fn(async () => ({
+        id: "bot-1",
+        userId: "user-1",
+        threads: [{ id: "thread-1" }],
+      })),
     },
     task: { create: createTask },
     run: { create: createRun },

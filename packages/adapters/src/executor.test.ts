@@ -2197,7 +2197,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       thread: {
@@ -2274,7 +2274,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       thread: {
@@ -2367,7 +2367,7 @@ describe("createRunExecutor", () => {
           })),
         },
         bot: {
-          findUnique: vi.fn(async () => ({ id: "bot-1", thread: { id: "thread-1" } })),
+          findUnique: vi.fn(async () => ({ id: "bot-1", threads: [{ id: "thread-1" }] })),
         },
         agentSkill: { findMany: vi.fn(async () => []) },
         $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
@@ -2474,7 +2474,7 @@ describe("createRunExecutor", () => {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
           archivedAt: new Date(),
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       $transaction,
@@ -2520,7 +2520,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "dm-thread-1" },
+          threads: [{ id: "dm-thread-1" }],
         })),
       },
       thread: { findFirst },
@@ -2600,7 +2600,7 @@ describe("createRunExecutor", () => {
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "dm-thread-1" },
+          threads: [{ id: "dm-thread-1" }],
         })),
       },
       thread: { findFirst },
@@ -2689,7 +2689,7 @@ description: Prepare standup notes
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       agentSkill: {
@@ -2768,7 +2768,7 @@ description: Prepare standup notes
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       agentSkill: {
@@ -2835,7 +2835,7 @@ description: Prepare standup notes
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         })),
       },
       agentSkill: {

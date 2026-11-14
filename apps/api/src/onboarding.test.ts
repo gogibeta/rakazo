@@ -25,7 +25,7 @@ function fixture(catalog: unknown[]) {
   };
   const deps = {
     prisma: {
-      bot: { findFirst: vi.fn(async () => ({ id: "bot", thread: { id: "thread" } })) },
+      bot: { findFirst: vi.fn(async () => ({ id: "bot", threads: [{ id: "thread" }] })) },
       $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
     },
     events: { notify: vi.fn() },

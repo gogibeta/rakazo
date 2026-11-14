@@ -66,6 +66,7 @@ export * from "./spending.js";
 export * from "./thread-ask.js";
 export { primaryActiveRun } from "./thread-listing.js";
 export * from "./thread-reads.js";
+export * from "./thread-sessions.js";
 export type { ClaimedSteeringMessage, ClaimSteeringInput } from "./thread-steering.js";
 export {
   claimSteering,

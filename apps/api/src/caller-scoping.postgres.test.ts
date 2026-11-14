@@ -84,7 +84,7 @@ describePostgres("caller and tenant scoping (PostgreSQL)", () => {
         userId,
         name: "Scoped",
         color: "ink",
-        thread: { create: { spaceId, userId } },
+        threads: { create: { spaceId, userId, isPrimary: true } },
         ...data,
       },
     });

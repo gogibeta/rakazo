@@ -610,7 +610,12 @@ async function ensureTeamConversation(
     select: { id: true },
   });
   const thread = await prisma.thread.create({
-    data: { spaceId: input.spaceId, userId: input.userId, externalConversationId: conversation.id },
+    data: {
+      spaceId: input.spaceId,
+      userId: input.userId,
+      externalConversationId: conversation.id,
+      kind: "external",
+    },
     select: { id: true },
   });
   await createThreadMessage(prisma, {

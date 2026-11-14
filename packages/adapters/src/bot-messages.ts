@@ -101,7 +101,11 @@ export async function messageBot(
 
   const candidates = await deps.prisma.bot.findMany({
     where: { spaceId: run.spaceId, archivedAt: null },
-    select: { id: true, name: true, thread: { select: { id: true } } },
+    select: {
+      id: true,
+      name: true,
+      threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
+    },
   });
   const target = resolveBotAddress(candidates, {
     botId: input.bot_id,
@@ -109,7 +113,7 @@ export async function messageBot(
   });
   if (!target) return { ok: false as const, error: "no bot found with that id or name" };
   if (target.id === sender.id) return { ok: false as const, error: "a bot cannot message itself" };
-  if (!target.thread)
+  if (!target.threads[0])
     return { ok: false as const, error: `${target.name} has no chat to deliver to` };
   const returnsToSender =
     options?.allowTerminalSource === true &&
@@ -126,7 +130,7 @@ export async function messageBot(
     };
   }
 
-  const targetThreadId = target.thread.id;
+  const targetThreadId = target.threads[0].id;
 
   // A tool call can be re-executed after a lease expiry, so a delivery has to be
   // replayable: without this the recipient is messaged twice and woken twice.

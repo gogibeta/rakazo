@@ -190,11 +190,15 @@ export function accountRoutes(ctx: RouterContext) {
           const bots = await runAsSystem("restyle the user's own bots in all their spaces", () =>
             deps.prisma.bot.findMany({
               where: { userId, avatarSetPinned: false, avatarSet: { not: botAvatarSet } },
-              select: { id: true, spaceId: true, thread: { select: { id: true } } },
+              select: {
+                id: true,
+                spaceId: true,
+                threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
+              },
             }),
           );
           for (const bot of bots) {
-            const threadId = bot.thread?.id;
+            const threadId = bot.threads[0]?.id;
             if (!threadId) continue;
             // A newer save changed the default again: its own pass owns the remaining bots.
             const current = await deps.prisma.user.findUniqueOrThrow({

@@ -786,7 +786,7 @@ describe("model setup gate", () => {
       },
       // A bot that follows the main model.
       bot: {
-        findFirst: vi.fn().mockResolvedValue({ id: "bot-1", thread: { id: "thread-1" } }),
+        findFirst: vi.fn().mockResolvedValue({ id: "bot-1", threads: [{ id: "thread-1" }] }),
         findMany: vi
           .fn()
           .mockResolvedValue([{ modelProvider: null, modelId: null, thinkingLevel: null }]),
@@ -995,7 +995,7 @@ describe("thread answer delivery", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: null,
         }),
       },
@@ -1063,7 +1063,7 @@ describe("oversized one-time answer", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: null,
         }),
       },
@@ -1116,7 +1116,7 @@ describe("secret request dismissal", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: null,
         }),
       },
@@ -1307,7 +1307,7 @@ describe("thread stream authorization", () => {
       bot: {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: null,
         }),
       },
@@ -4263,7 +4263,7 @@ describe("computer screen url", () => {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
           screenGeneration: 2,
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: computerRow,
         }),
       },
@@ -4408,7 +4408,7 @@ describe("computer terminal and file transfer", () => {
         findFirst: vi.fn().mockResolvedValue({
           id: "bot-1",
           screenGeneration: 2,
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: {
             id: "computer-1",
             screenGeneration: 3,
@@ -7406,7 +7406,7 @@ describe("bot model auth on save", () => {
       teamChatRules: "",
       webhookSecretId: null,
       spawnKey: null,
-      thread: { id: "thread-1", reads: [], messages: [], runs: [] },
+      threads: [{ id: "thread-1", reads: [], messages: [], runs: [] }],
       computer: null,
       runs: [],
     };
@@ -8020,7 +8020,7 @@ describe("routines.update", () => {
       run: { updateManyAndReturn: moveQueued },
       bot: {
         findFirst: vi.fn(async () =>
-          botArchived ? null : { id: "bot-1", thread: { id: "thread-1" }, computer: null },
+          botArchived ? null : { id: "bot-1", threads: [{ id: "thread-1" }], computer: null },
         ),
       },
     };
@@ -8466,7 +8466,7 @@ describe("openai-compatible enabled models", () => {
       teamChatRules: "",
       webhookSecretId: null,
       spawnKey: null,
-      thread: { id: "thread-1", reads: [], messages: [], runs: [] },
+      threads: [{ id: "thread-1", reads: [], messages: [], runs: [] }],
       computer: null,
       runs: [],
     };
@@ -9219,7 +9219,7 @@ describe("threads.answerCall and threads.declineCall", () => {
       bot: {
         findFirst: vi
           .fn()
-          .mockResolvedValue({ id: "bot-1", thread: { id: "thread-1" }, computer: null }),
+          .mockResolvedValue({ id: "bot-1", threads: [{ id: "thread-1" }], computer: null }),
       },
       message: {
         findUnique: vi.fn().mockResolvedValue({
@@ -9376,7 +9376,7 @@ describe("threads.endCall", () => {
       bot: {
         findFirst: vi
           .fn()
-          .mockResolvedValue({ id: "bot-1", thread: { id: "thread-1" }, computer: null }),
+          .mockResolvedValue({ id: "bot-1", threads: [{ id: "thread-1" }], computer: null }),
       },
       // No bot-placed call behind this one: only the caller's own hang-up runs.
       message: { findUnique: vi.fn().mockResolvedValue(null) },
@@ -10078,7 +10078,7 @@ describe("export.bot", () => {
           description: "",
           instructions: "",
           ...appearance,
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           computer: { id: "computer-1", scope, homeKey: "home-1" },
         }),
       },
@@ -10487,7 +10487,7 @@ describe("shared space bot permissions", () => {
       userId: "user-2",
       archivedAt: null,
       webhookSecretId: null,
-      thread: { id: "thread-1" },
+      threads: [{ id: "thread-1" }],
       computer: null,
     };
     const prisma = {
@@ -10568,7 +10568,7 @@ describe("quarantined computer stop", () => {
               spaceId: "space",
               userId: "user",
               screenGeneration: 1,
-              thread: { id: "thread" },
+              threads: [{ id: "thread" }],
               computer: snapshot,
             };
           }),

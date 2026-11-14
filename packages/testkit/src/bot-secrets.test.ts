@@ -547,7 +547,9 @@ describeIntegration("reusable credential lifecycle", () => {
         instructions: "",
         notifyOnFinish: false,
       });
-      const thread = await db.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+      const thread = await db.thread.findFirstOrThrow({
+        where: { botId: bot.id, isPrimary: true },
+      });
       const task = await db.task.create({
         data: {
           userId,
@@ -657,7 +659,7 @@ describeIntegration("reusable credential lifecycle", () => {
       instructions: "",
       notifyOnFinish: false,
     });
-    const thread = await db.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const thread = await db.thread.findFirstOrThrow({ where: { botId: bot.id, isPrimary: true } });
     const task = await db.task.create({
       data: {
         spaceId: me.spaceId,

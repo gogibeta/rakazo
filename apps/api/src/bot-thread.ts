@@ -10,10 +10,10 @@ export type BotThreadDeps = {
 export async function requireBotThread(deps: BotThreadDeps, actor: Actor, botId: string) {
   const bot = await deps.prisma.bot.findFirst({
     where: { id: botId, spaceId: actor.spaceId },
-    include: { thread: true },
+    include: { threads: { where: { isPrimary: true }, take: 1 } },
   });
-  if (!bot?.thread) throw new IsolationError();
-  return { bot, thread: bot.thread };
+  if (!bot?.threads[0]) throw new IsolationError();
+  return { bot, thread: bot.threads[0] };
 }
 
 export async function updateBlocks(

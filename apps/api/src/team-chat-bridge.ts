@@ -452,7 +452,7 @@ export class TeamChatBridge {
         spaceId: target.spaceId,
         botId: target.id,
         userId: target.userId,
-        thread: { create: { spaceId: target.spaceId, userId: target.userId } },
+        thread: { create: { spaceId: target.spaceId, userId: target.userId, kind: "external" } },
       },
       update: {
         conversationId: message.conversationId,

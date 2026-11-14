@@ -138,7 +138,7 @@ function createDeps(
               spaceId: "ws-2",
               userId: "user-2",
               archivedAt: null,
-              thread: { id: "thread-2" },
+              threads: [{ id: "thread-2" }],
             }
           : { id: "bot-1", name: "Assistant", spaceId: "ws-1", userId: "user-1" },
       ),

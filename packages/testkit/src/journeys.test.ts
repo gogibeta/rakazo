@@ -643,7 +643,9 @@ describeJourneys("required product journeys", () => {
       notify: false,
       active: false,
     });
-    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const thread = await prisma.thread.findFirstOrThrow({
+      where: { botId: bot.id, isPrimary: true },
+    });
     const task = await prisma.task.create({
       data: {
         spaceId: thread.spaceId,
@@ -1402,7 +1404,9 @@ describeJourneys("required product journeys", () => {
       instructions: "",
       notifyOnFinish: false,
     });
-    const dmThread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const dmThread = await prisma.thread.findFirstOrThrow({
+      where: { botId: bot.id, isPrimary: true },
+    });
     const group = await rpc<{ id: string; threadId: string }>(app, cookie, "groups/create", {
       name: "Schedule room",
       botIds: [bot.id, peer.id],
@@ -1524,7 +1528,9 @@ describeJourneys("required product journeys", () => {
       instructions: "",
       notifyOnFinish: false,
     });
-    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+    const thread = await prisma.thread.findFirstOrThrow({
+      where: { botId: bot.id, isPrimary: true },
+    });
 
     await runAsSystem("background job run.continue", () =>
       Promise.all(
@@ -2006,8 +2012,8 @@ describeJourneys("required product journeys", () => {
       instructions: "",
       notifyOnFinish: false,
     });
-    const chat = await prisma.thread.findUniqueOrThrow({
-      where: { botId: bot.id },
+    const chat = await prisma.thread.findFirstOrThrow({
+      where: { botId: bot.id, isPrimary: true },
       select: { id: true },
     });
     return { cookie, bot, chat };
@@ -2028,7 +2034,7 @@ describeJourneys("required product journeys", () => {
   let helperStarts = 0;
   /** Starts a background helper from the bot's chat the way run_subagent does. */
   async function startHelper(cookie: string, botId: string, task: string, effectKey?: string) {
-    const chat = await prisma.thread.findUniqueOrThrow({ where: { botId } });
+    const chat = await prisma.thread.findFirstOrThrow({ where: { botId, isPrimary: true } });
     let parent = await prisma.run.findFirst({
       where: { threadId: chat.id, trigger: "user", status: "completed" },
       orderBy: { createdAt: "desc" },

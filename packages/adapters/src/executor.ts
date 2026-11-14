@@ -1680,7 +1680,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                   spaceId: run.spaceId,
                   archivedAt: null,
                   id: { not: bot.id },
-                  thread: { isNot: null },
+                  threads: { some: { isPrimary: true } },
                 },
                 select: { id: true, name: true, description: true },
                 orderBy: { createdAt: "asc" },

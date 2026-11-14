@@ -35,7 +35,7 @@ function createDeps(
       spaceId: string;
       userId: string;
       webhookSecretId: string | null;
-      thread: { id: string } | null;
+      threads: Array<{ id: string }>;
     } | null;
     secret?: {
       id: string;
@@ -68,7 +68,7 @@ function createDeps(
           spaceId: "ws-1",
           userId: "user-1",
           webhookSecretId: "secret-1",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         }
       : overrides.bot;
   const secret =
@@ -282,7 +282,7 @@ describe("inbound webhook HTTP route", () => {
         spaceId: "ws-1",
         userId: "user-1",
         webhookSecretId: null,
-        thread: { id: "thread-1" },
+        threads: [{ id: "thread-1" }],
       },
     });
     const app = mount(deps);
@@ -1060,7 +1060,7 @@ describe("webhook secret decryption", () => {
       spaceId: "ws-1",
       userId: "user-1",
       webhookSecretId,
-      thread: { id: "thread-1" },
+      threads: [{ id: "thread-1" }],
     })) as never);
 
     const pending = app.request("/api/v1/bots/bot-1/webhook", bearerDelivery(SECRET));
@@ -1141,7 +1141,7 @@ describe("webhook external rotation", () => {
         spaceId: "ws-1",
         userId: "user-1",
         webhookSecretId: record.id,
-        thread: { id: "thread-1" },
+        threads: [{ id: "thread-1" }],
       },
     });
     deps.secrets = store;
@@ -1195,7 +1195,7 @@ describe("encrypted webhook cache expiry", () => {
         spaceId: "ws-1",
         userId: "user-1",
         webhookSecretId: record.id,
-        thread: { id: "thread-1" },
+        threads: [{ id: "thread-1" }],
       },
     });
     deps.secrets = store;
@@ -1249,7 +1249,7 @@ describe("webhook secret cache", () => {
                   spaceId: "ws-1",
                   userId: "user-1",
                   webhookSecretId,
-                  thread: { id: "thread-1" },
+                  threads: [{ id: "thread-1" }],
                 }
               : null;
           }),
