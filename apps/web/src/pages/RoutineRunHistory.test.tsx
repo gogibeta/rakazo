@@ -305,6 +305,7 @@ function OpenChat() {
     inGroup: false,
     activeBotId: ref("bot-1"),
     activeGroupId: ref(undefined),
+    sessionId: undefined,
     botsRef: ref([]),
     searchParamsRef: ref(new URLSearchParams()),
     refreshBots: async () => {},

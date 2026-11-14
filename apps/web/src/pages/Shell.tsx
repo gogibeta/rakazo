@@ -85,6 +85,7 @@ import { focusSidebarSearch, ShellSidebar } from "./shell/shell-sidebar";
 import { ShellSidePanel } from "./shell/side-panel";
 import { BotsSidebarLayout } from "./shell/sidebar-layout";
 import { SidebarRoster } from "./shell/sidebar-roster";
+import { SidebarSessions } from "./shell/sidebar-sessions";
 import { SnoozedChats } from "./shell/snoozed-chats";
 import { countUnreadChats, sidebarGroupsForSpaces } from "./shell/space-sidebar";
 import { Transcript } from "./shell/transcript";
@@ -300,6 +301,19 @@ function SpaceShell() {
   );
   const activeGroup = groups.find((group) => group.id === groupId);
   const activeBotId = useRef<string | undefined>(inGroup ? undefined : active?.id);
+  // The open session of the active bot's chat; absent means the primary
+  // session. Group chats have exactly one session, so the param is
+  // ignored there.
+  const activeSessionId = inGroup ? undefined : (searchParams.get("session") ?? undefined);
+  const selectSession = useCallback(
+    (threadId: string | null) => {
+      const next = new URLSearchParams(searchParams);
+      if (threadId) next.set("session", threadId);
+      else next.delete("session");
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
   activeBotId.current = inGroup ? undefined : active?.id;
   const activeGroupId = useRef<string | undefined>(groupId);
   activeGroupId.current = groupId;
@@ -499,6 +513,7 @@ function SpaceShell() {
     activeGroup,
     activeBotId,
     activeGroupId,
+    sessionId: activeSessionId,
     botsRef,
     searchParamsRef,
     refreshBots,
@@ -727,6 +742,7 @@ function SpaceShell() {
     groupId,
     activeBotId,
     activeGroupId,
+    sessionId: activeSessionId,
     botsRef,
     bootstrapMe,
     activeSnapshot,
@@ -965,37 +981,49 @@ function SpaceShell() {
         setNewSpaceOpen={dialogs.setNewSpaceOpen}
         setCreateBotOpen={dialogs.setCreateBotOpen}
         roster={
-          <SidebarRoster
-            mini={miniSidebar}
-            sidebarGroups={sidebarGroups}
-            collapsedSidebarSections={collapsedSidebarSections}
-            bootstrapMe={bootstrapMe}
-            botSections={botSections}
-            spaces={spaces}
-            rosterDropKey={rosterDrop.rosterDropKey}
-            setRosterDropKey={rosterDrop.setRosterDropKey}
-            rosterDropAction={rosterDrop.rosterDropAction}
-            applyRosterDrop={rosterDrop.applyRosterDrop}
-            openSpaceChat={openSpaceChat}
-            spaceMenuAnchor={dialogs.spaceMenuAnchor}
-            setSpaceMenu={dialogs.setSpaceMenu}
-            setRenameSectionTarget={dialogs.setRenameSectionTarget}
-            setDeleteSectionTarget={dialogs.setDeleteSectionTarget}
-            toggleSidebarSection={toggleSidebarSection}
-            inGroup={inGroup}
-            active={active}
-            activeGroup={activeGroup}
-            botsSidebarDensity={botsSidebarDensity}
-            dismissedRunErrorIds={composer.dismissedRunErrorIds}
-            displayedRunError={composer.displayedRunError}
-            draggedBotId={rosterDrop.draggedBotId}
-            setDraggedBotId={rosterDrop.setDraggedBotId}
-            botMenu={botMenu}
-            setBotMenu={setBotMenu}
-            reorderRosterBot={roster.reorderRosterBot}
-            activeSnapshot={activeSnapshot}
-            botMenuContent={botMenuContent}
-          />
+          <>
+            <SidebarRoster
+              mini={miniSidebar}
+              sidebarGroups={sidebarGroups}
+              collapsedSidebarSections={collapsedSidebarSections}
+              bootstrapMe={bootstrapMe}
+              botSections={botSections}
+              spaces={spaces}
+              rosterDropKey={rosterDrop.rosterDropKey}
+              setRosterDropKey={rosterDrop.setRosterDropKey}
+              rosterDropAction={rosterDrop.rosterDropAction}
+              applyRosterDrop={rosterDrop.applyRosterDrop}
+              openSpaceChat={openSpaceChat}
+              spaceMenuAnchor={dialogs.spaceMenuAnchor}
+              setSpaceMenu={dialogs.setSpaceMenu}
+              setRenameSectionTarget={dialogs.setRenameSectionTarget}
+              setDeleteSectionTarget={dialogs.setDeleteSectionTarget}
+              toggleSidebarSection={toggleSidebarSection}
+              inGroup={inGroup}
+              active={active}
+              activeGroup={activeGroup}
+              botsSidebarDensity={botsSidebarDensity}
+              dismissedRunErrorIds={composer.dismissedRunErrorIds}
+              displayedRunError={composer.displayedRunError}
+              draggedBotId={rosterDrop.draggedBotId}
+              setDraggedBotId={rosterDrop.setDraggedBotId}
+              botMenu={botMenu}
+              setBotMenu={setBotMenu}
+              reorderRosterBot={roster.reorderRosterBot}
+              activeSnapshot={activeSnapshot}
+              botMenuContent={botMenuContent}
+            />
+            {active && !inGroup ? (
+              <SidebarSessions
+                rpc={rpc}
+                queries={queries}
+                botId={active.id}
+                botName={active.name}
+                sessionId={activeSessionId}
+                onSelect={selectSession}
+              />
+            ) : null}
+          </>
         }
         archived={
           <>

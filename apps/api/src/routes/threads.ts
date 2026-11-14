@@ -1,7 +1,8 @@
 import { ORPCError } from "@orpc/server";
 import { runContinueJob, runJobKey } from "@rakazo/adapter-kit";
 import { settleCallRequest } from "@rakazo/adapters";
-import type { Actor } from "@rakazo/contracts";
+import type { Actor, ThreadSession } from "@rakazo/contracts";
+import { defaultGroupName } from "@rakazo/contracts";
 import {
   AttachmentValidationError,
   CALL_CLIENT_NONCE_PREFIX,
@@ -14,7 +15,10 @@ import type { Prisma } from "@rakazo/db";
 import {
   AnswerTooLongError,
   appendEventInTransaction,
+  archiveSession as archiveDbSession,
+  createSession as createDbSession,
   createExternalConversationRepos,
+  createGroupRepos,
   createThreadMessageInTransaction,
   IsolationError,
   isUniqueViolation,
@@ -22,6 +26,7 @@ import {
   lockSpaceGroup,
   THREAD_LOCK_TRANSACTION_OPTIONS,
   touchGroupUpdatedAt,
+  unarchiveSession as unarchiveDbSession,
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -48,6 +53,7 @@ import { isStopMessage, stopThreadRuns } from "../thread-stop.js";
 import type { ThreadTarget } from "../thread-target.js";
 import {
   replyParentBotId,
+  resolveNewConversationBotId,
   resolveThreadTarget,
   sendTargetBotIds,
   sendThreadMessage,
@@ -69,6 +75,35 @@ import {
  * the marker's callId. User turns carry a uuid suffix, so they never collide. */
 export function callMarkerClientNonce(callId: string): string {
   return `${CALL_CLIENT_NONCE_PREFIX}${callId}:marker`;
+}
+
+/** The refusal a user send into an archived session gets; system insertions never pass through here. */
+const ARCHIVED_SESSION_SEND_ERROR =
+  "This conversation is archived. Unarchive it or start a new conversation.";
+
+/** A session row as the session list shows it; the caller names the bot the row was validated against. */
+function sessionSummary(
+  botId: string,
+  thread: {
+    id: string;
+    title: string | null;
+    kind: string;
+    isPrimary: boolean;
+    archivedAt: Date | null;
+    lastMessageAt: Date | null;
+    createdAt: Date;
+  },
+): ThreadSession {
+  return {
+    id: thread.id,
+    botId,
+    title: thread.title,
+    kind: thread.kind === "routine" || thread.kind === "delegation" ? thread.kind : "direct",
+    isPrimary: thread.isPrimary,
+    archivedAt: thread.archivedAt?.toISOString() ?? null,
+    lastMessageAt: thread.lastMessageAt?.toISOString() ?? null,
+    createdAt: thread.createdAt.toISOString(),
+  };
 }
 
 /** The card is closed by a marker; the run that follows finishes whatever the call left open. */
@@ -113,6 +148,10 @@ export function threadsRoutes(ctx: RouterContext) {
   ) => {
     const setup = await modelSetup(deps, actor);
     const target = await resolveThreadTarget(deps.prisma, actor, input);
+    // An archived session stays readable but takes no new sends; stopping work is always allowed.
+    if (target.threadArchived && !isStopMessage(input)) {
+      throw new ORPCError("BAD_REQUEST", { message: ARCHIVED_SESSION_SEND_ERROR });
+    }
     // A bot with its own runnable model needs no main model, and stopping work needs none.
     const replied =
       target.kind === "group" ? await replyParentBotId(deps.prisma, target, input) : undefined;
@@ -365,6 +404,9 @@ export function threadsRoutes(ctx: RouterContext) {
       }),
       followUp: authed.threads.followUp.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
+        if (target.threadArchived) {
+          throw new ORPCError("BAD_REQUEST", { message: ARCHIVED_SESSION_SEND_ERROR });
+        }
         if (target.kind === "bot") {
           await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, target.botId);
           const sent = await deps.events.sendUserMessage({
@@ -671,6 +713,119 @@ export function threadsRoutes(ctx: RouterContext) {
       snooze: authed.threads.snooze.handler(async ({ context, input }) => {
         const target = await resolveThreadTarget(deps.prisma, context.actor, input);
         await setThreadSnooze(deps.prisma, context.actor, target, input.until);
+        return { ok: true as const };
+      }),
+      listSessions: authed.threads.listSessions.handler(async ({ context, input }) => {
+        const bot = await deps.prisma.bot.findFirst({
+          where: { id: input.botId, spaceId: context.actor.spaceId, archivedAt: null },
+          select: { id: true },
+        });
+        if (!bot) throw new IsolationError();
+        const threads = await deps.prisma.thread.findMany({
+          where: {
+            spaceId: context.actor.spaceId,
+            botId: input.botId,
+            kind: { in: ["direct", "routine", "delegation"] },
+          },
+          orderBy: [{ createdAt: "desc" }],
+          take: 200,
+        });
+        return threads
+          .map((thread) => sessionSummary(input.botId, thread))
+          .sort((a, b) =>
+            (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt),
+          );
+      }),
+      createSession: authed.threads.createSession.handler(async ({ context, input }) => {
+        const { actor } = context;
+        if (input.botIds) {
+          const wanted = [...new Set(input.botIds)];
+          // Reuse the live group with exactly this member set; only make a new one without a match.
+          const groups = await deps.prisma.chatGroup.findMany({
+            where: { spaceId: actor.spaceId, archivedAt: null },
+            include: {
+              members: { where: { bot: { archivedAt: null } }, select: { botId: true } },
+              thread: { select: { id: true } },
+            },
+          });
+          const match = groups.find(
+            (group) =>
+              group.thread &&
+              group.members.length === wanted.length &&
+              group.members.every((member) => wanted.includes(member.botId)),
+          );
+          if (match?.thread) return { threadId: match.thread.id, groupId: match.id };
+          const bots = await deps.prisma.bot.findMany({
+            where: { id: { in: wanted }, spaceId: actor.spaceId, archivedAt: null },
+            select: { id: true, name: true },
+          });
+          if (bots.length !== wanted.length) throw new IsolationError();
+          const ordered = wanted.map((id) => bots.find((bot) => bot.id === id)!);
+          const group = await createGroupRepos(deps.prisma).createGroup(actor, {
+            name: defaultGroupName(ordered.map((bot) => bot.name)),
+            botIds: wanted,
+          });
+          return { threadId: group.threadId, groupId: group.id };
+        }
+        const botId = input.botId ?? (await resolveNewConversationBotId(deps.prisma, actor));
+        if (!botId) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "Create a bot first, then start a conversation.",
+          });
+        }
+        const bot = await deps.prisma.bot.findFirst({
+          where: { id: botId, spaceId: actor.spaceId, archivedAt: null },
+          select: { id: true },
+        });
+        if (!bot) throw new IsolationError();
+        const session = await createDbSession(deps.prisma, {
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          botId,
+          kind: "direct",
+          origin: "web",
+        });
+        return { threadId: session.id, botId };
+      }),
+      renameSession: authed.threads.renameSession.handler(async ({ context, input }) => {
+        const thread = await deps.prisma.thread.findFirst({
+          where: { id: input.threadId, spaceId: context.actor.spaceId, botId: input.botId },
+        });
+        if (!thread) throw new IsolationError();
+        const updated = await deps.prisma.thread.update({
+          where: { id: thread.id },
+          data: { title: input.title },
+        });
+        return sessionSummary(input.botId, updated);
+      }),
+      archiveSession: authed.threads.archiveSession.handler(async ({ context, input }) => {
+        const thread = await deps.prisma.thread.findFirst({
+          where: { id: input.threadId, spaceId: context.actor.spaceId, botId: input.botId },
+          select: { id: true, isPrimary: true },
+        });
+        if (!thread) throw new IsolationError();
+        // The primary session is where the bot's DMs land; archiving it would strand them.
+        if (thread.isPrimary) {
+          throw new ORPCError("BAD_REQUEST", {
+            message: "The primary conversation can't be archived.",
+          });
+        }
+        await archiveDbSession(deps.prisma, {
+          threadId: thread.id,
+          actorUserId: context.actor.userId,
+        });
+        return { ok: true as const };
+      }),
+      unarchiveSession: authed.threads.unarchiveSession.handler(async ({ context, input }) => {
+        const thread = await deps.prisma.thread.findFirst({
+          where: { id: input.threadId, spaceId: context.actor.spaceId, botId: input.botId },
+          select: { id: true },
+        });
+        if (!thread) throw new IsolationError();
+        await unarchiveDbSession(deps.prisma, {
+          threadId: thread.id,
+          actorUserId: context.actor.userId,
+        });
         return { ok: true as const };
       }),
     },

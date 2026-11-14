@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@rakazo/db";
-import { RunHistoryWriteError } from "@rakazo/db";
+import { installAuditEventStore, RunHistoryWriteError } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   currentBotMessageHop,
@@ -31,17 +31,44 @@ function deps(
     uniqueConflictOnCommit?: boolean;
     transactionConflictOnce?: boolean;
     deletingSpace?: boolean;
+    /** The delegation session already open for this parent, when there is one. */
+    delegationSession?: { id: string } | null;
+    /** The session holding the message an outcome answers; absent means it is gone. */
+    originThreadId?: string;
   } = {},
 ) {
   const enqueue = vi.fn().mockResolvedValue(undefined);
   const notify = vi.fn().mockResolvedValue(undefined);
   const messageFindUnique = vi
     .fn()
-    .mockImplementation(async (args: { where?: { threadId_clientNonce?: unknown } }) =>
-      args?.where?.threadId_clientNonce
-        ? (options.alreadyDelivered ?? null)
-        : { blocks: options.hopBlocks ?? [] },
+    .mockImplementation(
+      async (args: {
+        where?: { threadId_clientNonce?: unknown };
+        select?: { threadId?: boolean };
+      }) =>
+        args?.where?.threadId_clientNonce
+          ? (options.alreadyDelivered ?? null)
+          : args?.select?.threadId
+            ? options.originThreadId
+              ? { threadId: options.originThreadId }
+              : { blocks: options.hopBlocks ?? [] }
+            : { blocks: options.hopBlocks ?? [] },
     );
+  const threadFindFirst = vi
+    .fn()
+    .mockImplementation(async (args: { where?: { id?: string } }) =>
+      args?.where?.id
+        ? options.originThreadId === args.where.id
+          ? { id: args.where.id }
+          : null
+        : (options.delegationSession ?? null),
+    );
+  const threadCreate = vi
+    .fn()
+    .mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+      id: "thread-delegation",
+      ...data,
+    }));
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "thread" }]),
     $executeRaw: vi.fn().mockResolvedValue(0),
@@ -88,6 +115,7 @@ function deps(
         ),
     },
     message: { findUnique: messageFindUnique, findMany: vi.fn().mockResolvedValue([]) },
+    thread: { findFirst: threadFindFirst, create: threadCreate },
     run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     $transaction: vi.fn(async (fn: (client: unknown) => unknown) => {
       transactionAttempts += 1;
@@ -106,6 +134,7 @@ function deps(
       "prisma" | "events" | "jobs"
     >,
     tx,
+    threadCreate,
     unreadMarks,
     enqueue,
     notify,
@@ -128,7 +157,7 @@ describe("messaging another bot", () => {
     expect(harness.enqueue).not.toHaveBeenCalled();
   });
 
-  it("delivers into the target's own chat without marking either thread unread", async () => {
+  it("delivers into the target's delegation session without marking either thread unread", async () => {
     const harness = deps();
     const sent = await messageBot(harness.deps, run, sender, {
       bot_id: "bot-target",
@@ -140,7 +169,7 @@ describe("messaging another bot", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           botId: "bot-target",
-          threadId: "thread-target",
+          threadId: "thread-delegation",
           prompt: expect.stringMatching(/not the user typing[\s\S]*untrusted peer content/),
         }),
       }),
@@ -149,17 +178,158 @@ describe("messaging another bot", () => {
       expect.objectContaining({
         data: expect.objectContaining({
           botId: "bot-target",
-          threadId: "thread-target",
+          threadId: "thread-delegation",
           status: "queued",
           trigger: "bot_message",
         }),
       }),
     );
-    expect(harness.notify).toHaveBeenCalledWith("thread-target", 7);
+    expect(harness.notify).toHaveBeenCalledWith("thread-delegation", 7);
     expect(harness.notify).toHaveBeenCalledWith("thread-sender", 7);
     expect(harness.tx.message.create).toHaveBeenCalledTimes(2);
     expect(harness.unreadMarks()).toHaveLength(0);
     expect(harness.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates the delegation session once, titled from the first task", async () => {
+    const harness = deps();
+    const sent = await messageBot(harness.deps, run, sender, {
+      bot_id: "bot-target",
+      message: "chart the q3 numbers\nwith a breakdown by region",
+    });
+
+    expect(sent).toMatchObject({ ok: true });
+    expect(harness.threadCreate).toHaveBeenCalledExactlyOnceWith({
+      data: expect.objectContaining({
+        spaceId: "workspace-1",
+        userId: "user-1",
+        botId: "bot-target",
+        kind: "delegation",
+        origin: "delegation",
+        parentThreadId: "thread-sender",
+        title: "chart the q3 numbers",
+        isPrimary: false,
+      }),
+    });
+  });
+
+  it("reuses the delegation session already open for the same parent", async () => {
+    const harness = deps({ delegationSession: { id: "thread-existing" } });
+    const sent = await messageBot(harness.deps, run, sender, {
+      bot_id: "bot-target",
+      message: "and one more thing",
+    });
+
+    expect(sent).toMatchObject({ ok: true });
+    expect(harness.threadCreate).not.toHaveBeenCalled();
+    expect(harness.tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ threadId: "thread-existing" }),
+      }),
+    );
+  });
+
+  it("returns an outcome to the parent session the delegation came from", async () => {
+    const harness = deps({
+      bots: [
+        { id: "bot-sender", name: "Researcher", title: "", threads: [{ id: "thread-sender" }] },
+        { id: "bot-target", name: "Analyst", title: "", threads: [{ id: "thread-target" }] },
+      ],
+      hopBlocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-sender",
+          fromBotName: "Researcher",
+          text: "chart the q3 numbers",
+          hop: 1,
+          intent: "request",
+          returnToMessageId: "message-request",
+        },
+      ],
+      originThreadId: "thread-parent",
+    });
+    const returned = await returnBotMessageOutcome(
+      harness.deps,
+      {
+        ...run,
+        id: "run-2",
+        botId: "bot-target",
+        threadId: "thread-delegation",
+        sourceMessageId: "message-source",
+      },
+      { id: "bot-target", name: "Analyst" },
+      "done: the chart is ready",
+      "result",
+    );
+
+    expect(returned).toBe(true);
+    expect(harness.tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ botId: "bot-sender", threadId: "thread-parent" }),
+      }),
+    );
+  });
+
+  it("lands an orphaned outcome on the primary session and audits it", async () => {
+    const auditRows: Array<Record<string, unknown>> = [];
+    installAuditEventStore({
+      space: { findUnique: vi.fn(async () => ({ organizationId: "org-1", name: "Space" })) },
+      auditEvent: {
+        createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
+          auditRows.push(...data);
+          return { count: data.length };
+        }),
+      },
+    } as unknown as Parameters<typeof installAuditEventStore>[0]);
+    try {
+      const harness = deps({
+        bots: [
+          { id: "bot-sender", name: "Researcher", title: "", threads: [{ id: "thread-sender" }] },
+          { id: "bot-target", name: "Analyst", title: "", threads: [{ id: "thread-target" }] },
+        ],
+        hopBlocks: [
+          {
+            kind: "bot_message_received",
+            fromBotId: "bot-sender",
+            fromBotName: "Researcher",
+            text: "chart the q3 numbers",
+            hop: 1,
+            intent: "request",
+            returnToMessageId: "message-request",
+          },
+        ],
+      });
+      const returned = await returnBotMessageOutcome(
+        harness.deps,
+        {
+          ...run,
+          id: "run-2",
+          botId: "bot-target",
+          threadId: "thread-delegation",
+          sourceMessageId: "message-source",
+        },
+        { id: "bot-target", name: "Analyst" },
+        "done: the chart is ready",
+        "result",
+      );
+
+      expect(returned).toBe(true);
+      expect(harness.tx.run.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ botId: "bot-sender", threadId: "thread-sender" }),
+        }),
+      );
+      expect(auditRows).toEqual([
+        expect.objectContaining({
+          action: "delegation.outcome_orphaned",
+          actorType: "bot",
+          actorId: "bot-target",
+          threadId: "thread-sender",
+        }),
+      ]);
+    } finally {
+      installAuditEventStore(undefined);
+    }
   });
 
   it("puts sent files on the recipient's message, and only the text in the sender's echo", async () => {
@@ -184,7 +354,7 @@ describe("messaging another bot", () => {
     expect(created.find((m) => m.threadId === "thread-sender")?.blocks).toEqual([
       expect.objectContaining({ kind: "bot_message_sent" }),
     ]);
-    expect(created.find((m) => m.threadId === "thread-target")?.blocks).toEqual([
+    expect(created.find((m) => m.threadId === "thread-delegation")?.blocks).toEqual([
       expect.objectContaining({ kind: "bot_message_received" }),
       file,
     ]);

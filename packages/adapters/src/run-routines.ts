@@ -15,6 +15,7 @@ import {
 } from "@rakazo/core";
 import {
   accountDeactivated,
+  createSession,
   isUniqueViolation,
   SpaceDeletionInProgressError,
   spaceTakesWork,
@@ -128,6 +129,32 @@ function nextScheduledRunAt(
     : nextRoutineRunDateAcross(routine.crons, scheduledAt, new Date(Date.now()), routine.timezone);
 }
 
+/**
+ * The routine's dedicated session, created on first fire and bound to the
+ * routine so every later fire lands in the same conversation. Two fires
+ * racing the first creation can each make one; the binding keeps the last,
+ * and the loser sits empty and unused.
+ */
+async function routineSession(
+  deps: ExecutorDeps,
+  routine: { id: string; spaceId: string; userId: string; name: string },
+  bot: { id: string },
+): Promise<{ id: string }> {
+  const session = await createSession(deps.prisma, {
+    spaceId: routine.spaceId,
+    userId: routine.userId,
+    botId: bot.id,
+    kind: "routine",
+    origin: "routine",
+    title: routine.name,
+  });
+  await deps.prisma.routine.update({
+    where: { id: routine.id },
+    data: { threadId: session.id },
+  });
+  return session;
+}
+
 export async function wakeRoutine(deps: ExecutorDeps, routineId: string, scheduledFor: string) {
   const scheduledAt = new Date(scheduledFor);
   if (!Number.isFinite(scheduledAt.getTime())) return;
@@ -191,10 +218,17 @@ export async function wakeRoutine(deps: ExecutorDeps, routineId: string, schedul
             },
           ],
         },
-        select: { id: true },
+        select: { id: true, kind: true, groupId: true },
       })
     : null;
-  const thread = targetThread ?? bot.threads[0];
+  // A routine fires in its own session: the thread it is bound to when that
+  // is a group thread or its dedicated routine session. Anything else — no
+  // binding, or a binding to an ordinary conversation — resolves to the
+  // dedicated session, created on first fire and bound for later ones.
+  const thread =
+    targetThread && (targetThread.groupId != null || targetThread.kind === "routine")
+      ? targetThread
+      : await routineSession(deps, routine, bot);
   // A change trigger checks first, without a model; only news becomes a run.
   const watchTick =
     routine.watch == null

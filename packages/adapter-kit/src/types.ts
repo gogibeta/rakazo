@@ -1090,6 +1090,12 @@ export interface MessagingInboundMessage {
   kind?: TeamChatMessageKind;
   /** Provider thread id for in-channel replies (Slack thread_ts); null for channel root. */
   replyThreadId?: string | null;
+  /**
+   * Provider handle of the message this one replies to, when the platform
+   * reports it. The same handle space as a send's result handle, so it
+   * names the delivered outbound message this is a reply to.
+   */
+  replyToHandle?: string;
   senderIsBot?: boolean;
   /** Display names for room participants when the platform reports them. */
   participantNames?: string[];
