@@ -134,7 +134,9 @@ it("lists the sessions with the bot's name for the untitled primary and folds ar
   expect(container.querySelector('button[aria-label="Archive Chief"]')).toBeNull();
   expect(container.querySelector('button[aria-label="Archive Trip planning"]')).not.toBeNull();
 
-  click([...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Archived"))!);
+  click(
+    [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Archived"))!,
+  );
   expect(container.textContent).toContain("Old topic");
 });
 
