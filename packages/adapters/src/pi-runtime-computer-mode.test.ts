@@ -1,5 +1,5 @@
-import type { AssistantMessage, Model, TranscriptContext } from "@earendil-works/pi-ai";
-import { getCurrentTools } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model, TranscriptContext } from "@earendil-works/pi-ai";
+import { getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -162,6 +162,26 @@ it.each(["missing", "text-only", "wrong-provider", "implicit-key"])(
     expect(input.executeTool).not.toHaveBeenCalled();
   },
 );
+it("gives the computer dispatch the neutral serving note, not a fallback claim", async () => {
+  script([["enter_computer_mode", { goal: "Click" }], [undefined]]);
+  await run(request());
+  const systemText = (call: unknown[]) => {
+    const [first] = (call[1] as Context).messages;
+    return first?.role === "system" ? getSystemMessageText(first) : "";
+  };
+  const calls = fake.stream.mock.calls;
+  expect(calls).toHaveLength(2);
+  expect(systemText(calls[0]!)).toContain("being served by test/main");
+  // Entering computer mode is a deliberate detour to another model, not a failure of
+  // the configured one: the note names both models without claiming an outage.
+  const computerNote = systemText(calls[1]!);
+  expect(computerNote).toContain("being served by test/computer");
+  expect(computerNote).toContain(
+    "The configured model is test/main; this request is using test/computer.",
+  );
+  expect(computerNote).not.toContain("was unavailable");
+  expect(computerNote).not.toContain("backup model is answering");
+});
 it.each([false, true])(
   "switches Claude/Codex roles with isolated auth, endpoints, effort and billing (reverse=%s)",
   async (reverse) => {

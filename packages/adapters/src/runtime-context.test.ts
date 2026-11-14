@@ -122,6 +122,23 @@ describe("runtime context policy", () => {
     },
   );
 
+  it("holds extraReserveTokens back from the input budget while preparing", () => {
+    const { request, context } = connectorPages();
+    const extraReserveTokens = 8_192;
+    const policy = createRuntimeContextPolicy(
+      { ...request, contextStrategy: "retrieval" },
+      undefined,
+      { extraReserveTokens },
+    );
+    policy.prepareContext(context, { ...model, contextWindow: 80_000 });
+    // Same fixture and window as the connector-pages case above, which fits under
+    // 80_000 - 4_096 unreserved: with the reserve, preparation fits under the
+    // tighter bound, leaving room for text stamped on after preparation.
+    expect(policy.getDecision()!.estimatedInputTokens).toBeLessThanOrEqual(
+      80_000 - 4096 - extraReserveTokens,
+    );
+  });
+
   it("never restores shortened connector pages on later rebuilds with more room", () => {
     const { request, context } = connectorPages();
     const policy = createRuntimeContextPolicy({ ...request, contextStrategy: "retrieval" });
