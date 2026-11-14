@@ -359,8 +359,13 @@ export function observedPiStream(
   },
   hooks?: {
     prepareContext?: (context: Context, model: Model<Api>) => Context;
-    /** Factual note naming the model serving this call, stamped after context preparation. */
-    servingModelNote?: string;
+    /**
+     * Factual note naming the model serving this call, stamped after context preparation.
+     * A resolver, not a precomputed string: it is invoked with the exact model this
+     * invocation hands to the provider, so the note is derived at the dispatch boundary
+     * and cannot describe a target an earlier layer picked and a later one replaced.
+     */
+    servingModelNote?: (dispatchModel: Model<Api>) => string;
     imageTokens?: ContextBudget["imageTokens"];
     onUsage?: (usage: AgentUsage) => void;
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
@@ -443,7 +448,11 @@ export function observedPiStream(
         const preparedContext = hooks?.servingModelNote
           ? withServingModelNote(
               hooks?.prepareContext?.(context, model) ?? context,
-              hooks.servingModelNote,
+              // `model` is the dispatch model: the same object passed to streamSimple
+              // below. Nothing between here and that call substitutes another model, and
+              // SDK retries reuse this request, so the note built from it names the model
+              // that actually receives the stamped context.
+              hooks.servingModelNote(model),
             )
           : (hooks?.prepareContext?.(context, model) ?? context);
         recordPiTelemetryContent(span, "pi.ai.prompt", preparedContext);

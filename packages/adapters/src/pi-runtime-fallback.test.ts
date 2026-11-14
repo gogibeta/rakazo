@@ -66,7 +66,7 @@ vi.mock("./pi-openai-compatible-provider.js", () => ({
 
 import { estimateModelContextTokens } from "./model-context.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS } from "./model-vision.js";
-import { PiAgentRuntime } from "./pi-runtime.js";
+import { PiAgentRuntime, servingModelNote } from "./pi-runtime.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MS, MODEL_STREAM_TIMEOUT_MS } from "./pi-runtime-limits.js";
 import { MODEL_STREAM_IDLE_TIMEOUT_MESSAGE } from "./pi-runtime-stream.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
@@ -3285,5 +3285,70 @@ describe("Pi runtime serving-model identity note", () => {
       `configured model ${primary.provider}/${primary.id} was unavailable`,
     );
     for (const prompt of prompts) expect(noteCount(prompt)).toBe(1);
+  });
+
+  it("keeps the same-model wording when the switch only rotates to another key", async () => {
+    // A pooled-key rotation is a real fallback candidate (same provider and model id,
+    // different key), but the serving model did not change, so the note must not claim
+    // a backup model answered or that the configured model was unavailable.
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      stream(target, message(target, [{ type: "text", text: "from rotated key" }], "stop")),
+    );
+    providerState.stream.mockImplementationOnce((target: Model<"openai-completions">) =>
+      stream(target, message(target, [], "error", "503 service unavailable")),
+    );
+
+    await run(
+      request([
+        {
+          provider: primary.provider,
+          id: primary.id,
+          apiKey: "fake-rotated-key",
+          keyId: "key-2",
+        },
+      ]),
+    );
+
+    const prompts = systemPrompts();
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain(`being served by ${primary.provider}/${primary.id}.`);
+    expect(prompts[1]).not.toContain("backup model is answering");
+    expect(prompts[1]).not.toContain("was unavailable");
+    expect(prompts[1]).not.toContain("The configured model is");
+    expect(noteCount(prompts[1]!)).toBe(1);
+  });
+
+  it("never persists the stamped note into the agent transcript", async () => {
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      target.provider === primary.provider
+        ? stream(target, message(target, [], "error", "503 service unavailable"))
+        : stream(target, message(target, [{ type: "text", text: "from backup" }], "stop")),
+    );
+
+    await run(request([{ provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-a" }]));
+
+    // The note reached both wire calls...
+    expect(systemPrompts()[1]).toContain("You are currently being served by");
+    // ...but the transcript the run leaves behind carries no trace of it: the note is
+    // stamped on a per-call copy, never on the messages history is recorded from.
+    const transcript = JSON.stringify(providerState.agent?.state.messages ?? []);
+    expect(transcript).not.toContain("You are currently being served by");
+    expect(transcript).not.toContain("rakazoServingModel");
+  });
+
+  it("words the note from the recorded switch reason, never from a bare difference", () => {
+    const configured = { provider: "provider-a", id: "primary" };
+    expect(servingModelNote(configured, configured, "503 service unavailable")).toContain(
+      "You are currently being served by provider-a/primary.",
+    );
+    expect(
+      servingModelNote(configured, { provider: "provider-b", id: "backup-a" }, "503"),
+    ).toContain("was unavailable, so this backup model is answering instead");
+    const neutral = servingModelNote(configured, { provider: "provider-b", id: "backup-a" });
+    expect(neutral).toContain(
+      "The configured model is provider-a/primary; this request is using provider-b/backup-a.",
+    );
+    expect(neutral).not.toContain("unavailable");
+    expect(neutral).not.toContain("backup model is answering");
   });
 });
