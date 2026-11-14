@@ -132,6 +132,9 @@ describe("audit event forwarding", () => {
     expect(auditLogConfig({ AUDIT_LOG_WEBHOOK_URL: "http://127.0.0.1:9000/in" }).webhook).toEqual({
       url: "http://127.0.0.1:9000/in",
     });
-    expect(auditLogConfig({ AUDIT_EVENT_RETENTION_DAYS: "30" })).toEqual({ retentionDays: 30 });
+    expect(auditLogConfig({ AUDIT_EVENT_RETENTION_DAYS: "30" })).toEqual({
+      retentionDays: 30,
+      toolEventRetentionDays: 180,
+    });
   });
 });

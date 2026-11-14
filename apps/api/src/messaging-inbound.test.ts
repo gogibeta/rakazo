@@ -3380,6 +3380,7 @@ describe("ask answers in chat", () => {
       messageId: "m-ask",
       answeredByUserId: "user-1",
       answer: "allow",
+      surface: "sendblue",
     });
     expect(deps.enqueue).toHaveBeenCalledWith(
       expect.objectContaining({ name: "run.continue", payload: { runId: "run-1" } }),
@@ -3501,6 +3502,7 @@ describe("ask answers in chat", () => {
       messageId: "m-ask",
       answeredByUserId: "user-1",
       answer: "evening",
+      surface: "sendblue",
     });
     expect(deps.sendUserMessage).not.toHaveBeenCalled();
     expect(deps.outboundRows).toEqual([

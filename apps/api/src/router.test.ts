@@ -1172,6 +1172,7 @@ describe("secret request dismissal", () => {
       fields: undefined,
       username: undefined,
       dismiss: true,
+      surface: "app",
     });
     expect(h.enqueue).toHaveBeenCalledOnce();
   });

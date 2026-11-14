@@ -107,6 +107,7 @@ import {
   IsolationError,
   installAuditEventStore,
   installSecurityEventStore,
+  installToolEventStore,
   observeThreadChanges,
   parsePositiveInteger,
   pushSessionExpiresAt,
@@ -318,6 +319,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   runtimeEnv.naceApiKey = serviceCredentials.naceApiKey;
   installSecurityEventStore(prisma);
   installAuditEventStore(prisma);
+  installToolEventStore(prisma);
   const unreadableMasterKeys = await verifyContentKeys(prisma);
   if (unreadableMasterKeys.length)
     logger.error("Stored space keys need master keys that are not configured", undefined, {

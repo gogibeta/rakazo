@@ -4,7 +4,9 @@ import {
   auditEventRetentionDays,
   createRetentionPruner,
   pruneAuditEvents,
+  pruneToolEvents,
   runAsSystem,
+  toolEventRetentionDays,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
@@ -20,6 +22,7 @@ const TIMEOUT_MS = 10_000;
 
 export interface AuditLogConfig {
   retentionDays: number;
+  toolEventRetentionDays: number;
   webhook?: { url: string; authorization?: string };
 }
 
@@ -30,6 +33,7 @@ export function auditLogConfig(env: NodeJS.ProcessEnv = process.env): AuditLogCo
     throw new Error("AUDIT_LOG_WEBHOOK_URL must be an https URL");
   return {
     retentionDays: auditEventRetentionDays(env),
+    toolEventRetentionDays: toolEventRetentionDays(env),
     ...(url ? { webhook: { url, ...(authorization ? { authorization } : {}) } } : {}),
   };
 }
@@ -40,7 +44,7 @@ function isLoopback(hostname: string): boolean {
 
 /** Prunes past retention and forwards new events, for the elected reconciler's tick. */
 export function createAuditLogReconciler(
-  prisma: Pick<PrismaClient, "auditEvent" | "auditEventForwarding">,
+  prisma: Pick<PrismaClient, "auditEvent" | "auditEventForwarding" | "toolEvent">,
   config: AuditLogConfig,
   options: { fetch?: typeof fetch; now?: () => Date; intervalMs?: number } = {},
 ): () => Promise<void> {
@@ -51,11 +55,19 @@ export function createAuditLogReconciler(
       runAsSystem("prune the audit log", () => pruneAuditEvents(prisma, config.retentionDays, at)),
     { now, intervalMs: options.intervalMs },
   );
+  const pruneToolEventsPass = createRetentionPruner(
+    "tool.event",
+    (at) =>
+      runAsSystem("prune tool events", () =>
+        pruneToolEvents(prisma, config.toolEventRetentionDays, at),
+      ),
+    { now, intervalMs: options.intervalMs },
+  );
   const forward = config.webhook
     ? createAuditEventForwarder(prisma, config.webhook, { fetch: options.fetch, now })
     : undefined;
   return async () => {
-    const results = await Promise.allSettled([prune(), forward?.()]);
+    const results = await Promise.allSettled([prune(), pruneToolEventsPass(), forward?.()]);
     for (const result of results)
       if (result.status === "rejected")
         getLogger().error("audit.event.reconcile_failed", result.reason);

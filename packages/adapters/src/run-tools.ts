@@ -1,6 +1,16 @@
+import { createHash } from "node:crypto";
 import type { AgentToolExecutionObserver } from "@rakazo/adapter-kit";
-import { BACKGROUND_HELPER_TRIGGER, toolResultTaintsRun } from "@rakazo/core";
-import { isTerminatingReplyResult } from "./approval-effect.js";
+import {
+  BACKGROUND_HELPER_TRIGGER,
+  connectorKindFromToolName,
+  redactSecrets,
+  toolResultTaintsRun,
+} from "@rakazo/core";
+import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
+import type { ToolEventStatus } from "@rakazo/db";
+import { recordToolEvent } from "@rakazo/db";
+import { getLogger } from "@rakazo/logging";
+import { isTerminatingReplyResult, isToolPauseResult } from "./approval-effect.js";
 import { IMAGE_RETURNING_COMPUTER_TOOLS, MODEL_CANNOT_SEE_MESSAGE } from "./model-vision.js";
 import type { RunContext } from "./run-context.js";
 import { noteComputerTaskStep } from "./run-progress.js";
@@ -37,7 +47,7 @@ import {
 import { walletTools } from "./run-tools-wallets.js";
 import { strategicInitiativeToolAllowed } from "./strategic-initiative.js";
 import { logToolRefusal } from "./tool-completion-audit.js";
-import { refusal } from "./tool-refusal.js";
+import { refusal, refusalCode } from "./tool-refusal.js";
 import { argumentGiven } from "./update-bot-patch.js";
 
 const TOOL_HANDLERS = new Map<string, ToolHandler>([
@@ -66,6 +76,106 @@ function toolHandler(name: string): ToolHandler {
   return (
     TOOL_HANDLERS.get(name) ?? (name.startsWith("cloud_agent_") ? cloudAgentTool : connectorTool)
   );
+}
+
+/** History and memory search calls: recorded as recall traffic, never as content. */
+const RECALL_TOOL_NAMES = new Set(["search_history", "read_history", "recall_memory"]);
+
+/** Gate refusal codes that are decisions against the call, not pre-gate turn-aways. */
+const GATE_DENIAL_CODES = new Set([
+  "approval_denied",
+  "action_denied_repeat",
+  "spending_limit",
+  "purchase_needs_approval_unattended",
+  "wallet_needs_approval_unattended",
+  "host_restart_needs_approval_unattended",
+  "fetch_needs_approval_unattended",
+  "helper_cannot_ask_approval",
+]);
+
+/** sha256 of the canonical arguments — the canonicalization the loop guard hashes with. */
+function toolArgsHash(args: Record<string, unknown>): string {
+  let canonical: string;
+  try {
+    canonical = stableJsonValue(args);
+  } catch {
+    canonical = '"rakazo:unserializable-args"';
+  }
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+/**
+ * A scalar-only projection of the arguments for the tool-event record: nested
+ * values are dropped, and strings pass through the run's secret redaction. The
+ * writer applies the audit metadata rules on top. Never the raw arguments.
+ */
+function toolArgsSummary(
+  ctx: RunContext,
+  args: Record<string, unknown>,
+): Record<string, string | number | boolean | null> {
+  const summary: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value === "string") summary[key] = redactSecrets(value, ctx.secrets);
+    else if (typeof value === "number" || typeof value === "boolean" || value === null)
+      summary[key] = value;
+  }
+  return summary;
+}
+
+function resultByteSize(result: unknown): number | null {
+  try {
+    const json = JSON.stringify(result);
+    return json === undefined ? null : new TextEncoder().encode(json).length;
+  } catch {
+    return null;
+  }
+}
+
+/** How a gate result ended the call: a pause, a decision against it, a turn-away, or a settled replay. */
+function gateResultStatus(result: unknown): ToolEventStatus {
+  if (isToolPauseResult(result)) return "paused";
+  const code = refusalCode(result);
+  if (code) return GATE_DENIAL_CODES.has(code) ? "denied" : "refused";
+  return isToolError(result) ? "failed" : "succeeded";
+}
+
+/** Record one dispatch outcome in the run's tool events. A record, never a gate: the write cannot fail the call. */
+async function recordDispatchToolEvent(
+  ctx: RunContext,
+  fields: {
+    toolName: string;
+    args: Record<string, unknown>;
+    status: ToolEventStatus;
+    startedAt: number;
+    effectId?: string;
+    result?: unknown;
+  },
+): Promise<void> {
+  try {
+    await recordToolEvent({
+      spaceId: ctx.run.spaceId,
+      threadId: ctx.thread.id,
+      runId: ctx.runId,
+      botId: ctx.bot.id,
+      toolName: fields.toolName,
+      connectorKind: connectorKindFromToolName(
+        fields.toolName,
+        (ctx.tools.connectedPlugins ?? []).map((plugin) => plugin.provider),
+      ),
+      argsHash: toolArgsHash(fields.args),
+      argsSummary: toolArgsSummary(ctx, fields.args),
+      kind: RECALL_TOOL_NAMES.has(fields.toolName) ? "recall" : "normal",
+      status: fields.status,
+      effectId: fields.effectId ?? null,
+      resultBytes: fields.result === undefined ? null : resultByteSize(fields.result),
+      durationMs: Math.max(0, Date.now() - fields.startedAt),
+    });
+  } catch (error) {
+    getLogger().warn("tool event recording failed", {
+      "error.detail": error instanceof Error ? error.message : "unknown",
+      tool: fields.toolName,
+    });
+  }
 }
 
 /** Run one tool call of this run's model: gate it, then hand it to its tool family. */
@@ -104,9 +214,10 @@ async function dispatchTool(
   observer: AgentToolExecutionObserver | undefined,
 ) {
   ctx.context.signal.throwIfAborted();
+  const startedAt = Date.now();
   // A call turned away before its tool runs is logged by its refusal code. `target` is the
   // connector tool a catalog call resolved to.
-  const refuse = <T>(refused: T, target?: string): T => {
+  const logRefusal = <T>(refused: T, target?: string): T => {
     const logged = logToolRefusal(
       {
         spaceId: ctx.run.spaceId,
@@ -124,6 +235,17 @@ async function dispatchTool(
       ctx.state.toolRefusals ??= new Map();
       ctx.state.toolRefusals.set(executionId, logged);
     }
+    return refused;
+  };
+  // A pre-gate turn-away is also a tool event, with the name the call carried here.
+  const refuse = async <T>(refused: T, target?: string): Promise<T> => {
+    logRefusal(refused, target);
+    await recordDispatchToolEvent(ctx, {
+      toolName: target ?? name,
+      args,
+      status: "refused",
+      startedAt,
+    });
     return refused;
   };
   if (!strategicInitiativeToolAllowed(name, ctx.run)) {
@@ -181,17 +303,58 @@ async function dispatchTool(
   if (refused) return refuse(refused, request.name);
   noteComputerTaskStep(ctx.state.reply, request.name);
   const gate = await gateToolCall(ctx, request, observer);
-  if ("result" in gate) return refuse(gate.result, request.name);
-  if (!gate.call.applied) return toolHandler(gate.call.name)(ctx, gate.call);
+  if ("result" in gate) {
+    logRefusal(gate.result, request.name);
+    const status = gateResultStatus(gate.result);
+    await recordDispatchToolEvent(ctx, {
+      toolName: request.name,
+      args: request.args,
+      status,
+      startedAt,
+      effectId: gate.effectId,
+      result: status === "succeeded" || status === "failed" ? gate.result : undefined,
+    });
+    return gate.result;
+  }
+  if (!gate.call.applied) {
+    try {
+      const result = await toolHandler(gate.call.name)(ctx, gate.call);
+      await recordDispatchToolEvent(ctx, {
+        toolName: gate.call.name,
+        args: gate.call.args,
+        status: isToolError(result) ? "failed" : "succeeded",
+        startedAt,
+        result,
+      });
+      return result;
+    } catch (error) {
+      await recordDispatchToolEvent(ctx, {
+        toolName: gate.call.name,
+        args: gate.call.args,
+        status: "failed",
+        startedAt,
+      });
+      throw error;
+    }
+  }
   let outcome: "success" | "failure" = "failure";
+  let result: unknown;
   try {
-    const result = await toolHandler(gate.call.name)(ctx, gate.call);
+    result = await toolHandler(gate.call.name)(ctx, gate.call);
     if (!isToolError(result)) outcome = "success";
     return result;
   } finally {
     await auditToolCall(ctx, gate.call.name, outcome, {
       effectId: gate.call.applied.effect.id,
       autoApproved: gate.call.bypassApproval,
+    });
+    await recordDispatchToolEvent(ctx, {
+      toolName: gate.call.name,
+      args: gate.call.args,
+      status: outcome === "success" ? "succeeded" : "failed",
+      startedAt,
+      effectId: gate.call.applied.effect.id,
+      result,
     });
   }
 }
