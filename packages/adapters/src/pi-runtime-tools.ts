@@ -1082,9 +1082,12 @@ export function toolCallBudgetFor(runId: string, options?: { routine?: boolean }
     softNotified: false,
     inFlight: 0,
   };
-  // Every run is tracked now, not only fused ones: token and cost metering
-  // needs the totals even when no bound is configured.
-  toolCallBudgetsByRun.set(runId, budget);
+  // A budget with no bound configured is not kept in the map: nothing can
+  // cross, and the usage records already hold its totals. Kept budgets persist
+  // across a pause/resume of the same run, counts included.
+  if (limits.toolCallLimit > 0 || limits.tokenLimit > 0 || limits.costLimitUsd > 0) {
+    toolCallBudgetsByRun.set(runId, budget);
+  }
   return budget;
 }
 
