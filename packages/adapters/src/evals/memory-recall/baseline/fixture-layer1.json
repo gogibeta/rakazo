@@ -1,0 +1,151 @@
+{
+  "gitSha": "3a5b18f610c1983250001aef3164d578c9d239cd",
+  "mode": "layer1",
+  "corpus": "fixture",
+  "date": "2026-11-14T09:37:28.313Z",
+  "questions": [
+    {
+      "id": "q1-wallet-count",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q2-wallet-name",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q3-wallet-network",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q4-wallet-chain-id",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q5-wallet-address",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q6-bot-count",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q7-bot-names",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q8-telegram-bot",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q9-untagged-bot",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q10-chief-model",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q11-connection-count",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "q12-public-address",
+      "layer1": {
+        "factInContext": true,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "c1-wallet-balance",
+      "layer1": {
+        "factInContext": false,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "c2-grok-yesterday",
+      "layer1": {
+        "factInContext": false,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    },
+    {
+      "id": "c3-telegram-password",
+      "layer1": {
+        "factInContext": false,
+        "includedDocs": ["bot:wallet-notes.md", "user:deployment-facts.md"],
+        "omittedDocs": [],
+        "usedBytes": 963
+      }
+    }
+  ],
+  "summary": {
+    "layer1": {
+      "factsPresent": 12,
+      "factsAbsent": 0,
+      "controlsClean": 3,
+      "controlsLeaking": 0
+    }
+  }
+}
