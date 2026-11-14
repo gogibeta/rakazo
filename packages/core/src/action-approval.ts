@@ -143,9 +143,20 @@ export function connectorKindFromToolName(toolName: string, connectorKinds: stri
 export function connectorToolRequiresApproval(toolName: string, readOnly?: boolean): boolean {
   if (readOnly === false) return true;
   if (readOnly === undefined) return true;
-  if (MUTATING_CONNECTOR_PATTERN.test(toolName)) return true;
-  if (COMPOUND_CONNECTOR_ACTION_PATTERN.test(toolName)) return true;
-  return !READ_ONLY_CONNECTOR_PATTERN.test(toolName);
+  return !connectorNameDeclaresReadOnly(toolName);
+}
+
+/**
+ * The declaration an in-repo catalog connector ships for tools whose provider metadata
+ * carries no effect flag (Composio session tools): the name patterns above, stated as a
+ * declaration so the gate's undeclared default never has to guess for a catalog the
+ * product itself ships. Only a name that is read-shaped and neither mutating nor
+ * compound declares read-only; everything else declares a write.
+ */
+export function connectorNameDeclaresReadOnly(toolName: string): boolean {
+  if (MUTATING_CONNECTOR_PATTERN.test(toolName)) return false;
+  if (COMPOUND_CONNECTOR_ACTION_PATTERN.test(toolName)) return false;
+  return READ_ONLY_CONNECTOR_PATTERN.test(toolName);
 }
 
 /** Unattended watches require explicit read-only metadata and must respect approval rules. */

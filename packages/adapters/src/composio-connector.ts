@@ -13,7 +13,7 @@ import type {
   ManagedConnectorProvider,
 } from "@rakazo/adapter-kit";
 import { ConnectorAuthUnavailableError } from "@rakazo/adapter-kit";
-import { humanizeToolName } from "@rakazo/core";
+import { connectorNameDeclaresReadOnly, humanizeToolName } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import { COMPOSIO_MULTI_EXECUTE_TOOL, composioToolBatch } from "./composio-batch.js";
 import type { ToolkitDirectoryEntry } from "./composio-catalog-cache.js";
@@ -81,6 +81,9 @@ function mapOneTool(item: unknown): ConnectorTool | undefined {
     return {
       name,
       description: String(fn.description ?? name),
+      // Composio metadata carries no effect flag, so the connector ships the
+      // name-based declaration itself; the gate gates anything undeclared.
+      readOnly: connectorNameDeclaresReadOnly(name),
       inputSchema: asObject(fn.parameters) ?? { type: "object", properties: {} },
       batch: composioToolBatch(name),
       ...composioToolLabel(name),
@@ -92,6 +95,7 @@ function mapOneTool(item: unknown): ConnectorTool | undefined {
   return {
     name,
     description: String(raw.description ?? name),
+    readOnly: connectorNameDeclaresReadOnly(name),
     inputSchema: asObject(raw.inputParameters) ??
       asObject(raw.inputSchema) ??
       asObject(raw.parameters) ?? { type: "object", properties: {} },

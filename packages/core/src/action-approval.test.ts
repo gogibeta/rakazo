@@ -9,6 +9,7 @@ import {
   approvalRuleEffectChoices,
   batchActions,
   connectorKindFromToolName,
+  connectorNameDeclaresReadOnly,
   connectorReadRequiresApproval,
   connectorToolRequiresApproval,
   decisiveActionApprovalRules,
@@ -173,6 +174,16 @@ describe("connectorToolRequiresApproval", () => {
 
   it("still requires approval for a declared read whose name says load", () => {
     expect(connectorToolRequiresApproval("warehouse-load-rows", true)).toBe(true);
+  });
+
+  it("declares read-only from the name only for read-shaped, single-action names", () => {
+    expect(connectorNameDeclaresReadOnly("GITHUB_LIST_RELEASES")).toBe(true);
+    expect(connectorNameDeclaresReadOnly("GITHUB_GET_RELEASE")).toBe(true);
+    expect(connectorNameDeclaresReadOnly("gmail-find-email")).toBe(true);
+    expect(connectorNameDeclaresReadOnly("GITHUB_CREATE_ISSUE")).toBe(false);
+    expect(connectorNameDeclaresReadOnly("delete_item")).toBe(false);
+    expect(connectorNameDeclaresReadOnly("get_or_create_contact")).toBe(false);
+    expect(connectorNameDeclaresReadOnly("COMPOSIO_MULTI_EXECUTE_TOOL")).toBe(false);
   });
 });
 

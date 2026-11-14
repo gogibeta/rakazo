@@ -174,6 +174,15 @@ describe("composio tool mapping", () => {
     expect(tools[1]?.inputSchema).toMatchObject({ properties: { username: { type: "string" } } });
   });
 
+  it("declares each tool's effect from its slug, since the metadata carries none", () => {
+    const tools = asConnectorTools([
+      { slug: "GITHUB_LIST_RELEASES" },
+      { slug: "GITHUB_CREATE_ISSUE" },
+      { slug: "COMPOSIO_MULTI_EXECUTE_TOOL" },
+    ]);
+    expect(tools.map((tool) => tool.readOnly)).toEqual([true, false, false]);
+  });
+
   it("labels session tools without the vendor name", () => {
     const tools = asConnectorTools([
       { slug: "COMPOSIO_SEARCH_TOOLS" },
