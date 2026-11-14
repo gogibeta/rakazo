@@ -811,6 +811,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       signupAllowlist: env.signupAllowlist,
       instaboxApiKey: env.instaboxApiKey,
       instaboxMachineId: env.instaboxMachineId,
+      hostRestartUrl: env.hostRestartUrl,
+      hostRestartSecret: env.hostRestartSecret,
       maxUploadSizeBytes: env.maxUploadSizeBytes,
       maxAttachmentsPerMessage: env.maxAttachmentsPerMessage,
       agentRuntime: env.agentRuntime,
