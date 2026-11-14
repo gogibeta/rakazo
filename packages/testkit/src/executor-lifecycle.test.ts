@@ -323,6 +323,7 @@ describeIntegration("run executor lifecycle", () => {
           userId: seeded.me.userId,
           blocks: [{ kind: "text", text }],
           prompt: text,
+          clientNonce: `steering-race:${text}`,
           trigger: "follow_up",
         }),
       );
@@ -399,6 +400,7 @@ describeIntegration("run executor lifecycle", () => {
         userId: seeded.me.userId,
         blocks: [{ kind: "text", text: "Recover this context." }],
         prompt: "Recover this context.",
+        clientNonce: "steering-recovery",
         trigger: "follow_up",
       }),
     );
@@ -484,6 +486,7 @@ describeIntegration("run executor lifecycle", () => {
             userId: seeded.me.userId,
             blocks: [{ kind: "text", text: "Try this new instruction." }],
             prompt: "Try this new instruction.",
+            clientNonce: "steering-fresh",
             trigger: "follow_up",
           }),
         )
@@ -756,6 +759,7 @@ describeIntegration("run executor lifecycle", () => {
       events.sendUserMessage({
         ...scope,
         trigger: "messaging",
+        clientNonce: "messaging:executor-lifecycle:dm",
         blocks: [{ kind: "text", text: "Private DM detail" }],
         prompt: "Private DM detail",
       }),
@@ -778,6 +782,7 @@ describeIntegration("run executor lifecycle", () => {
       events.sendUserMessage({
         ...scope,
         trigger: "messaging",
+        clientNonce: "messaging:executor-lifecycle:group",
         blocks: [{ ...channel, text: "Group follow-up" }],
         prompt: "Group follow-up",
       }),

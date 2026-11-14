@@ -226,7 +226,12 @@ describePostgres("chat replies during screen takeover (PostgreSQL)", () => {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            json: { botId: bot.id, text: "The fixture code is 1234.", ...input },
+            json: {
+              botId: bot.id,
+              text: "The fixture code is 1234.",
+              clientNonce: `takeover-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              ...input,
+            },
           }),
         }),
         { prefix: "/rpc", context: { actor } },

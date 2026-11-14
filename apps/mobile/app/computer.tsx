@@ -355,6 +355,7 @@ export default function Computer() {
     try {
       await rpc("threads/send", {
         botId: botId ?? "",
+        clientNonce: `disk-cleanup-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
         text: t`Your computer's disk is nearly full. Free up space by removing build output and caches you no longer need.`,
       });
       dismissDiskWarning();
