@@ -198,6 +198,12 @@ export type FinalizeRunInput = FinalizeRunBase &
         outcome: "completed";
         blocks: MessageBlock[];
         markUnread?: boolean;
+        /**
+         * Set when the loop guard stopped the run. Recorded on the finalize event so
+         * outcome reconciliation keys off the flag instead of the stop text (which
+         * remains the fallback for runs finalized before the flag existed).
+         */
+        loopGuardStop?: { tool: string; reason: string; count: number; failures: number };
       }
     | {
         outcome: "failed";
@@ -1053,7 +1059,12 @@ async function finalizeRunOnce(
       botId: input.botId,
       type: input.outcome === "completed" ? "run.completed" : "run.failed",
       runId: input.runId,
-      payload: input.outcome === "completed" ? {} : { error: input.error },
+      payload:
+        input.outcome === "completed"
+          ? input.loopGuardStop
+            ? { loopGuardStop: input.loopGuardStop }
+            : {}
+          : { error: input.error },
     });
     await tx.event.deleteMany({
       where: { runId: input.runId, ...transientRunEventsWhere() },

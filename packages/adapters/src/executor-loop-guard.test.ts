@@ -465,3 +465,50 @@ describe("repeated identical tool calls through the run loop", () => {
     );
   }, 30_000);
 });
+
+describe("windowed repeats through the run loop", () => {
+  const ELSEWHERE = { name: "list_files", args: { path: "elsewhere" } };
+
+  it("stops a failing call interleaved with another call", async () => {
+    // The downloads listing fails; the other path lists fine and changes nothing.
+    const result = await runLoop(
+      (request) => ({ calls: [request % 2 === 1 ? LISTING : ELSEWHERE] }),
+      { listing: unreadable },
+    );
+    // The eighth downloads call lands on request 15; the stop may race one more request.
+    expect(result.requests.length).toBeGreaterThanOrEqual(15);
+    expect(result.requests.length).toBeLessThanOrEqual(16);
+    expect(result.finalText).toMatch(
+      /^I got stuck calling List files with the same input 8 times without making progress, so I stopped early\./,
+    );
+    expect(isLoopGuardStopText(result.finalText)).toBe(true);
+    expect(result.act).not.toHaveBeenCalled();
+    expect(result.finalizeRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "completed",
+        loopGuardStop: {
+          tool: "list_files",
+          reason: "repeated_calls_windowed",
+          count: 8,
+          failures: 7,
+        },
+      }),
+    );
+  }, 30_000);
+
+  it("lets interleaved repeats below the windowed threshold finish normally", async () => {
+    const result = await runLoop(
+      (request) =>
+        request <= 13
+          ? { calls: [request % 2 === 1 ? LISTING : ELSEWHERE] }
+          : { text: "Done waiting." },
+      { listing: unreadable },
+    );
+    expect(result.requests).toHaveLength(14);
+    expect(result.finalText).toBe("Done waiting.");
+    const finalizeCalls = result.finalizeRun.mock.calls as unknown as Array<
+      [{ loopGuardStop?: unknown }]
+    >;
+    expect(finalizeCalls.at(-1)?.[0].loopGuardStop).toBeUndefined();
+  }, 30_000);
+});

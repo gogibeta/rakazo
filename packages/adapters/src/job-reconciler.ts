@@ -295,9 +295,12 @@ export function createJobReconciler(
                 ? `Could not complete the delegated request: ${run.error ?? "unknown error"}`
                 : transcript.text ||
                   "The delegated bot completed its turn without a written summary.";
-            // Loop-guard stops complete without an error; their persisted final text
-            // is the only marker available when the executor's outcome delivery fails.
-            const loopGuardStop = isLoopGuardStopText(transcript.text);
+            // Loop-guard stops complete without an error. Runs finalized since the
+            // structured flag existed carry it on their finalize event; only older
+            // runs still need the stop text matched.
+            const loopGuardStop =
+              (await runLoopGuardStopFlag(deps.prisma, run.id)) ||
+              isLoopGuardStopText(transcript.text);
             // Same stable delivery key as the executor path (auto-outcome:<runId>), so a
             // concurrent or earlier return is replayed instead of double-posted. Progress-only
             // transcripts (all mid-turn user-progress messages) return as status.
@@ -563,6 +566,18 @@ async function publishAll(publications: Array<Promise<unknown>>) {
     (result) => result.status === "rejected",
   );
   if (failed) throw failed.reason;
+}
+
+/** Whether the run's finalize event carries the loop-guard stop flag. */
+async function runLoopGuardStopFlag(prisma: PrismaClient, runId: string): Promise<boolean> {
+  const event = await prisma.event.findFirst({
+    where: { runId, type: "run.completed" },
+    select: { payload: true },
+  });
+  const payload = event?.payload;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const flag = (payload as { loopGuardStop?: unknown }).loopGuardStop;
+  return Boolean(flag && typeof flag === "object");
 }
 
 /** Prefer the full bot transcript for a run so interim progress is not mistaken for the sole result. */

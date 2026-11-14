@@ -46,7 +46,7 @@ import { subagentMarksUnread } from "./run-notifications.js";
 import { secretPausedToolResult } from "./run-secret.js";
 import type { createRunTrustLoaders } from "./run-trust.js";
 import type { inferScript } from "./scripted-runtime.js";
-import type { LoopGuardStreak } from "./tool-loop.js";
+import type { LoopGuardStreak, ToolCallWindowEntry } from "./tool-loop.js";
 import type { ToolRefusal } from "./tool-refusal.js";
 import { refusal } from "./tool-refusal.js";
 import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-checkpoint.js";
@@ -179,6 +179,8 @@ export interface RunState {
   effects: EffectState;
   screen: ScreenState;
   toolCallStreak: LoopGuardStreak;
+  /** The attempt's last tool calls, for the loop guard's windowed (interleaved) repeat check. */
+  toolCallWindow: ToolCallWindowEntry[];
   /** Result fingerprints of finished calls, read when the next call is tracked. */
   toolResults: Map<string, string>;
   /** Calls refused before their tool ran, by execution id, for the log of a loop one causes. */

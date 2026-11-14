@@ -1431,6 +1431,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           },
           screen: { lastFrameId: undefined, unchangedVisualStreak: { count: 0 } },
           toolCallStreak: { key: undefined, count: 0 },
+          toolCallWindow: [],
           overLimitActionCalls: 0,
           toolResults: new Map(),
           tainted: initiallyTainted,
