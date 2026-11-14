@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { JobPublisher, SecretStore } from "@rakazo/adapter-kit";
 import { runContinueJob, SecretStoreUnavailableError } from "@rakazo/adapter-kit";
 import { inboundRoutineModelPin } from "@rakazo/adapters";
@@ -319,9 +319,12 @@ export async function deliverWebhookEvent(
         ].join("\n")
       : input.prompt;
 
+  // A delivery with an idempotency key dedupes byte-identical retries under a stable
+  // nonce. One without a key is a distinct event by definition, so it gets a fresh
+  // nonce: sendUserMessage requires one, and a random value dedupes nothing.
   const clientNonce = input.idempotencyKey
     ? inboundDeliveryClientNonce(input.source, target.bot.id, input.idempotencyKey)
-    : undefined;
+    : `inbound:${randomUUID()}`;
   const pin = inboundRoutineModelPin(input.routines);
 
   const sent = await deps.events.sendUserMessage({

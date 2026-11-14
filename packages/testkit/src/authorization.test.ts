@@ -2585,6 +2585,19 @@ async function rpc<T>(
   body: unknown = {},
   spaceId?: string,
 ): Promise<T> {
+  if (
+    (procedure === "threads/send" ||
+      procedure === "threads/followUp" ||
+      procedure === "threads/sendWithRoutines") &&
+    body !== null &&
+    typeof body === "object" &&
+    !("clientNonce" in (body as Record<string, unknown>))
+  ) {
+    body = {
+      ...(body as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const response = await raw(app, cookie, procedure, body, spaceId);
   const text = await response.text();
   const payload = JSON.parse(text) as { json?: T; error?: { message?: string } };
@@ -2601,6 +2614,19 @@ async function expectDenied(
   body: unknown,
   spaceId?: string,
 ) {
+  if (
+    (procedure === "threads/send" ||
+      procedure === "threads/followUp" ||
+      procedure === "threads/sendWithRoutines") &&
+    body !== null &&
+    typeof body === "object" &&
+    !("clientNonce" in (body as Record<string, unknown>))
+  ) {
+    body = {
+      ...(body as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const response = await raw(app, cookie, procedure, body, spaceId);
   if (procedure === "threads/subscribe" && response.status === 200) {
     // Streaming transports commit the HTTP 200 before advancing the async iterator. The

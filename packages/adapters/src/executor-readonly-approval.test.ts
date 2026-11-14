@@ -723,6 +723,7 @@ function fixture({
         },
       };
       const inboundPrisma = {
+        message: { findUnique: vi.fn(async () => null) },
         $transaction: async (action: (client: typeof tx) => unknown) => action(tx),
       } as unknown as PrismaClient;
       await sendUserMessage(inboundPrisma, {

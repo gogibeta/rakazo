@@ -95,6 +95,19 @@ describe.skipIf(!enabled)("earlier files through history tools", () => {
       expect(signup.status).toBeLessThan(400);
       const cookie = sessionCookieHeader(signup);
       const rpc = async <T>(procedure: string, input: unknown): Promise<T> => {
+        if (
+          (procedure === "threads/send" ||
+            procedure === "threads/followUp" ||
+            procedure === "threads/sendWithRoutines") &&
+          input !== null &&
+          typeof input === "object" &&
+          !("clientNonce" in (input as Record<string, unknown>))
+        ) {
+          input = {
+            ...(input as Record<string, unknown>),
+            clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          };
+        }
         const response = await handles.app.request(`/rpc/${procedure}`, {
           method: "POST",
           headers: { "content-type": "application/json", cookie, origin },

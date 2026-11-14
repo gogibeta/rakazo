@@ -2531,9 +2531,9 @@ describe("computer execution leases", () => {
         findUniqueOrThrow: vi.fn().mockResolvedValue({ scope: "team", state: "running" }),
         updateMany: vi.fn(),
       },
-      message: { deleteMany: vi.fn(), findMany: vi.fn(async () => []) },
+      message: { deleteMany: vi.fn(async () => ({ count: 0 })), findMany: vi.fn(async () => []) },
       event: {
-        deleteMany: vi.fn(),
+        deleteMany: vi.fn(async () => ({ count: 0 })),
         create: vi.fn().mockResolvedValue({
           id: "event-1",
           spaceId: "workspace-1",

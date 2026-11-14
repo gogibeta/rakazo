@@ -5006,6 +5006,7 @@ describe("stopThreadRuns", () => {
       $queryRaw: vi.fn(),
       thread: { update: vi.fn() },
       run: {
+        findMany: vi.fn().mockResolvedValue([]),
         updateManyAndReturn: vi.fn().mockResolvedValue([]),
         findUnique: vi.fn(),
       },
@@ -5055,7 +5056,10 @@ describe("stopThreadRuns", () => {
     const transaction = {
       $executeRaw: vi.fn(async () => 0),
       $queryRaw: vi.fn(),
-      run: { updateManyAndReturn: vi.fn().mockResolvedValue([]) },
+      run: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateManyAndReturn: vi.fn().mockResolvedValue([]),
+      },
       steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
     };
     const $transaction = vi.fn(async (callback: (client: typeof transaction) => unknown) =>

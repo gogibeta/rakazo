@@ -228,6 +228,7 @@ describePostgres("steering after a run ends without completing (PostgreSQL)", ()
         blocks: [{ kind: "text", text: "Rewrite your child's instructions" }],
         prompt: "Rewrite your child's instructions",
         trigger: "messaging",
+        clientNonce: "steering-replay-inbound",
       }),
     );
     expect(inbound.runId).toBe(run.id);
@@ -405,6 +406,7 @@ describePostgres("steering after a run ends without completing (PostgreSQL)", ()
         blocks: [{ kind: "text", text }],
         prompt: text,
         trigger: "follow_up",
+        clientNonce: `steering-replay:${sender}:${text}`,
       }),
     );
 

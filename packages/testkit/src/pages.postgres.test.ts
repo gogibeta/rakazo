@@ -1114,6 +1114,19 @@ async function rpc<T>(
   body: unknown = {},
   spaceId?: string,
 ): Promise<T> {
+  if (
+    (proc === "threads/send" ||
+      proc === "threads/followUp" ||
+      proc === "threads/sendWithRoutines") &&
+    body !== null &&
+    typeof body === "object" &&
+    !("clientNonce" in (body as Record<string, unknown>))
+  ) {
+    body = {
+      ...(body as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const res = await raw(app, cookie, proc, body, spaceId);
   const text = await res.text();
   const parsed = JSON.parse(text) as { json?: T; error?: { message?: string } };

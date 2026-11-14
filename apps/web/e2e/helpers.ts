@@ -25,6 +25,19 @@ export function activeBotId(page: Page) {
 }
 
 export async function rpc<T>(page: Page, procedure: string, body: unknown): Promise<T> {
+  if (
+    (procedure === "threads/send" ||
+      procedure === "threads/followUp" ||
+      procedure === "threads/sendWithRoutines") &&
+    body !== null &&
+    typeof body === "object" &&
+    !("clientNonce" in (body as Record<string, unknown>))
+  ) {
+    body = {
+      ...(body as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const response = await page.request.post(`/rpc/${procedure}`, { data: { json: body } });
   const parsed = (await response.json()) as { json?: T; error?: { message?: string } };
   if (!response.ok() || parsed.error) {
