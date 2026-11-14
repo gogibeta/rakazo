@@ -102,7 +102,9 @@ test("migrates a wallet to password protection from Settings", async ({ page }, 
 
   await wallet.getByLabel("Wallet password", { exact: true }).fill("migration-password-one");
   await wallet.getByRole("button", { name: "Migrate wallet", exact: true }).click();
-  await expect(wallet.getByText("Password protected")).toBeVisible();
+  // Exact text: the plain substring would also match "Not password
+  // protected yet." and pass before the migration has even answered.
+  await expect(wallet.getByText("Password protected", { exact: true })).toBeVisible();
   await captureScreenshot(page, testInfo, "wallet-migrated");
 
   const listed = JSON.stringify(await rpc(page, "wallets/list", {}));
