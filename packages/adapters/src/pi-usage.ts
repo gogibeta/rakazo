@@ -6,6 +6,7 @@ import type {
   Model,
   Models,
   SimpleStreamOptions,
+  SystemMessage,
   Usage,
 } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -321,6 +322,25 @@ function usageOperationKind(
   return base;
 }
 
+/**
+ * Append a note to the context's leading system message as a named section, replacing any
+ * earlier note under the same name. Only the returned copy changes: the caller's context is
+ * the agent loop's live transcript, which the next call reuses verbatim.
+ */
+export function withServingModelNote(context: Context, note: string): Context {
+  const [first, ...rest] = context.messages;
+  const lead: SystemMessage =
+    first?.role === "system"
+      ? { ...first, sections: { ...first.sections, rakazoServingModel: note } }
+      : {
+          role: "system",
+          content: "",
+          sections: { rakazoServingModel: note },
+          timestamp: 0,
+        };
+  return { ...context, messages: [lead, ...(first?.role === "system" ? rest : context.messages)] };
+}
+
 /** Guard and account every actual model invocation, including tools, failures and subagents. */
 export function observedPiStream(
   models: Models,
@@ -339,6 +359,8 @@ export function observedPiStream(
   },
   hooks?: {
     prepareContext?: (context: Context, model: Model<Api>) => Context;
+    /** Factual note naming the model serving this call, stamped after context preparation. */
+    servingModelNote?: string;
     imageTokens?: ContextBudget["imageTokens"];
     onUsage?: (usage: AgentUsage) => void;
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
@@ -418,7 +440,12 @@ export function observedPiStream(
         options?.signal?.throwIfAborted();
         // Reject an unsupported declared control before reserving or making any request.
         const cacheRetention = resolvePiCacheRetention(model, options?.cacheRetention);
-        const preparedContext = hooks?.prepareContext?.(context, model) ?? context;
+        const preparedContext = hooks?.servingModelNote
+          ? withServingModelNote(
+              hooks?.prepareContext?.(context, model) ?? context,
+              hooks.servingModelNote,
+            )
+          : (hooks?.prepareContext?.(context, model) ?? context);
         recordPiTelemetryContent(span, "pi.ai.prompt", preparedContext);
         inputTokensEstimate = observer
           ? estimateModelContextTokens(preparedContext, hooks?.imageTokens)
