@@ -19,6 +19,7 @@ cat >"${scratch}/.env" <<'ENV'
 POSTGRES_PASSWORD=owner-test-password
 POSTGRES_APP_PASSWORD=app-test-password
 SCREEN_PROXY_SECRET=test-screen-proxy-secret-0123456789abcdef
+VAULT_SERVICE_TOKEN=vault-test-token
 ENV
 # The postgres service as releases before Postgres 18 defined it.
 cat >"${scratch}/old.yml" <<YAML

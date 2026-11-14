@@ -69,6 +69,7 @@ model User {
   wallets                     UserWallet[]
   walletUses                  UserWalletUse[]
   walletVault                 WalletVault?
+  vaultUnlocks                VaultUnlock[]
   voiceCredentials            UserVoiceCredential[]
   paymentWallet               PaymentWallet?
   spendingLimit               SpendingLimit?
@@ -988,6 +989,26 @@ model WalletVault {
   lockedUntil     DateTime?
 
   @@map("wallet_vaults")
+}
+
+/// One vault unlock, recorded for audit: who unlocked, the grant's id and
+/// the password epoch it was minted under, when it was issued, when it was
+/// set to expire, and when it was revoked early, if it was. Audit only —
+/// the vault service authorizes from its in-memory grant alone, so a row
+/// here (stolen, replayed, or forged) never unlocks anything by itself.
+model VaultUnlock {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grantId       String
+  passwordEpoch Int
+  issuedAt      DateTime  @default(now())
+  expiresAt     DateTime
+  revokedAt     DateTime?
+
+  @@index([userId, issuedAt])
+
+  @@map("vault_unlocks")
 }
 
 /// A problem or suggestion a user asked their bot to send to the people who run this server.

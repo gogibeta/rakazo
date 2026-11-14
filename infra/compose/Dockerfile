@@ -13,6 +13,7 @@ COPY --chmod=755 patches patches
 COPY --chmod=755 apps/api/package.json apps/api/
 COPY --chmod=755 apps/desktop/package.json apps/desktop/
 COPY --chmod=755 apps/mobile/package.json apps/mobile/
+COPY --chmod=755 apps/vault/package.json apps/vault/
 COPY --chmod=755 apps/web/package.json apps/web/
 COPY --chmod=755 apps/worker/package.json apps/worker/
 COPY --chmod=755 apps/www/package.json apps/www/
@@ -32,13 +33,13 @@ COPY --chmod=755 packages/ui-tokens/package.json packages/ui-tokens/
 COPY --chmod=755 packages/ui-web/package.json packages/ui-web/
 COPY --chmod=755 infra/sandboxes/supervisor/package.json infra/sandboxes/supervisor/
 COPY --chmod=755 infra/updater/package.json infra/updater/
-# Only what the image runs (api, worker, web, supervisor) and the root build tools, with
+# Only what the image runs (api, worker, web, supervisor, vault) and the root build tools, with
 # native binaries for this image's platform alone. Mobile, desktop and the marketing site
 # never run here.
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store pnpm install --frozen-lockfile \
   --store-dir=/pnpm/store --cpu=current --os=current \
   --filter=. --filter="@rakazo/api..." --filter="@rakazo/worker..." \
-  --filter="@rakazo/web..." --filter="@rakazo/sandbox-supervisor..."
+  --filter="@rakazo/web..." --filter="@rakazo/sandbox-supervisor..." --filter="@rakazo/vault..."
 # Normalize modes: a restrictive host umask (e.g. 077 on hardened hosts) would otherwise
 # leave the copied tree unreadable to USER node at runtime.
 COPY --chmod=755 . .
@@ -51,7 +52,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
   && pnpm install --frozen-lockfile --prod --prefer-offline \
   --store-dir=/pnpm/store --cpu=current --os=current \
   --filter="@rakazo/api..." --filter="@rakazo/worker..." \
-  --filter="@rakazo/web..." --filter="@rakazo/sandbox-supervisor..."
+  --filter="@rakazo/web..." --filter="@rakazo/sandbox-supervisor..." --filter="@rakazo/vault..."
 RUN rm -rf apps/desktop apps/mobile apps/www docs examples
 
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
@@ -71,6 +72,6 @@ RUN /tmp/apt-security.sh --check && rm -f /tmp/apt-security.sh
 ARG GIT_SHA
 ENV NODE_ENV=production
 ENV GIT_SHA=$GIT_SHA
-EXPOSE 3100 5173 7091
+EXPOSE 3100 5173 7091 7092
 USER node
 CMD ["pnpm", "--filter", "@rakazo/api", "start"]
