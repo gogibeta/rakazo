@@ -2365,7 +2365,9 @@ describe("createRunExecutor", () => {
             threadId: null,
             ...model,
           })),
+          update: vi.fn(async () => ({})),
         },
+        thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
         bot: {
           findUnique: vi.fn(async () => ({ id: "bot-1", threads: [{ id: "thread-1" }] })),
         },
@@ -2685,7 +2687,9 @@ description: Prepare standup notes
           active: true,
           nextRunAt: scheduledAt,
         })),
+        update: vi.fn(async () => ({})),
       },
+      thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
@@ -2764,7 +2768,9 @@ description: Prepare standup notes
           nextRunAt: scheduledAt,
           lastRunAt: null,
         })),
+        update: vi.fn(async () => ({})),
       },
+      thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
@@ -2831,7 +2837,9 @@ description: Prepare standup notes
           nextRunAt: scheduledAt,
           lastRunAt: previousLastRunAt,
         })),
+        update: vi.fn(async () => ({})),
       },
+      thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
       bot: {
         findUnique: vi.fn(async () => ({
           id: "bot-1",
