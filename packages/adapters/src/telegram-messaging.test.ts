@@ -442,6 +442,43 @@ describe("Telegram groups", () => {
     ]);
   });
 
+  it("names the replied-to message on a direct message", async () => {
+    const { surface, inbound } = createGroupSurface();
+
+    expect(
+      (
+        await surface.handleWebhook(
+          "telegram",
+          webhook("home-secret", {
+            update_id: 110,
+            message: {
+              message_id: 31,
+              date: 1_700_000_000,
+              chat: { id: 777, type: "private", first_name: "Grace" },
+              from: sender,
+              text: "about that earlier answer",
+              reply_to_message: {
+                message_id: 30,
+                date: 1_700_000_000,
+                chat: { id: 777, type: "private" },
+                from: { id: 999, is_bot: true, first_name: "Test Bot" },
+                text: "the earlier answer",
+              },
+            },
+          }),
+        )
+      )?.status,
+    ).toBe(200);
+
+    expect(inbound).toEqual([
+      expect.objectContaining({
+        isDirect: true,
+        content: "about that earlier answer",
+        replyToHandle: "777:30",
+      }),
+    ]);
+  });
+
   it("keeps a forum topic as its own conversation", async () => {
     const { surface, inbound } = createGroupSurface();
 

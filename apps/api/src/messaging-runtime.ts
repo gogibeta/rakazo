@@ -8,7 +8,6 @@ import type {
   SandboxProvider,
   SecretStore,
 } from "@rakazo/adapter-kit";
-import { createAdapterContext, runJobKey } from "@rakazo/adapter-kit";
 import type {
   BotModelChangeDeps,
   CodexLiveCatalog,
@@ -21,7 +20,6 @@ import {
   createMessagingTeamChatSender,
   kickModelCredentialRefresh,
   resolveModelChoice,
-  SpaceMemoryProviderResolver,
   validateBotModelChange,
 } from "@rakazo/adapters";
 import { MESSAGING_SLASH_COMMANDS } from "@rakazo/core";
@@ -110,7 +108,6 @@ export async function startMessagingRuntime({
       kickModelCredentialRefresh(prisma, secrets, scope, secretId, provider),
     defaultModel: async () => ({ provider: env.defaultProvider, model: env.defaultModel }),
   };
-  const memoryProviders = new SpaceMemoryProviderResolver(prisma, secrets);
   const inboundDeps = {
     prisma,
     events,
@@ -193,44 +190,6 @@ export async function startMessagingRuntime({
           return created?.threadId ?? null;
         }
       : undefined,
-    // The app's Clear conversation follow-through, mirrored for /new:
-    // cancel the cleared runs' jobs, then purge the previous
-    // generations' conversation-derived memory. Both are best-effort —
-    // the conversation rows are already gone either way.
-    afterThreadClear: async ({
-      spaceId,
-      userId,
-      threadId,
-      botId,
-      cancelledRunIds,
-      historyCompactionGeneration,
-    }) => {
-      await Promise.all(
-        cancelledRunIds.map((runId) => jobs.cancel(runJobKey(runId)).catch(() => undefined)),
-      );
-      const configured = await memoryProviders.resolve(spaceId).catch((error) => {
-        getLogger().error("semantic memory resolution after chat /new failed", error);
-        return null;
-      });
-      if (!configured) return;
-      try {
-        const purged = await configured.provider.purgeHistory(
-          {
-            botId,
-            generations: [
-              Math.max(0, historyCompactionGeneration - 1),
-              historyCompactionGeneration,
-            ],
-          },
-          createAdapterContext({ userId, spaceId }, botId, `thread-clear:${threadId}`),
-        );
-        if (!purged.ok) {
-          getLogger().error("semantic memory purge after chat /new failed", purged.error);
-        }
-      } catch (error) {
-        getLogger().error("semantic memory purge after chat /new failed", error);
-      }
-    },
   } satisfies Parameters<typeof createMessagingInboundHandler>[0];
   const inbound = createMessagingInboundHandler(inboundDeps);
   const handleTeamChatInbound = createTeamChatInboundHandler(inboundDeps, inbound);

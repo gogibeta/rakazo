@@ -191,7 +191,7 @@ function archivedGroupInclude(userId: string) {
 }
 
 const groupTargetInclude = {
-  thread: { select: { id: true } },
+  thread: { select: { id: true, archivedAt: true } },
   members: {
     where: { bot: { archivedAt: null } },
     include: {

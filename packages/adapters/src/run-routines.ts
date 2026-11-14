@@ -15,6 +15,7 @@ import {
 } from "@rakazo/core";
 import {
   accountDeactivated,
+  createSession,
   isUniqueViolation,
   SpaceDeletionInProgressError,
   spaceTakesWork,
@@ -128,6 +129,50 @@ function nextScheduledRunAt(
     : nextRoutineRunDateAcross(routine.crons, scheduledAt, new Date(Date.now()), routine.timezone);
 }
 
+/**
+ * The routine's dedicated session, created on first fire and bound to the
+ * routine so every later fire lands in the same conversation. The binding
+ * is claimed atomically: when two fires race the first creation, only the
+ * first binder's session is used — the other fire adopts it, so the run
+ * always lands in the session the routine ends up bound to. A binding left
+ * pointing at a thread that no longer exists is replaced.
+ */
+async function routineSession(
+  deps: ExecutorDeps,
+  routine: { id: string; spaceId: string; userId: string; name: string },
+  bot: { id: string },
+): Promise<{ id: string }> {
+  const session = await createSession(deps.prisma, {
+    spaceId: routine.spaceId,
+    userId: routine.userId,
+    botId: bot.id,
+    kind: "routine",
+    origin: "routine",
+    title: routine.name,
+  });
+  const bound = await deps.prisma.routine.updateMany({
+    where: { id: routine.id, threadId: null },
+    data: { threadId: session.id },
+  });
+  if (bound.count === 1) return session;
+  const current = await deps.prisma.routine.findUnique({
+    where: { id: routine.id },
+    select: { threadId: true },
+  });
+  if (current?.threadId) {
+    const existing = await deps.prisma.thread.findFirst({
+      where: { id: current.threadId },
+      select: { id: true },
+    });
+    if (existing) return existing;
+    await deps.prisma.routine.update({
+      where: { id: routine.id },
+      data: { threadId: session.id },
+    });
+  }
+  return session;
+}
+
 export async function wakeRoutine(deps: ExecutorDeps, routineId: string, scheduledFor: string) {
   const scheduledAt = new Date(scheduledFor);
   if (!Number.isFinite(scheduledAt.getTime())) return;
@@ -194,7 +239,13 @@ export async function wakeRoutine(deps: ExecutorDeps, routineId: string, schedul
         select: { id: true },
       })
     : null;
-  const thread = targetThread ?? bot.threads[0];
+  // A routine fires where it is bound: a schedule created in a conversation
+  // (a group thread, or the 1:1 thread it was made in) keeps firing there —
+  // the binding is also what pending-tick coalescing matches on. Only an
+  // unbound routine (or a binding that no longer resolves) gets the
+  // dedicated routine session, created on first fire and bound for later
+  // ones.
+  const thread = targetThread ?? (await routineSession(deps, routine, bot));
   // A change trigger checks first, without a model; only news becomes a run.
   const watchTick =
     routine.watch == null

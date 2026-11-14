@@ -704,7 +704,25 @@ function telegramGroupHooks(adapter: { readonly botUserId?: string }) {
     acceptsGroup: (raw: unknown) => asRecord(asRecord(raw)?.chat)?.type !== "channel",
     normalizeThreadId: telegramGroupThreadId,
     departures: (raw: unknown) => telegramDepartures(raw, adapter),
+    replyToHandle: telegramReplyToHandle,
   };
+}
+
+/**
+ * The handle of the message a Telegram message replies to, in the Chat
+ * SDK's own handle space (`<chatId>:<messageId>`) — the same value a send
+ * returns — so a reply names the outbound row that delivered the original.
+ */
+function telegramReplyToHandle(raw: unknown): string | null {
+  const message = asRecord(raw);
+  const reply = asRecord(message?.reply_to_message);
+  if (!message || !reply) return null;
+  const chatId =
+    numberField(asRecord(message.chat) ?? {}, "id") ??
+    numberField(asRecord(reply.chat) ?? {}, "id");
+  const messageId = numberField(reply, "message_id");
+  if (chatId === undefined || messageId === undefined) return null;
+  return `${chatId}:${messageId}`;
 }
 
 /**
@@ -876,6 +894,11 @@ function arrayField(record: Record<string, unknown> | null, key: string): unknow
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" && value ? value : undefined;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function sendblueParticipants(raw: unknown, lineNumber: string): string[] {
