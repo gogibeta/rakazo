@@ -9,6 +9,7 @@ import type {
 import { phoneCallSettings, resolveEncryptionKey, uploadSizeFromEnv } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
+  createApprovalExpirySweeper,
   createSecurityEventPruner,
   createTransientEventPruner,
   securityEventRetentionDays,
@@ -297,6 +298,7 @@ export function createRunReconciler(
     ),
     reconcileTransientEventRetention: createTransientEventPruner(prisma),
     reconcileAuditLog: createAuditLogReconciler(prisma, auditLogConfig()),
+    reconcileApprovalExpiry: createApprovalExpirySweeper(prisma),
     reconcileIdleComputers: createIdleComputerSweeper({ prisma, jobs }),
   });
 }

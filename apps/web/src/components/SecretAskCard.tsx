@@ -49,6 +49,7 @@ export function SecretAskCard({ block, canAnswer, canDismiss, onAnswer, onDismis
   const submitting = pending !== null;
   const answered = block.status === "answered" || accepted || dismissed;
   const shownDismissed = block.status === "answered" ? block.dismissed : dismissed;
+  const shownExpired = block.status === "answered" && block.answer === "expired";
   const shownRemembered = block.status === "answered" ? block.remembered : acceptedRemembered;
   const form = formKind(block);
   const commandInput = block.credential?.auth.type === "command";
@@ -130,11 +131,13 @@ export function SecretAskCard({ block, canAnswer, canDismiss, onAnswer, onDismis
     else await send(result.value ?? "");
   }
 
-  const status = shownDismissed
-    ? t`Dismissed`
-    : shownRemembered === false || codeInput
-      ? t`Sent`
-      : t`Saved`;
+  const status = shownExpired
+    ? t`Expired`
+    : shownDismissed
+      ? t`Dismissed`
+      : shownRemembered === false || codeInput
+        ? t`Sent`
+        : t`Saved`;
   const destination =
     block.credential?.auth.type === "command" ? (
       <span className="flex flex-wrap gap-x-2">
@@ -204,7 +207,7 @@ export function SecretAskCard({ block, canAnswer, canDismiss, onAnswer, onDismis
         </div>
         {answered ? (
           <div className="flex shrink-0 items-center gap-1.5 text-body font-medium text-muted-foreground">
-            {shownDismissed ? null : <Check aria-hidden className="size-4" />}
+            {shownDismissed || shownExpired ? null : <Check aria-hidden className="size-4" />}
             {status}
           </div>
         ) : form && canAnswer && !ownerOnly ? (

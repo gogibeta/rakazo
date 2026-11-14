@@ -23,9 +23,12 @@ import { partialReplyClientNonce, RunHistoryWriteError } from "./messages.js";
 import { installSecurityEventStore } from "./security-events.js";
 import type { AnswerRunInput } from "./thread-ask.js";
 import {
+  AnswerExpiredError,
   AnswerTooLongError,
   answerRunInput,
   answerWaitingRunWithTextInTransaction,
+  expireWaitingApproval,
+  expireWaitingApprovals,
   pauseRunForInput,
 } from "./thread-ask.js";
 import {
@@ -3240,7 +3243,15 @@ describe("answerRunInput approvals", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       task: { updateMany: vi.fn() },
-      externalEffect: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      externalEffect: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "effect-1",
+          kind: "request_secret",
+          createdAt: new Date(),
+          expiresAt: null,
+        }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
       event: {
         create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -3347,7 +3358,15 @@ describe("answerRunInput approvals", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       task: { updateMany: vi.fn() },
-      externalEffect: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      externalEffect: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "effect-1",
+          kind: "request_secret",
+          createdAt: new Date(),
+          expiresAt: null,
+        }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
       thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
       event: {
         create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -3475,7 +3494,15 @@ describe("answerRunInput approvals", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         task: { updateMany: vi.fn() },
-        externalEffect: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        externalEffect: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "effect-1",
+            kind: "request_secret",
+            createdAt: new Date(),
+            expiresAt: null,
+          }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
         event: {
           create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -3759,7 +3786,15 @@ describe("answerRunInput approvals", () => {
           updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         task: { updateMany: vi.fn() },
-        externalEffect: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        externalEffect: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: "effect-1",
+            kind: "request_secret",
+            createdAt: new Date(),
+            expiresAt: null,
+          }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
         event: {
           create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
@@ -3916,6 +3951,322 @@ describe("answerRunInput approvals", () => {
     ).resolves.toBe(false);
 
     expect(tx.run.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("approval expiry", () => {
+  const createdAt = new Date("2026-01-01T00:00:00.000Z");
+  const expiredAt = new Date("2026-01-02T00:00:00.000Z");
+  const approvalBlock = {
+    kind: "ask",
+    approvalEffectId: "effect-1",
+    text: "Review before writing",
+    status: "pending",
+    actions: [
+      { id: "allow", label: "Allow once" },
+      { id: "deny", label: "Deny" },
+    ],
+  };
+
+  function installAuditCapture() {
+    const createMany = vi.fn(async (_args: unknown) => ({ count: 1 }));
+    installAuditEventStore({
+      auditEvent: { createMany },
+      space: { findUnique: vi.fn(async () => ({ organizationId: "org-1", name: "Space" })) },
+      user: { findUnique: vi.fn(async () => ({ email: "actor@example.com" })) },
+      member: { findMany: vi.fn(async () => []) },
+    } as never);
+    return createMany;
+  }
+
+  function auditRows(createMany: ReturnType<typeof installAuditCapture>) {
+    return createMany.mock.calls.flatMap(
+      (call) => (call[0] as { data: Record<string, unknown>[] }).data,
+    );
+  }
+
+  function answerTx(effect: Record<string, unknown>) {
+    return {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+      message: {
+        findFirst: vi.fn().mockResolvedValue({ id: "message-1", blocks: [approvalBlock] }),
+        update: vi.fn().mockResolvedValue({ id: "message-1" }),
+      },
+      run: {
+        findFirst: vi.fn().mockResolvedValue({ botId: "bot-1", userId: "user-1" }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+      },
+      task: { updateMany: vi.fn() },
+      externalEffect: {
+        findFirst: vi.fn().mockResolvedValue(effect),
+        update: vi.fn().mockResolvedValue({ id: "effect-1" }),
+      },
+      thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
+      event: {
+        create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+          ...event(data.seq),
+          type: data.type,
+        })),
+      },
+    };
+  }
+
+  it("refuses a late answer and resolves the approval as expired", async () => {
+    const createMany = installAuditCapture();
+    const tx = answerTx({
+      id: "effect-1",
+      kind: "connector_write",
+      status: "intended",
+      request: {},
+      batchActions: null,
+      createdAt,
+      expiresAt: expiredAt,
+    });
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    try {
+      await expect(
+        answerRunInput(
+          prisma,
+          {
+            spaceId: "workspace-1",
+            threadId: "thread-1",
+            runId: "run-1",
+            messageId: "message-1",
+            answeredByUserId: "user-1",
+            answer: "allow",
+          },
+          new TestFanout(),
+        ),
+      ).rejects.toBeInstanceOf(AnswerExpiredError);
+    } finally {
+      installAuditEventStore(undefined);
+    }
+    // Expiry is a denial: the effect is denied, never approved, and the card is
+    // recorded answered with the expiry for every surface to render.
+    expect(tx.externalEffect.update).toHaveBeenCalledWith({
+      where: { id: "effect-1" },
+      data: { status: "denied" },
+    });
+    expect(tx.externalEffect.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: "approved" } }),
+    );
+    expect(tx.run.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: "queued" } }),
+    );
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "message-1" },
+      data: {
+        blocks: [expect.objectContaining({ status: "answered", answer: "expired" })],
+      },
+    });
+    expect(auditRows(createMany)).toContainEqual(
+      expect.objectContaining({
+        action: "tool.approval_decision",
+        actorType: "system",
+        outcome: "denied",
+        targetType: "effect",
+        targetId: "effect-1",
+        runId: "run-1",
+        metadata: expect.objectContaining({
+          tool: "connector_write",
+          decision: "expired",
+          via: "answer",
+          ageMs: expect.any(Number),
+        }),
+      }),
+    );
+  });
+
+  it("answers an approval that has not reached its expiry as before", async () => {
+    const tx = answerTx({
+      id: "effect-1",
+      kind: "connector_write",
+      status: "intended",
+      request: {},
+      batchActions: null,
+      createdAt,
+      expiresAt: new Date("2999-01-01T00:00:00.000Z"),
+    });
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    const audit = { securityEvent: { create: vi.fn(async () => ({})) } };
+    installSecurityEventStore(audit as never);
+    try {
+      await expect(
+        answerRunInput(
+          prisma,
+          {
+            spaceId: "workspace-1",
+            threadId: "thread-1",
+            runId: "run-1",
+            messageId: "message-1",
+            answeredByUserId: "user-1",
+            answer: "allow",
+          },
+          new TestFanout(),
+        ),
+      ).resolves.toBe(true);
+    } finally {
+      installSecurityEventStore(undefined);
+    }
+    expect(tx.externalEffect.update).toHaveBeenCalledWith({
+      where: { id: "effect-1" },
+      data: { status: "approved" },
+    });
+  });
+
+  function sweepTx(blocks: unknown[], effect: Record<string, unknown> | null) {
+    return {
+      $queryRaw: vi.fn().mockResolvedValue([{ id: "thread-1" }]),
+      run: {
+        findFirst: vi.fn().mockResolvedValue({
+          botId: "bot-1",
+          trigger: "message",
+          task: { prompt: "Do the thing" },
+        }),
+        findUnique: vi.fn().mockResolvedValue({ status: "queued" }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      message: {
+        findMany: vi.fn().mockResolvedValue([{ id: "message-1", blocks }]),
+        update: vi.fn().mockResolvedValue({ id: "message-1" }),
+      },
+      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      externalEffect: {
+        findFirst: vi.fn().mockResolvedValue(effect),
+        update: vi.fn().mockResolvedValue({ id: "effect-1" }),
+      },
+      thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
+      event: {
+        create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+          ...event(data.seq),
+          type: data.type,
+        })),
+      },
+    };
+  }
+
+  it("sweeps a waiting approval past its expiry into a denial", async () => {
+    const createMany = installAuditCapture();
+    const tx = sweepTx([approvalBlock], {
+      id: "effect-1",
+      kind: "connector_write",
+      createdAt,
+      expiresAt: expiredAt,
+    });
+    const prisma = {
+      externalEffect: {
+        findMany: vi.fn().mockResolvedValue([{ runId: "run-1", spaceId: "workspace-1" }]),
+      },
+      run: { findFirst: vi.fn().mockResolvedValue({ threadId: "thread-1" }) },
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    try {
+      await expect(expireWaitingApprovals(prisma, { now: new Date() })).resolves.toBe(1);
+    } finally {
+      installAuditEventStore(undefined);
+    }
+    expect(tx.externalEffect.update).toHaveBeenCalledWith({
+      where: { id: "effect-1" },
+      data: { status: "denied" },
+    });
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "message-1" },
+      data: {
+        blocks: [expect.objectContaining({ status: "answered", answer: "expired" })],
+      },
+    });
+    expect(auditRows(createMany)).toContainEqual(
+      expect.objectContaining({
+        action: "tool.approval_decision",
+        actorType: "system",
+        outcome: "denied",
+        metadata: expect.objectContaining({ decision: "expired", via: "sweep" }),
+      }),
+    );
+  });
+
+  it("sweep skips candidates whose run is no longer waiting", async () => {
+    const prisma = {
+      externalEffect: {
+        findMany: vi.fn().mockResolvedValue([{ runId: "run-1", spaceId: "workspace-1" }]),
+      },
+      run: { findFirst: vi.fn().mockResolvedValue(null) },
+      $transaction: vi.fn(),
+    } as unknown as PrismaClient;
+    await expect(expireWaitingApprovals(prisma, { now: new Date() })).resolves.toBe(0);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("expires a secret request like a dismissal, with an expired result", async () => {
+    const tx = sweepTx(
+      [
+        {
+          kind: "ask",
+          text: "Example sign-in",
+          input: "secret",
+          purpose: "password",
+          credential: {
+            name: "example_login",
+            origin: "https://login.example.test",
+            auth: { type: "login" },
+          },
+          status: "pending",
+        },
+      ],
+      { id: "effect-9", kind: "request_secret", createdAt, expiresAt: expiredAt },
+    );
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    await expect(
+      expireWaitingApproval(prisma, {
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        runId: "run-1",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({ effectId: "effect-9", effectKind: "request_secret" }),
+    );
+    expect(tx.externalEffect.update).toHaveBeenCalledWith({
+      where: { id: "effect-9" },
+      data: { status: "completed", result: { ok: false, expired: true } },
+    });
+    expect(tx.task.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { prompt: expect.stringContaining("The request expired before it was answered.") },
+      }),
+    );
+  });
+
+  it("never expires a plain question, which carries no effect", async () => {
+    const tx = sweepTx(
+      [
+        {
+          kind: "ask",
+          text: "Which one?",
+          status: "pending",
+          actions: [{ id: "a", label: "A" }],
+        },
+      ],
+      null,
+    );
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+    await expect(
+      expireWaitingApproval(prisma, {
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        runId: "run-1",
+      }),
+    ).resolves.toBeNull();
+    expect(tx.run.updateMany).not.toHaveBeenCalled();
+    expect(tx.externalEffect.update).not.toHaveBeenCalled();
   });
 });
 

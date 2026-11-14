@@ -38,6 +38,7 @@ import type {
   ThreadSessionOrigin,
 } from "@rakazo/db";
 import {
+  AnswerExpiredError,
   accountDeactivated,
   createSession,
   createThreadMessage,
@@ -360,15 +361,27 @@ async function commitAskAnswer(
   identity: IdentityRow,
   input: { threadId: string; runId: string; messageId: string; answer: string; label: string },
 ): Promise<void> {
-  const answered = await deps.events.answerRunInput({
-    spaceId: identity.spaceId,
-    threadId: input.threadId,
-    runId: input.runId,
-    messageId: input.messageId,
-    answeredByUserId: identity.userId,
-    answer: input.answer,
-    surface: identity.provider,
-  });
+  let answered: boolean;
+  try {
+    answered = await deps.events.answerRunInput({
+      spaceId: identity.spaceId,
+      threadId: input.threadId,
+      runId: input.runId,
+      messageId: input.messageId,
+      answeredByUserId: identity.userId,
+      answer: input.answer,
+      surface: identity.provider,
+    });
+  } catch (error) {
+    // The tap arrived after the ask expired: the ask already resolved as a
+    // denial, so the receipt says so instead of reporting the tap as an answer.
+    if (!(error instanceof AnswerExpiredError)) throw error;
+    await deps.jobs.enqueue(runContinueJob(input.runId)).catch((enqueueError) => {
+      getLogger().error("messaging ask expiry enqueue", enqueueError);
+    });
+    await writeAskReceipt(deps, identity, input.messageId, "That approval expired.");
+    return;
+  }
   if (!answered) {
     await writeAskReceipt(deps, identity, input.messageId, "That question was already answered.");
     return;

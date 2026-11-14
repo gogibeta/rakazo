@@ -1,6 +1,12 @@
 import { RunHistoryWriteError } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { legacyPiToolCallId, recordEffect, runScopedToolExecutionId } from "./run-effects.js";
+import {
+  approvalTtlMs,
+  DEFAULT_APPROVAL_TTL_MS,
+  legacyPiToolCallId,
+  recordEffect,
+  runScopedToolExecutionId,
+} from "./run-effects.js";
 
 type Effect = {
   id: string;
@@ -242,5 +248,26 @@ describe("executor tool effect ownership", () => {
         legacyPiToolCallId(typeof invalid === "string" ? invalid : JSON.stringify(invalid)),
       ).toBeUndefined();
     }
+  });
+});
+
+describe("approval expiry stamping", () => {
+  it("stamps a newly recorded effect with an expiry one TTL out", async () => {
+    const f = fixture();
+    const before = Date.now();
+    const result = await recordEffect(f.deps, run("one"), "write_fixture", "ttl-key", {});
+    const stamped = (result.effect as { expiresAt?: Date }).expiresAt;
+    expect(stamped).toBeInstanceOf(Date);
+    expect(stamped?.getTime()).toBeGreaterThanOrEqual(before + DEFAULT_APPROVAL_TTL_MS);
+    expect(stamped?.getTime()).toBeLessThanOrEqual(Date.now() + DEFAULT_APPROVAL_TTL_MS);
+  });
+
+  it("parses APPROVAL_TTL with the default as the fallback", () => {
+    expect(approvalTtlMs({})).toBe(DEFAULT_APPROVAL_TTL_MS);
+    expect(approvalTtlMs({ APPROVAL_TTL: "120000" })).toBe(120000);
+    expect(approvalTtlMs({ APPROVAL_TTL: "1000" })).toBe(1000);
+    expect(approvalTtlMs({ APPROVAL_TTL: "nonsense" })).toBe(DEFAULT_APPROVAL_TTL_MS);
+    expect(approvalTtlMs({ APPROVAL_TTL: "0" })).toBe(DEFAULT_APPROVAL_TTL_MS);
+    expect(approvalTtlMs({ APPROVAL_TTL: "999" })).toBe(DEFAULT_APPROVAL_TTL_MS);
   });
 });

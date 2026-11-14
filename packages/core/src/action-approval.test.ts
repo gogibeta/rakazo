@@ -116,26 +116,38 @@ describe("toolRequiresApproval", () => {
     expect(toolRequiresApproval("organize_bot", true)).toBe(false);
   });
 
-  it("gates connector executes except obvious reads", () => {
+  it("gates connector executes except declared reads with read-only names", () => {
+    expect(toolRequiresApproval("gmail_send_email", true, true)).toBe(true);
+    expect(toolRequiresApproval("crm_create_note", true, true)).toBe(true);
+    expect(toolRequiresApproval("get_contact", true, true)).toBe(false);
+    expect(toolRequiresApproval("contacts_get", true, true)).toBe(false);
+    expect(toolRequiresApproval("GMAIL_LIST_THREADS", true, true)).toBe(false);
+    expect(toolRequiresApproval("list_messages", true, true)).toBe(false);
+    expect(toolRequiresApproval("search_threads", true, true)).toBe(false);
+    expect(toolRequiresApproval("find_user", true, true)).toBe(false);
+    expect(toolRequiresApproval("read_inbox", true, true)).toBe(false);
+    expect(toolRequiresApproval("contacts_get_or_create", true, true)).toBe(true);
+    expect(toolRequiresApproval("notion_search_and_update", true, true)).toBe(true);
+    expect(toolRequiresApproval("crm_get_then_upsert", true, true)).toBe(true);
+    expect(toolRequiresApproval("github_get_and_lock_issue", true, true)).toBe(true);
+  });
+
+  it("gates connector tools that do not declare their effect, whatever the name says", () => {
+    expect(toolRequiresApproval("get_contact", true)).toBe(true);
+    expect(toolRequiresApproval("list_messages", true)).toBe(true);
     expect(toolRequiresApproval("gmail_send_email", true)).toBe(true);
-    expect(toolRequiresApproval("crm_create_note", true)).toBe(true);
-    expect(toolRequiresApproval("get_contact", true)).toBe(false);
-    expect(toolRequiresApproval("contacts_get", true)).toBe(false);
-    expect(toolRequiresApproval("GMAIL_LIST_THREADS", true)).toBe(false);
-    expect(toolRequiresApproval("list_messages", true)).toBe(false);
-    expect(toolRequiresApproval("search_threads", true)).toBe(false);
-    expect(toolRequiresApproval("find_user", true)).toBe(false);
-    expect(toolRequiresApproval("read_inbox", true)).toBe(false);
-    expect(toolRequiresApproval("contacts_get_or_create", true)).toBe(true);
-    expect(toolRequiresApproval("notion_search_and_update", true)).toBe(true);
-    expect(toolRequiresApproval("crm_get_then_upsert", true)).toBe(true);
-    expect(toolRequiresApproval("github_get_and_lock_issue", true)).toBe(true);
   });
 });
 
 describe("connectorToolRequiresApproval", () => {
-  it("matches read-only connector tool names", () => {
-    expect(connectorToolRequiresApproval("list_items")).toBe(false);
+  it("matches declared read-only connector tool names", () => {
+    expect(connectorToolRequiresApproval("list_items", true)).toBe(false);
+    expect(connectorToolRequiresApproval("send_message", true)).toBe(true);
+  });
+
+  it("requires approval when the tool declares no effect, even for a read-only name", () => {
+    expect(connectorToolRequiresApproval("list_items")).toBe(true);
+    expect(connectorToolRequiresApproval("read_profile_card")).toBe(true);
     expect(connectorToolRequiresApproval("send_message")).toBe(true);
   });
 
@@ -151,7 +163,6 @@ describe("connectorToolRequiresApproval", () => {
     expect(connectorToolRequiresApproval("read_profile_card", false)).toBe(true);
     expect(connectorToolRequiresApproval("find_validator_record", false)).toBe(true);
     expect(connectorToolRequiresApproval("read_profile_card", true)).toBe(false);
-    expect(connectorToolRequiresApproval("read_profile_card")).toBe(false);
   });
 
   it("never lets a declared read relax a mutating or ambiguous name", () => {
@@ -171,8 +182,10 @@ describe("resolveActionApprovalDetail", () => {
       { effect: "require_approval" as const, matchKind: "category" as const, matchValue: "email" },
     ];
     const base = { toolName: "gmail_read_thread", connectorKind: "gmail", rules };
-    expect(resolveActionApprovalDetail(base).decision).toBe("allow");
+    expect(resolveActionApprovalDetail({ ...base, readOnly: true }).decision).toBe("allow");
     expect(resolveActionApprovalDetail({ ...base, readOnly: false }).decision).toBe("ask");
+    // Undeclared counts as consequential too, so the category rule reaches it.
+    expect(resolveActionApprovalDetail(base).decision).toBe("ask");
   });
 
   it("pipedream-connector-rule", () => {
@@ -352,13 +365,21 @@ describe("resolveActionApproval", () => {
     ).toBe("ask");
   });
 
-  it("does not apply consequential categories to connector reads", () => {
+  it("does not apply consequential categories to declared connector reads", () => {
+    expect(
+      resolveActionApproval({
+        toolName: "gmail_list_threads",
+        readOnly: true,
+        rules: requireEmail,
+      }),
+    ).toBe("allow");
+    // An undeclared tool counts as consequential, so the category reaches it.
     expect(
       resolveActionApproval({
         toolName: "gmail_list_threads",
         rules: requireEmail,
       }),
-    ).toBe("allow");
+    ).toBe("ask");
   });
 
   it("lets an explicit rule gate a tool that is exempt by default", () => {
@@ -759,11 +780,19 @@ describe("batches", () => {
     ).toBe("ask");
     expect(
       resolveActionApprovalForTools({
-        tools: [tool("GMAIL_LIST_THREADS")],
+        tools: [{ name: "GMAIL_LIST_THREADS", connectorKind: "gmail", readOnly: true }],
         wrapper: { name: BATCH_TOOL, connectorKind: "composio" },
         rules: email,
       }).decision,
     ).toBe("allow");
+    // The same action undeclared counts as consequential, so the category asks.
+    expect(
+      resolveActionApprovalForTools({
+        tools: [tool("GMAIL_LIST_THREADS")],
+        wrapper: { name: BATCH_TOOL, connectorKind: "composio" },
+        rules: email,
+      }).decision,
+    ).toBe("ask");
   });
 
   it("never lets an allow rule on the batch tool allow its actions", () => {

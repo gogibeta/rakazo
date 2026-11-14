@@ -135,10 +135,14 @@ export function connectorKindFromToolName(toolName: string, connectorKinds: stri
 /**
  * `readOnly` is the connector tool's declared effect (for installed APIs, derived from the stored
  * HTTP method and read-only flag). A declared write always needs approval. A declared read never
- * relaxes the name check: the provider chooses both the name and the hint.
+ * relaxes the name check: the provider chooses both the name and the hint. An absent declaration
+ * needs approval too: a catalog or custom-connector tool that does not declare its effect is
+ * gated until its provider declares it read-only, so an undeclared tool is never waved through
+ * on a read-sounding name the provider also chose.
  */
 export function connectorToolRequiresApproval(toolName: string, readOnly?: boolean): boolean {
   if (readOnly === false) return true;
+  if (readOnly === undefined) return true;
   if (MUTATING_CONNECTOR_PATTERN.test(toolName)) return true;
   if (COMPOUND_CONNECTOR_ACTION_PATTERN.test(toolName)) return true;
   return !READ_ONLY_CONNECTOR_PATTERN.test(toolName);

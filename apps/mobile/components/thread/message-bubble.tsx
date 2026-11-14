@@ -65,6 +65,7 @@ function formatApprovalAnswer(
   approval: boolean,
 ): string {
   if (!answer) return t`Answered`;
+  if (answer === "expired") return t`This approval expired`;
   const selectedAction = actions?.find((action) => action.id === answer);
   const outcome = selectedAction?.outcome;
   if (approval && outcome === "created") return t`Created`;
@@ -456,13 +457,16 @@ const MessageBubbleContent = memo(function MessageBubbleContent({
                 <Text
                   {...actionProps}
                   style={{
-                    color: askBlock.answer === "deny" ? tokens.mutedForeground : tokens.success,
+                    color:
+                      askBlock.answer === "deny" || askBlock.answer === "expired"
+                        ? tokens.mutedForeground
+                        : tokens.success,
                     marginTop: 12,
                     ...typeScale.secondary,
                     fontWeight: fontWeight.medium,
                   }}
                 >
-                  {askBlock.instructionUpdate
+                  {askBlock.instructionUpdate && askBlock.answer !== "expired"
                     ? askBlock.answer === "deny"
                       ? t`Dismissed`
                       : t`Allowed once`

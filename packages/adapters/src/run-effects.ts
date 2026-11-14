@@ -27,6 +27,19 @@ export const PASSED_EFFECT_STATUSES = ["approved", "executing", "uncertain", "co
 
 export const APPROVED_EFFECT_REPLAY_ORDER = [{ createdAt: "asc" as const }, { id: "asc" as const }];
 
+/** How long a recorded effect may wait on the owner before it expires (24 hours). */
+export const DEFAULT_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The approval TTL from `APPROVAL_TTL` (milliseconds). One value for every
+ * surface; unset, unparsable, or below a one-second floor falls back to the
+ * default so a bad value can never make approvals expire instantly.
+ */
+export function approvalTtlMs(env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = Number(env.APPROVAL_TTL);
+  return Number.isFinite(parsed) && parsed >= 1000 ? Math.floor(parsed) : DEFAULT_APPROVAL_TTL_MS;
+}
+
 export const CATALOG_APPROVAL_TOOL = "__rakazoCatalogTool";
 
 export function approvalReplayEffectToolName(
@@ -278,6 +291,9 @@ export async function recordEffect(
         idempotencyKey,
         status: "intended",
         request: request as never,
+        // The expiry only bites while the effect still waits on the owner; an
+        // effect executed or claimed right away never reaches it.
+        expiresAt: new Date(Date.now() + approvalTtlMs()),
         ...(batchActions ? { batchActions } : {}),
       },
     }),
