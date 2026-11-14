@@ -12,19 +12,17 @@ import { requireMembership, runAsTenant } from "@rakazo/db";
  * the vault to the person's own rows exactly as it binds the API.
  */
 export function createPrismaVaultStore(prisma: PrismaClient): WalletVaultStore {
-  const tenants = new Map<string, { spaceId: string; userId: string }>();
-
-  async function tenantFor(userId: string): Promise<{ spaceId: string; userId: string }> {
-    const cached = tenants.get(userId);
-    if (cached) return cached;
-    const actor = await requireMembership(prisma, userId);
-    const tenant = { spaceId: actor.spaceId, userId: actor.userId };
-    tenants.set(userId, tenant);
-    return tenant;
-  }
-
+  /**
+   * Run one operation in the person's tenant scope. Membership is resolved
+   * for THIS operation, never cached: a removed or relocated membership
+   * must stop working with the next vault call, not with the next vault
+   * restart. Vault operations are rare — an unlock, a lock, a status
+   * check — so the one membership lookup per call costs nothing worth a
+   * stale authorization.
+   */
   async function asTenant<T>(userId: string, fn: () => Promise<T>): Promise<T> {
-    return runAsTenant(await tenantFor(userId), fn);
+    const actor = await requireMembership(prisma, userId);
+    return runAsTenant({ spaceId: actor.spaceId, userId: actor.userId }, fn);
   }
 
   return {

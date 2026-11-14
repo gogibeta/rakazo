@@ -125,4 +125,31 @@ describe("vault service HTTP surface", () => {
     expect(response.status).toBe(400);
     expect((await bodyOf(response)).code).toBe("invalid_request");
   });
+
+  it("reports an unexpected failure as a fixed code and sanitized metadata only", async () => {
+    const store = stubStore();
+    // An error whose message carries a secret-shaped value, as a store or
+    // dependency error one day could.
+    store.vaultState = vi.fn(async () => {
+      throw new Error(`database blew up near ${PASSWORD}`);
+    });
+    const reports: unknown[] = [];
+    const app = createVaultApp({
+      service: createWalletVaultService({ store }),
+      serviceToken: TOKEN,
+      onError: (report) => reports.push(report),
+    });
+    const response = await call(app, "/v1/status", { userId: "u1" });
+    expect(response.status).toBe(500);
+    const body = await response.text();
+    expect((JSON.parse(body) as { code?: unknown }).code).toBe("internal_error");
+    expect(body).not.toContain(PASSWORD);
+    expect(reports).toHaveLength(1);
+    const report = reports[0] as Record<string, unknown>;
+    expect(Object.keys(report).sort()).toEqual(["code", "correlationId", "route"]);
+    expect(report.code).toBe("vault_internal_error");
+    expect(report.route).toBe("/v1/status");
+    expect(report.correlationId).toBeTypeOf("string");
+    expect(JSON.stringify(report)).not.toContain(PASSWORD);
+  });
 });

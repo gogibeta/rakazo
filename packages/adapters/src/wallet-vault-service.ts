@@ -21,6 +21,11 @@ import { WalletVaultNotConfiguredError, WalletVaultPasswordError } from "./walle
  * - Lock, expiry, a newer unlock, and a password change (an epoch move in
  *   the durable state) each end a grant immediately. A vault restart ends
  *   every grant, because nothing about a grant is restored from the store.
+ * - Unlock and lock are serialized per person: a lock issued while an
+ *   unlock is still verifying runs after it and wins, so an explicit lock
+ *   can never be undone by an unlock that was already in flight. Grant
+ *   installation re-checks that the grant is still the live one before
+ *   its handle is handed back.
  * - The store's unlock rows are an audit trail only. A stored row never
  *   authorizes anything; authorization is the live grant or nothing.
  *
@@ -131,7 +136,17 @@ type Grant = {
   expiresAt: Date;
   generation: number;
   operations: ReadonlySet<WalletVaultGrantOperation>;
-  /** The password the envelopes open with, held only for the grant's life. */
+  /**
+   * The password the envelopes open with, held only for the grant's life.
+   * It is the password itself, not derived material, on purpose: each
+   * wallet's envelope carries its own KDF salt and parameters, and the
+   * envelope helpers derive the unwrap key from password + that envelope's
+   * salt at open time. No single derived value can stand in for it across
+   * wallets — pre-deriving per wallet at unlock would miss wallets
+   * migrated during the window and hold more secrets, not fewer. The
+   * buffer is wiped on every grant end: lock, expiry, epoch or generation
+   * termination, replacement, a failed audit write, and shutdown.
+   */
   passwordMaterial: Buffer;
 };
 
@@ -152,8 +167,30 @@ export function createWalletVaultService(deps: {
   const grants = new Map<string, Grant>();
   /** Per-person revocation generation; a grant minted under an older one is dead. */
   const generations = new Map<string, number>();
+  /** Per-person chain serializing the operations that mint or end grants. */
+  const stateChains = new Map<string, Promise<void>>();
 
   const generationOf = (userId: string) => generations.get(userId) ?? 0;
+
+  /**
+   * Run a grant-changing operation for one person after every earlier one
+   * for that person has settled. Unlock and lock share the chain, so they
+   * linearize: a lock issued during an in-flight unlock runs after the
+   * unlock and revokes whatever it installed — the final state is locked.
+   * Different people never wait on each other.
+   */
+  function serialized<T>(userId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = stateChains.get(userId) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    stateChains.set(
+      userId,
+      result.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return result;
+  }
 
   /** End a person's grant now: wipe its material and retire its generation. */
   function revoke(userId: string): Grant | undefined {
@@ -175,6 +212,21 @@ export function createWalletVaultService(deps: {
   }
 
   /**
+   * The audit row for a grant termination, best-effort: expiry, a stale
+   * generation, an epoch that moved. The revocation itself already happened
+   * in memory and must stand even when the audit write fails — a failed
+   * write never resurrects a grant or blocks its end — so errors are
+   * swallowed here. The live grant map, never the audit row, authorizes.
+   */
+  async function auditRevocation(grant: Grant): Promise<void> {
+    try {
+      await auditLock(grant);
+    } catch {
+      // Best effort only: the grant is already gone from memory.
+    }
+  }
+
+  /**
    * The gate every privileged operation passes. Any defect — no grant, the
    * wrong grant handle, a retired generation, expiry, an epoch that moved
    * under the grant, an operation the grant does not cover — fails closed
@@ -189,17 +241,19 @@ export function createWalletVaultService(deps: {
     if (!grant) throw new WalletVaultServiceError("vault_locked");
     if (grant.grantId !== grantId) throw new WalletVaultServiceError("grant_mismatch");
     if (grant.generation !== generationOf(userId)) {
-      revoke(userId);
+      const stale = revoke(userId);
+      if (stale) await auditRevocation(stale);
       throw new WalletVaultServiceError("vault_locked");
     }
     if (now().getTime() >= grant.expiresAt.getTime()) {
-      revoke(userId);
+      const expired = revoke(userId);
+      if (expired) await auditRevocation(expired);
       throw new WalletVaultServiceError("grant_expired");
     }
     const state = await deps.store.vaultState(userId);
     if (!state.configured || state.passwordEpoch !== grant.passwordEpoch) {
       const stale = revoke(userId);
-      if (stale) await auditLock(stale);
+      if (stale) await auditRevocation(stale);
       throw new WalletVaultServiceError("epoch_mismatch");
     }
     if (!grant.operations.has(operation)) {
@@ -232,7 +286,10 @@ export function createWalletVaultService(deps: {
         now().getTime() < grant.expiresAt.getTime() &&
         state.configured &&
         state.passwordEpoch === grant.passwordEpoch;
-      if (grant && !live) revoke(userId);
+      if (grant && !live) {
+        revoke(userId);
+        await auditRevocation(grant);
+      }
       return {
         configured: state.configured,
         unlocked: live,
@@ -246,60 +303,82 @@ export function createWalletVaultService(deps: {
      * replacing any previous one. The audit row is written before the grant
      * is returned; if it cannot be written the grant is wiped and the unlock
      * fails — an unlock the audit cannot see does not happen.
+     *
+     * Serialized with lock per person: a lock issued while this unlock is
+     * still verifying runs after it and revokes what it installed, and the
+     * installed grant is re-checked after the audit write, so a grant that
+     * was revoked meanwhile (expiry noticed by a status check, a shutdown)
+     * is never handed back as live.
      */
     async unlock(userId: string, password: string): Promise<WalletVaultUnlockResult> {
-      let verified: { passwordEpoch: number };
-      try {
-        verified = await deps.store.verifyPassword(userId, password);
-      } catch (error) {
-        if (error instanceof WalletVaultNotConfiguredError) {
-          throw new WalletVaultServiceError("not_configured");
+      return serialized(userId, async () => {
+        let verified: { passwordEpoch: number };
+        try {
+          verified = await deps.store.verifyPassword(userId, password);
+        } catch (error) {
+          if (error instanceof WalletVaultNotConfiguredError) {
+            throw new WalletVaultServiceError("not_configured");
+          }
+          if (error instanceof WalletVaultPasswordError) {
+            throw new WalletVaultServiceError("password_rejected");
+          }
+          throw error;
         }
-        if (error instanceof WalletVaultPasswordError) {
-          throw new WalletVaultServiceError("password_rejected");
-        }
-        throw error;
-      }
 
-      const replaced = revoke(userId);
-      if (replaced) await auditLock(replaced);
+        const replaced = revoke(userId);
+        if (replaced) await auditRevocation(replaced);
 
-      const issuedAt = now();
-      const grant: Grant = {
-        grantId: newGrantId(),
-        userId,
-        passwordEpoch: verified.passwordEpoch,
-        issuedAt,
-        expiresAt: new Date(issuedAt.getTime() + WALLET_VAULT_GRANT_TTL_MS),
-        generation: generationOf(userId),
-        operations: new Set(WALLET_VAULT_GRANT_OPERATIONS),
-        passwordMaterial: Buffer.from(password, "utf8"),
-      };
-      grants.set(userId, grant);
-      try {
-        await deps.store.recordUnlock({
+        const issuedAt = now();
+        const grant: Grant = {
+          grantId: newGrantId(),
           userId,
+          passwordEpoch: verified.passwordEpoch,
+          issuedAt,
+          expiresAt: new Date(issuedAt.getTime() + WALLET_VAULT_GRANT_TTL_MS),
+          generation: generationOf(userId),
+          operations: new Set(WALLET_VAULT_GRANT_OPERATIONS),
+          passwordMaterial: Buffer.from(password, "utf8"),
+        };
+        grants.set(userId, grant);
+        try {
+          await deps.store.recordUnlock({
+            userId,
+            grantId: grant.grantId,
+            passwordEpoch: grant.passwordEpoch,
+            issuedAt: grant.issuedAt,
+            expiresAt: grant.expiresAt,
+          });
+        } catch (error) {
+          revoke(userId);
+          throw error;
+        }
+        // The grant may have ended while its audit row was written — a
+        // status check that found it stale, a shutdown emptying every
+        // grant. Never hand back a handle that is no longer the live one.
+        if (grants.get(userId) !== grant || grant.generation !== generationOf(userId)) {
+          if (grants.get(userId) === grant) revoke(userId);
+          await auditRevocation(grant);
+          throw new WalletVaultServiceError("vault_locked");
+        }
+        return {
           grantId: grant.grantId,
+          expiresAt: grant.expiresAt.toISOString(),
           passwordEpoch: grant.passwordEpoch,
-          issuedAt: grant.issuedAt,
-          expiresAt: grant.expiresAt,
-        });
-      } catch (error) {
-        revoke(userId);
-        throw error;
-      }
-      return {
-        grantId: grant.grantId,
-        expiresAt: grant.expiresAt.toISOString(),
-        passwordEpoch: grant.passwordEpoch,
-      };
+        };
+      });
     },
 
-    /** Lock the vault for a person: the grant ends now, in memory and in audit. */
+    /**
+     * Lock the vault for a person: the grant ends now, in memory first and
+     * in audit best-effort. Serialized with unlock per person, so a lock
+     * issued during an in-flight unlock still wins.
+     */
     async lock(userId: string): Promise<{ locked: true }> {
-      const grant = revoke(userId);
-      if (grant) await auditLock(grant);
-      return { locked: true as const };
+      return serialized(userId, async () => {
+        const grant = revoke(userId);
+        if (grant) await auditRevocation(grant);
+        return { locked: true as const };
+      });
     },
 
     /** End every grant, on shutdown. No audit writes: the process is going away. */

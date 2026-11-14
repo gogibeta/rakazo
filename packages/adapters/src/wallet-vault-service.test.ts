@@ -265,4 +265,146 @@ describe("wallet vault service", () => {
       "vault_locked",
     );
   });
+
+  it("audits the revocation when a grant expires in use", async () => {
+    const h = harness();
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    h.advance(WALLET_VAULT_GRANT_TTL_MS);
+    expect(await codeOf(h.service.sign({ userId: "u1", grantId, walletId: "w1" }))).toBe(
+      "grant_expired",
+    );
+    expect(h.locks).toEqual([
+      { userId: "u1", grantId, revokedAt: new Date(START.getTime() + WALLET_VAULT_GRANT_TTL_MS) },
+    ]);
+  });
+
+  it("audits the revocation when a status check finds the grant expired", async () => {
+    const h = harness();
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    h.advance(WALLET_VAULT_GRANT_TTL_MS + 1_000);
+    expect((await h.service.status("u1")).unlocked).toBe(false);
+    expect(h.locks).toEqual([
+      {
+        userId: "u1",
+        grantId,
+        revokedAt: new Date(START.getTime() + WALLET_VAULT_GRANT_TTL_MS + 1_000),
+      },
+    ]);
+  });
+
+  it("an audit failure never blocks or undoes a revocation", async () => {
+    const h = harness();
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    h.store.recordLock = vi.fn(async () => {
+      throw new Error("audit store unavailable");
+    });
+    // Lock still reports locked, and the grant is gone.
+    expect(await h.service.lock("u1")).toEqual({ locked: true });
+    expect((await h.service.status("u1")).unlocked).toBe(false);
+    // Expiry still refuses with the expiry code, not the audit error.
+    const again = await h.service.unlock("u1", PASSWORD);
+    h.advance(WALLET_VAULT_GRANT_TTL_MS);
+    expect(
+      await codeOf(h.service.sign({ userId: "u1", grantId: again.grantId, walletId: "w1" })),
+    ).toBe("grant_expired");
+    expect(grantId).not.toBe(again.grantId);
+  });
+});
+
+describe("wallet vault unlock/lock serialization", () => {
+  it("a lock issued during an in-flight unlock wins: the vault ends locked", async () => {
+    const stub = stubStore();
+    let releaseVerify: (() => void) | undefined;
+    stub.store.verifyPassword = vi.fn(
+      (_userId: string, _password: string) =>
+        new Promise<{ passwordEpoch: number }>((resolve) => {
+          releaseVerify = () => resolve({ passwordEpoch: 1 });
+        }),
+    );
+    let counter = 0;
+    const service = createWalletVaultService({
+      store: stub.store,
+      now: () => new Date(START),
+      newGrantId: () => `grant-${++counter}`,
+    });
+
+    const unlocking = service.unlock("u1", PASSWORD);
+    const locking = service.lock("u1");
+    // Let the unlock reach its password check, then let it finish: the lock
+    // was issued first in wall-clock terms but must linearize after it.
+    await vi.waitFor(() => expect(releaseVerify).toBeDefined());
+    releaseVerify!();
+    const granted = await unlocking;
+    expect(await locking).toEqual({ locked: true });
+
+    expect((await service.status("u1")).unlocked).toBe(false);
+    expect(
+      await service
+        .sign({ userId: "u1", grantId: granted.grantId, walletId: "w1" })
+        .catch((caught: unknown) => (caught as WalletVaultServiceError).code),
+    ).toBe("vault_locked");
+    // Audit order matches the linearization: the unlock, then its lock.
+    expect(stub.unlocks.map((row) => row.grantId)).toEqual([granted.grantId]);
+    expect(stub.locks.map((row) => row.grantId)).toEqual([granted.grantId]);
+  });
+
+  it("concurrent unlocks linearize: the second replaces the first, in audit order", async () => {
+    const h = harness();
+    const [first, second] = await Promise.all([
+      h.service.unlock("u1", PASSWORD),
+      h.service.unlock("u1", PASSWORD),
+    ]);
+    expect(first.grantId).toBe("grant-1");
+    expect(second.grantId).toBe("grant-2");
+    expect(h.unlocks.map((row) => row.grantId)).toEqual(["grant-1", "grant-2"]);
+    expect(h.locks.map((row) => row.grantId)).toEqual(["grant-1"]);
+    expect((await h.service.status("u1")).unlocked).toBe(true);
+    expect(await codeOf(h.service.sign({ userId: "u1", grantId: "grant-1", walletId: "w1" }))).toBe(
+      "grant_mismatch",
+    );
+  });
+
+  it("never hands back a grant that was revoked while its audit row was written", async () => {
+    const stub = stubStore();
+    let counter = 0;
+    const service = createWalletVaultService({
+      store: stub.store,
+      now: () => new Date(START),
+      newGrantId: () => `grant-${++counter}`,
+    });
+    stub.store.recordUnlock = vi.fn(async (input) => {
+      stub.unlocks.push(input);
+      // A shutdown lands mid-write: every grant ends.
+      service.lockAll();
+    });
+    expect(await codeOf(service.unlock("u1", PASSWORD))).toBe("vault_locked");
+    expect((await service.status("u1")).unlocked).toBe(false);
+    // The termination the unlock noticed is audited like any other.
+    expect(stub.locks.map((row) => row.grantId)).toEqual(["grant-1"]);
+  });
+
+  it("one person's lock does not wait on another person's unlock", async () => {
+    const stub = stubStore();
+    let releaseVerify: (() => void) | undefined;
+    const originalVerify = stub.store.verifyPassword;
+    stub.store.verifyPassword = vi.fn((userId: string, password: string) => {
+      if (userId !== "u1") return originalVerify(userId, password);
+      return new Promise<{ passwordEpoch: number }>((resolve) => {
+        releaseVerify = () => resolve({ passwordEpoch: 1 });
+      });
+    });
+    let counter = 0;
+    const service = createWalletVaultService({
+      store: stub.store,
+      now: () => new Date(START),
+      newGrantId: () => `grant-${++counter}`,
+    });
+    const unlocking = service.unlock("u1", PASSWORD);
+    await vi.waitFor(() => expect(releaseVerify).toBeDefined());
+    // u2's lock completes while u1's unlock is still verifying.
+    expect(await service.lock("u2")).toEqual({ locked: true });
+    releaseVerify!();
+    await unlocking;
+    expect((await service.status("u1")).unlocked).toBe(true);
+  });
 });

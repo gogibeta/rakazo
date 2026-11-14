@@ -21,7 +21,7 @@ describe("resolveUpdaterConfig", () => {
     expect(config).toMatchObject({
       deployDir: "/srv/rakazo",
       composeFiles: [`/srv/rakazo/${DEFAULT_COMPOSE_FILE}`],
-      updateServices: ["api", "worker", "web"],
+      updateServices: ["api", "worker", "web", "vault"],
       envFile: "/srv/rakazo/.env",
       projectName: DEFAULT_COMPOSE_PROJECT_NAME,
       token: base.RAKAZO_UPDATER_TOKEN,
@@ -107,7 +107,7 @@ describe("resolveUpdaterConfig", () => {
   it("appends the deployment's extra services to the built-in set", () => {
     expect(
       resolveUpdaterConfig({ ...base, RAKAZO_UPDATE_SERVICES: "supervisor, caddy" }).updateServices,
-    ).toEqual(["api", "worker", "web", "supervisor", "caddy"]);
+    ).toEqual(["api", "worker", "web", "vault", "supervisor", "caddy"]);
   });
 
   it("cannot drop a built-in service, however RAKAZO_UPDATE_SERVICES is written", () => {
@@ -115,7 +115,7 @@ describe("resolveUpdaterConfig", () => {
       ...base,
       RAKAZO_UPDATE_SERVICES: "web,supervisor",
     }).updateServices;
-    expect(services).toEqual(["api", "worker", "web", "supervisor"]);
+    expect(services).toEqual(["api", "worker", "web", "vault", "supervisor"]);
   });
 
   it("refuses to recreate the updater, which would kill the run mid-flight", () => {

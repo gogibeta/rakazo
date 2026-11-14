@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { WalletVaultService } from "@rakazo/adapters/wallet-vault-service";
 import { WalletVaultServiceError } from "@rakazo/adapters/wallet-vault-service";
 import { hasValidBearerToken } from "@rakazo/core";
@@ -43,10 +44,23 @@ const ERROR_STATUS: Record<string, number> = {
   fill_not_enabled: 409,
 };
 
+/**
+ * What an unexpected failure may tell the log: a fixed code, the route
+ * pattern, and a correlation id minted here. Never the error itself and
+ * never anything request-derived — an error from a store, a parser, or a
+ * dependency could carry request data or a secret, and the vault's rule
+ * is absolute: secrets are never logged.
+ */
+export type VaultErrorReport = {
+  code: "vault_internal_error";
+  route: string;
+  correlationId: string;
+};
+
 export function createVaultApp(deps: {
   service: WalletVaultService;
   serviceToken: string;
-  onError?: (error: unknown) => void;
+  onError?: (report: VaultErrorReport) => void;
 }): Hono {
   const app = new Hono();
 
@@ -107,7 +121,11 @@ export function createVaultApp(deps: {
         (ERROR_STATUS[error.code] ?? 500) as never,
       );
     }
-    deps.onError?.(error);
+    deps.onError?.({
+      code: "vault_internal_error",
+      route: c.req.routePath || "unknown",
+      correlationId: randomUUID(),
+    });
     return c.json(
       { code: "internal_error", message: "The vault could not complete the request." },
       500,

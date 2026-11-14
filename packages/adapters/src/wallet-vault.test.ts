@@ -43,6 +43,23 @@ function vaultStore() {
     }
     return row;
   };
+  /** The where shapes the password state uses: equality, null, `lte`, and OR groups. */
+  const matches = (row: VaultRow, where: Record<string, unknown>): boolean =>
+    Object.entries(where).every(([key, condition]) => {
+      if (key === "OR") {
+        return (condition as Array<Record<string, unknown>>).some((sub) => matches(row, sub));
+      }
+      const value = row[key as keyof VaultRow];
+      if (condition instanceof Date) {
+        return value instanceof Date && value.getTime() === condition.getTime();
+      }
+      if (condition && typeof condition === "object") {
+        const ops = condition as { lte?: Date };
+        if (ops.lte !== undefined) return value instanceof Date && value <= ops.lte;
+        return false;
+      }
+      return value === condition;
+    });
   const client = {
     walletVault: {
       findUnique: vi.fn(async ({ where }: { where: { userId: string } }) => {
@@ -58,6 +75,24 @@ function vaultStore() {
           const row = rows.get(where.userId)!;
           apply(row, data);
           return { ...row };
+        },
+      ),
+      updateMany: vi.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          let count = 0;
+          for (const row of rows.values()) {
+            if (matches(row, where)) {
+              apply(row, data);
+              count++;
+            }
+          }
+          return { count };
         },
       ),
     },
