@@ -8,7 +8,7 @@ import type {
   ModelThinkingLevel,
   TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSystemMessageText } from "@earendil-works/pi-ai";
 import { AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import type { AgentRunRequest, AgentRuntimeEvent, ModelCallObserver } from "@rakazo/adapter-kit";
 import type * as Core from "@rakazo/core";
@@ -3198,4 +3198,92 @@ describe("Pi runtime reasoning efforts an endpoint refuses", () => {
       ]);
     },
   );
+});
+
+describe("Pi runtime serving-model identity note", () => {
+  const systemPrompts = (): string[] =>
+    providerState.stream.mock.calls.map(([, context]) => {
+      const [first] = (context as Context).messages;
+      return first?.role === "system" ? getSystemMessageText(first) : "";
+    });
+  const noteCount = (prompt: string) =>
+    prompt.split("You are currently being served by").length - 1;
+
+  it("names the configured model as serving when nothing switches", async () => {
+    let calls = 0;
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) => {
+      calls += 1;
+      return calls === 1
+        ? stream(
+            target,
+            message(
+              target,
+              [
+                {
+                  type: "toolCall",
+                  id: "identity-call",
+                  name: "write_effect",
+                  arguments: { value: "once" },
+                },
+              ],
+              "toolUse",
+            ),
+          )
+        : stream(target, message(target, [{ type: "text", text: "Done." }], "stop"));
+    });
+
+    await run(request());
+
+    const prompts = systemPrompts();
+    expect(prompts).toHaveLength(2);
+    for (const prompt of prompts) {
+      expect(prompt).toContain(`being served by ${primary.provider}/${primary.id}`);
+      expect(prompt).not.toContain("backup model is answering");
+      expect(noteCount(prompt)).toBe(1);
+    }
+  });
+
+  it("tells the backup it is serving after the primary fails, naming the switch", async () => {
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      target.provider === primary.provider
+        ? stream(target, message(target, [], "error", "503 service unavailable"))
+        : stream(target, message(target, [{ type: "text", text: "from backup" }], "stop")),
+    );
+
+    await run(request([{ provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-a" }]));
+
+    const prompts = systemPrompts();
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain(`being served by ${primary.provider}/${primary.id}`);
+    expect(prompts[0]).not.toContain("backup model is answering");
+    expect(prompts[1]).toContain(`being served by ${backupA.provider}/${backupA.id}`);
+    expect(prompts[1]).toContain(
+      `configured model ${primary.provider}/${primary.id} was unavailable`,
+    );
+    expect(noteCount(prompts[1]!)).toBe(1);
+  });
+
+  it("updates the serving note across two switches instead of stacking it", async () => {
+    providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
+      target.provider === backupB.provider
+        ? stream(target, message(target, [{ type: "text", text: "from second backup" }], "stop"))
+        : stream(target, message(target, [], "error", "503 service unavailable")),
+    );
+
+    await run(
+      request([
+        { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-a" },
+        { provider: backupB.provider, id: backupB.id, apiKey: "fake-backup-b" },
+      ]),
+    );
+
+    const prompts = systemPrompts();
+    expect(prompts).toHaveLength(3);
+    expect(prompts[1]).toContain(`being served by ${backupA.provider}/${backupA.id}`);
+    expect(prompts[2]).toContain(`being served by ${backupB.provider}/${backupB.id}`);
+    expect(prompts[2]).toContain(
+      `configured model ${primary.provider}/${primary.id} was unavailable`,
+    );
+    for (const prompt of prompts) expect(noteCount(prompt)).toBe(1);
+  });
 });

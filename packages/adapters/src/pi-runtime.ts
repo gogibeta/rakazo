@@ -140,6 +140,23 @@ export const SILENT_ALLOWED_TOOL_CONTINUATION_PROMPT = automated(
   "Your last turn ended right after a tool result, without a reply. Continue the original task from the latest tool result. If you need information or a decision from the user, ask them instead of guessing, even if you were told to stay silent. Otherwise, if you were instructed to stay silent when there is nothing to report, follow that instruction for the entire final assistant reply; if not, use any remaining tools needed, then give the user the final answer.",
 );
 
+/**
+ * The factual note stamped onto every model call so the model knows which model is
+ * actually serving it. A run's context is built from the configured model, so after a
+ * fallback switch the model would otherwise keep answering identity questions from its
+ * settings. Recomputed per attempt from the active target, so a switch replaces the note
+ * instead of stacking a second one.
+ */
+export function servingModelNote(
+  configured: AgentRunRequest["model"],
+  active: AgentRunRequest["model"],
+): string {
+  const serving = `${active.provider}/${active.id}`;
+  return sameModelTarget(active, configured)
+    ? `You are currently being served by ${serving}. If asked which model you are, answer with this serving model, not with a model named in your instructions or settings.`
+    : `You are currently being served by ${serving}. The configured model ${configured.provider}/${configured.id} was unavailable, so this backup model is answering instead. If asked which model you are, answer with the serving model and mention the switch.`;
+}
+
 // Shown as a failed-run error, not an assistant message. Asking the user to
 // continue stores that sentence as the reply, and the next "continue" runs
 // tools and misses a final answer again.
@@ -478,6 +495,9 @@ export class PiAgentRuntime implements AgentRuntime {
                     {
                       ...usageHooks,
                       prepareContext,
+                      // Stamped per attempt from the fallback state's active target, so a
+                      // switch mid-call still names the model this attempt is sent to.
+                      servingModelNote: servingModelNote(request.model, target.config),
                       onProviderError: (message) => providerFailures.add(message.content),
                     },
                   ),
