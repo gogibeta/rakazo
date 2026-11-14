@@ -251,9 +251,9 @@ async function prepareAuthenticatedProfile(benchmark: BenchmarkContext, profile:
 async function seedBenchmarkThread(prisma: PrismaClient) {
   const bot = await prisma.bot.findFirst({
     where: { name: "Chief" },
-    select: { thread: { select: { id: true } } },
+    select: { threads: { where: { isPrimary: true }, take: 1, select: { id: true } } },
   });
-  const threadId = bot?.thread?.id;
+  const threadId = bot?.threads[0]?.id;
   if (!threadId) throw new Error("Benchmark onboarding did not create a thread");
   await prisma.$transaction([
     prisma.message.deleteMany({ where: { threadId } }),

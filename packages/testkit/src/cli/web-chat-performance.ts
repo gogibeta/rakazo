@@ -301,9 +301,12 @@ async function seedThread(prisma: PrismaClient, botId: string, name: string, siz
   return runAsSystem("benchmark seed", async () => {
     const bot = await prisma.bot.findUniqueOrThrow({
       where: { id: botId },
-      select: { spaceId: true, thread: { select: { id: true } } },
+      select: {
+        spaceId: true,
+        threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
+      },
     });
-    const threadId = bot.thread?.id;
+    const threadId = bot.threads[0]?.id;
     if (!threadId) throw new Error(`${name} has no thread`);
     let lastMessageId = "";
     let bytes = 0;

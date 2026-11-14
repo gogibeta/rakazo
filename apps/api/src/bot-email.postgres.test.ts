@@ -47,7 +47,7 @@ describePostgres("bot email addresses (PostgreSQL)", () => {
       data: { spaceId: owner.spaceId, userId: owner.userId, name: "Scout", color: "blue" },
     });
     await system.thread.create({
-      data: { spaceId: owner.spaceId, botId: created.id, userId: owner.userId },
+      data: { spaceId: owner.spaceId, botId: created.id, userId: owner.userId, isPrimary: true },
     });
     return created;
   }
@@ -251,7 +251,9 @@ describePostgres("bot email addresses (PostgreSQL)", () => {
     await Promise.all([deliver(email), deliver(email)]);
     await deliver(`stranger-${suffix}@example.test`);
 
-    const thread = await system.thread.findUniqueOrThrow({ where: { botId: target.id } });
+    const thread = await system.thread.findFirstOrThrow({
+      where: { botId: target.id, isPrimary: true },
+    });
     const notes = await system.message.findMany({
       where: { threadId: thread.id, role: "system" },
     });

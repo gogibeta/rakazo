@@ -143,11 +143,11 @@ describePostgres("computer runs (PostgreSQL)", () => {
         name: "Waiting",
         color: "ink",
         computerId: o.id,
-        thread: { create: { spaceId: o.id, userId: o.id } },
+        threads: { create: { spaceId: o.id, userId: o.id, isPrimary: true } },
       },
-      include: { thread: true },
+      include: { threads: true },
     });
-    const threadId = bot.thread!.id;
+    const threadId = bot.threads[0]!.id;
     const task = await system.task.create({
       data: {
         spaceId: o.id,
@@ -201,7 +201,7 @@ describePostgres("computer runs (PostgreSQL)", () => {
         name: "Delegating",
         color: "ink",
         computerId: o.id,
-        thread: { create: { spaceId: o.id, userId: o.id } },
+        threads: { create: { spaceId: o.id, userId: o.id, isPrimary: true } },
       },
     });
     const helperThread = await system.thread.create({

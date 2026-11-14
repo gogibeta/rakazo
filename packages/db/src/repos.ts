@@ -39,7 +39,21 @@ import {
   withLatestBotRuns,
 } from "./thread-listing.js";
 import { readStateFor, snoozedUntilFor, unreadFor } from "./thread-reads.js";
+import { createSession } from "./thread-sessions.js";
 import { withTransactionRetry } from "./transaction-retry.js";
+
+/**
+ * Sessions (F3): bot queries load the primary session through the
+ * isPrimary-filtered `threads` relation; the roster pipeline keeps consuming
+ * it as `thread` — now always the primary one, never an arbitrary session.
+ */
+function withPrimaryThread<B extends { threads: ReadonlyArray<{ id: string }> }>(
+  bot: B,
+): Omit<B, "threads"> & { thread: B["threads"][number] | null } {
+  const { threads, ...rest } = bot;
+  // Hand-built rows in tests may omit the relation entirely; Prisma always returns it.
+  return { ...rest, thread: threads?.[0] ?? null };
+}
 
 /** Newest messages loaded for sidebar preview; enough to skip a short peer-run tail. */
 const SIDEBAR_PREVIEW_MESSAGE_WINDOW = 16;
@@ -206,12 +220,20 @@ export function createRepos(
         sectionId: true,
         updatedAt: true,
         parentBotId: true,
-        thread: { select: { id: true, reads: readStateFor(userId) } },
+        threads: {
+          where: { isPrimary: true },
+          take: 1,
+          select: { id: true, reads: readStateFor(userId) },
+        },
         runs: activeRunSelection,
       },
       orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
     });
-    const bots = await withNewestThreadMessages(prisma, await withLatestBotRuns(prisma, rows), 1);
+    const bots = await withNewestThreadMessages(
+      prisma,
+      await withLatestBotRuns(prisma, rows.map(withPrimaryThread)),
+      1,
+    );
     return bots.map((bot) => {
       if (!bot.thread) throw new IsolationError("Bot is missing its thread");
       const activeRun = primaryActiveRun(bot.runs);
@@ -364,18 +386,24 @@ export function createRepos(
         prisma,
         await withLatestBotRuns(
           prisma,
-          await prisma.bot.findMany({
-            where: {
-              spaceId: actor.spaceId,
-              archivedAt: options.archived ? { not: null } : null,
-            },
-            include: {
-              thread: { include: { reads: readStateFor(actor.userId) } },
-              runs: activeRunSelection,
-              computer: { select: { scope: true } },
-            },
-            orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
-          }),
+          (
+            await prisma.bot.findMany({
+              where: {
+                spaceId: actor.spaceId,
+                archivedAt: options.archived ? { not: null } : null,
+              },
+              include: {
+                threads: {
+                  where: { isPrimary: true },
+                  take: 1,
+                  include: { reads: readStateFor(actor.userId) },
+                },
+                runs: activeRunSelection,
+                computer: { select: { scope: true } },
+              },
+              orderBy: [{ pinned: "desc" }, { position: "asc" }, { createdAt: "asc" }],
+            })
+          ).map(withPrimaryThread),
         ),
         SIDEBAR_PREVIEW_MESSAGE_WINDOW,
       );
@@ -497,10 +525,10 @@ export function createRepos(
           spaceId: actor.spaceId,
           ...(options.includeArchived ? {} : { archivedAt: null }),
         },
-        include: { thread: true, computer: true },
+        include: { threads: { where: { isPrimary: true }, take: 1 }, computer: true },
       });
       if (!bot) throw new IsolationError();
-      return bot;
+      return withPrimaryThread(bot);
     },
 
     async createBot(
@@ -627,12 +655,13 @@ export function createRepos(
               disabledBuiltinTools,
             },
           });
-          const thread = await tx.thread.create({
-            data: {
-              spaceId: actor.spaceId,
-              botId: created.id,
-              userId: actor.userId,
-            },
+          const thread = await createSession(tx, {
+            spaceId: actor.spaceId,
+            userId: actor.userId,
+            botId: created.id,
+            kind: "direct",
+            origin: "web",
+            primary: true,
           });
           if (input.initialMessage) {
             await createThreadMessageInTransaction(tx, {
@@ -669,23 +698,39 @@ export function createRepos(
             },
           });
           await input.seed?.(tx, created.id);
-          return tx.bot.findFirstOrThrow({
+          const loaded = await tx.bot.findFirstOrThrow({
             where: { id: created.id },
-            include: { thread: { include: { reads: readStateFor(actor.userId) } }, computer: true },
+            include: {
+              threads: {
+                where: { isPrimary: true },
+                take: 1,
+                include: { reads: readStateFor(actor.userId) },
+              },
+              computer: true,
+            },
           });
+          return withPrimaryThread(loaded);
         });
 
       const findBySpawnKey = async () => {
         if (!spawnKey) return null;
-        return prisma.bot.findUnique({
+        const found = await prisma.bot.findUnique({
           where: {
             spaceId_spawnKey: {
               spaceId: actor.spaceId,
               spawnKey,
             },
           },
-          include: { thread: { include: { reads: readStateFor(actor.userId) } }, computer: true },
+          include: {
+            threads: {
+              where: { isPrimary: true },
+              take: 1,
+              include: { reads: readStateFor(actor.userId) },
+            },
+            computer: true,
+          },
         });
+        return found ? withPrimaryThread(found) : null;
       };
 
       let bot: Awaited<ReturnType<typeof insertBot>>;
@@ -767,11 +812,18 @@ export function createRepos(
           return tx.bot.update({
             where: { id: botId },
             data: { computerId: computer.id },
-            include: { thread: { include: { reads: readStateFor(actor.userId) } }, computer: true },
+            include: {
+              threads: {
+                where: { isPrimary: true },
+                take: 1,
+                include: { reads: readStateFor(actor.userId) },
+              },
+              computer: true,
+            },
           });
         }),
       );
-      return mapBot(updated);
+      return mapBot(withPrimaryThread(updated));
     },
   };
 }

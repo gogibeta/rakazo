@@ -40,6 +40,7 @@ import {
   accountDeactivated,
   createThreadMessage,
   crossSpaceCommunicationAllowed,
+  getPrimaryThread,
   insertMessagingSteeringMessage,
   isUniqueViolation,
   normalizeMessagingLinkCode,
@@ -277,7 +278,7 @@ async function resolveAskTap(
     where: { id: identity.id },
     data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
   });
-  const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+  const thread = await getPrimaryThread(deps.prisma, identity.botId);
   if (!thread) return;
   const message = await deps.prisma.message.findFirst({
     where: { id: target.messageId, threadId: thread.id, role: "bot" },
@@ -464,7 +465,7 @@ async function handleDirectEvent(
 
   let ids: ProvisionedMessagingIdentity;
   if (existing) {
-    const thread = await deps.prisma.thread.findFirst({ where: { botId: existing.botId } });
+    const thread = await getPrimaryThread(deps.prisma, existing.botId);
     if (!thread) throw new Error(`messaging identity ${existing.id} has no thread`);
     ids = {
       provider: existing.provider,
@@ -849,7 +850,7 @@ async function stopOwnerWork(
   event: MessagingInboundMessage,
 ): Promise<void> {
   const thread = await deps.prisma.thread.findFirstOrThrow({
-    where: { botId: identity.botId },
+    where: { botId: identity.botId, isPrimary: true },
     select: { id: true },
   });
   const key = `command:stop:${identity.id}:${event.handle}`;
@@ -1550,7 +1551,7 @@ async function applyChannelSlashCommand(
       return true;
     case "queue":
     case "steer": {
-      const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+      const thread = await getPrimaryThread(deps.prisma, identity.botId);
       if (!thread) return true;
       await applyQueueSteerCommand(deps, identity, {
         threadId: thread.id,
@@ -1899,7 +1900,7 @@ async function handleChannelEvent(
       where: { id: member.identityId! },
     });
     if (!identity || (await accountDeactivated(deps.prisma, identity.userId))) continue;
-    const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+    const thread = await getPrimaryThread(deps.prisma, identity.botId);
     if (!thread) continue;
     const target = {
       spaceId: identity.spaceId,
@@ -1967,7 +1968,7 @@ async function announceInvite(
   identity: IdentityRow,
 ): Promise<void> {
   const name = channel.name ?? "a group chat";
-  const thread = await deps.prisma.thread.findFirst({ where: { botId: identity.botId } });
+  const thread = await getPrimaryThread(deps.prisma, identity.botId);
   if (thread) {
     const note = await createThreadMessage(deps.prisma, {
       threadId: thread.id,

@@ -444,7 +444,7 @@ describePostgres("account import (PostgreSQL)", () => {
 
     const bots = await system.bot.findMany({
       where: { spaceId },
-      include: { thread: true, computer: true },
+      include: { threads: true, computer: true },
     });
     const child = bots.find((bot) => bot.name === "Scout")!;
     const parent = bots.find((bot) => bot.name === "Chief")!;
@@ -461,7 +461,7 @@ describePostgres("account import (PostgreSQL)", () => {
     expect(child.sectionId).toBe(section.id);
     expect(child.computer).not.toBeNull();
 
-    const thread = child.thread!;
+    const thread = child.threads[0]!;
     expect(thread).toMatchObject({
       nextMessageSeq: 2,
       historyCompactionSummary: "summary of the secret plan",

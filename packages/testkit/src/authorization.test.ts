@@ -138,7 +138,9 @@ describeWithDatabase("API authorization and resource isolation", () => {
     // The previous release stored `routine-test:<client nonce>` as given, so the peer could write
     // a key shaped like the owner's. That run must not become the owner's receipt.
     const later = `routine-keys-legacy-${stamp}`;
-    const peerThread = await db.thread.findUniqueOrThrow({ where: { botId: peerBot.id } });
+    const peerThread = await db.thread.findFirstOrThrow({
+      where: { botId: peerBot.id, isPrimary: true },
+    });
     const task = await db.task.create({
       data: {
         spaceId: space.id,
@@ -702,8 +704,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
         storageKey: "test/owner-secret.txt",
       },
     });
-    const ownerThread = await db.thread.findUniqueOrThrow({
-      where: { botId: ownerBot.id },
+    const ownerThread = await db.thread.findFirstOrThrow({
+      where: { botId: ownerBot.id, isPrimary: true },
     });
     const ownerTask = await asSystem(handles.prisma).task.create({
       data: {

@@ -124,7 +124,7 @@ export async function startBackgroundHelper(
     // The helper's own thread: no chat list shows it, nothing sent to the bot waits behind the
     // helper, and it goes when the bot is deleted.
     const helperThread = await tx.thread.create({
-      data: { spaceId: run.spaceId, userId: run.userId, helperBotId: bot.id },
+      data: { spaceId: run.spaceId, userId: run.userId, helperBotId: bot.id, kind: "helper" },
       select: { id: true },
     });
     const task = await tx.task.create({

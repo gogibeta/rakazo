@@ -536,7 +536,7 @@ export async function writeImportedBot<PreparedKey>(
     }
     // Imported servers are not given to the bot; an approval card lets the user grant them.
     const thread = await tx.thread.findFirstOrThrow({
-      where: { ...owner, botId },
+      where: { ...owner, botId, isPrimary: true },
       select: { id: true },
     });
     const slugs = new Set(

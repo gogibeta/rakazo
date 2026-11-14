@@ -33,7 +33,7 @@ function strategicPrisma(options: {
     spaceId: string;
     userId: string;
     name: string;
-    thread: { id: string } | null;
+    threads: Array<{ id: string }>;
     scratchpadItems: Array<{ title: string; notes: string; updatedAt: Date }>;
     routines?: Array<{ id: string }>;
   }>;
@@ -104,7 +104,7 @@ describe("reconcileStrategicInitiatives", () => {
           spaceId: "space-1",
           userId: "user-1",
           name: "Scout",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           scratchpadItems: [
             {
               title: "Cerrar bug de login",
@@ -139,7 +139,7 @@ describe("reconcileStrategicInitiatives", () => {
       spaceId: "space-1",
       userId: "user-1",
       name: "Scout",
-      thread: { id: "thread-1" },
+      threads: [{ id: "thread-1" }],
       routines: [{ id: "routine-lease" }],
     };
     const covered = { title: "Signed lease", notes: "follow-up routine-lease", updatedAt: stale };
@@ -250,7 +250,7 @@ describe("reconcileStrategicInitiatives", () => {
           spaceId: "space-1",
           userId: "user-1",
           name: "Scout",
-          thread: null,
+          threads: [],
           scratchpadItems: [{ title: "Tarea", notes: "", updatedAt: stale }],
         },
       ],
@@ -275,7 +275,7 @@ describe("reconcileStrategicInitiatives", () => {
           spaceId: "space-1",
           userId: "user-1",
           name: "Scout",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           scratchpadItems: [{ title: "Tarea", notes: "", updatedAt: stale }],
         },
       ],
@@ -299,7 +299,7 @@ describe("reconcileStrategicInitiatives", () => {
           spaceId: "space-1",
           userId: "user-1",
           name: "Scout",
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
           scratchpadItems: [{ title: "Tarea", notes: "", updatedAt: stale }],
         },
       ],
@@ -363,7 +363,7 @@ const candidate = {
   spaceId: "space-1",
   userId: "user-1",
   name: "Scout",
-  thread: { id: "thread-1" },
+  threads: [{ id: "thread-1" }],
   routines: [],
   scratchpadItems: [
     {

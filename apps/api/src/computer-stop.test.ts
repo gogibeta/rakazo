@@ -73,7 +73,7 @@ describe("Stop during a computer reconnect", () => {
             id: "bot",
             spaceId: "space",
             userId: "user",
-            thread: { id: "thread" },
+            threads: [{ id: "thread" }],
             computer: staleRead && row.state === "booting" ? { ...beforeBoot } : { ...row },
           })),
         },

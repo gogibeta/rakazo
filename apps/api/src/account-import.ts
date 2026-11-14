@@ -622,7 +622,9 @@ class AccountImporter implements ArchiveSink {
           await prisma.chatGroupMember.createMany({
             data: botIds.map((botId) => ({ groupId: id, botId })),
           });
-        const thread = await prisma.thread.create({ data: { spaceId, groupId: id, userId } });
+        const thread = await prisma.thread.create({
+          data: { spaceId, groupId: id, userId, kind: "group", origin: "import" },
+        });
         space.groupThreads.set(record.id, thread.id);
         return;
       }
@@ -637,6 +639,8 @@ class AccountImporter implements ArchiveSink {
               spaceId,
               userId,
               helperBotId,
+              kind: "helper",
+              origin: "import",
               historyCompactedUpToSeq: record.historyCompactedUpToSeq,
               historyCompactionSummary: record.historyCompactionSummary,
               createdAt: new Date(record.createdAt),
@@ -914,13 +918,14 @@ class AccountImporter implements ArchiveSink {
         });
       },
     });
-    const { computer, thread } = await this.deps.prisma.bot.findUniqueOrThrow({
+    const { computer, threads } = await this.deps.prisma.bot.findUniqueOrThrow({
       where: { id: bot.id },
       select: {
         computer: { select: { homeKey: true, scope: true } },
-        thread: { select: { id: true } },
+        threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
       },
     });
+    const thread = threads[0];
     if (!computer || !thread) throw new Error("Imported bot is missing its computer or thread");
     space.ids.set(record.id, bot.id);
     space.bots.set(record.id, {

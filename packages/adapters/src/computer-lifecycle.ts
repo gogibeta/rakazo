@@ -1233,12 +1233,12 @@ export async function replaceComputer(
     try {
       const bot = await deps.prisma.bot.findFirst({
         where: { id: botId },
-        select: { thread: { select: { id: true } } },
+        select: { threads: { where: { isPrimary: true }, take: 1, select: { id: true } } },
       });
-      if (bot?.thread) {
+      if (bot?.threads[0]) {
         await deps.events.append({
           spaceId: context.spaceId,
-          threadId: bot.thread.id,
+          threadId: bot.threads[0].id,
           botId,
           type: "computer.takeover.released",
           payload: {

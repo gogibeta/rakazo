@@ -31,7 +31,7 @@ type StrategicBot = {
   spaceId: string;
   userId: string;
   name: string;
-  thread: { id: string } | null;
+  threads: Array<{ id: string }>;
   scratchpadItems: Array<{
     title: string;
     notes: string;
@@ -44,7 +44,7 @@ function strategicBotEligibility(now: Date): Prisma.BotWhereInput {
     archivedAt: null,
     dailyCheckIns: true,
     space: { deletingAt: null },
-    thread: { isNot: null },
+    threads: { some: { isPrimary: true } },
     scratchpadItems: {
       some: {
         status: "open",
@@ -129,7 +129,7 @@ export async function reconcileStrategicInitiatives(deps: {
         spaceId: true,
         userId: true,
         name: true,
-        thread: { select: { id: true } },
+        threads: { where: { isPrimary: true }, take: 1, select: { id: true } },
         scratchpadItems: {
           where: {
             status: "open",
@@ -161,7 +161,7 @@ export async function reconcileStrategicInitiatives(deps: {
     cursor = bots[bots.length - 1]!.id;
     for (const bot of bots) {
       // The free checks first, so a bot with nothing to plan costs no queries.
-      if (!bot.thread) continue;
+      if (!bot.threads[0]) continue;
       const scratchpadItems = bot.scratchpadItems
         .filter((item) => !bot.routines.some((routine) => item.notes.includes(routine.id)))
         .slice(0, MAX_ITEMS_IN_PROMPT);
@@ -252,7 +252,7 @@ async function queueStrategicInitiativeRun(
     return await deps.prisma.$transaction(async (tx) => {
       // Match the thread-before-bot lock order used by message creation. Recheck after
       // the lock so concurrent sweeps and a user starting work cannot race this claim.
-      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${bot.thread!.id} FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM threads WHERE id = ${bot.threads[0]!.id} FOR UPDATE`;
       const eligible = await tx.bot.findFirst({
         where: {
           id: bot.id,
@@ -271,7 +271,7 @@ async function queueStrategicInitiativeRun(
         data: {
           spaceId: bot.spaceId,
           botId: bot.id,
-          threadId: bot.thread!.id,
+          threadId: bot.threads[0]!.id,
           userId: bot.userId,
           prompt: initiativePrompt(bot),
           status: "queued",
@@ -281,7 +281,7 @@ async function queueStrategicInitiativeRun(
         data: {
           spaceId: bot.spaceId,
           botId: bot.id,
-          threadId: bot.thread!.id,
+          threadId: bot.threads[0]!.id,
           taskId: task.id,
           userId: bot.userId,
           status: "queued",

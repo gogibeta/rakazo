@@ -60,7 +60,7 @@ function setup(
           spaceId: "space-1",
           userId: "user-1",
           archivedAt: null,
-          thread: { id: "thread-1" },
+          threads: [{ id: "thread-1" }],
         }
       : options.bot;
   const routines = options.routines ?? [OWNER_ROUTINE];
@@ -207,7 +207,7 @@ describe("inbound email route", () => {
     ["an unknown name", { bot: null }, "no such bot"],
     [
       "an archived bot",
-      { bot: { id: "b", archivedAt: new Date(), thread: { id: "t" } } },
+      { bot: { id: "b", archivedAt: new Date(), threads: [{ id: "t" }] } },
       "no such bot",
     ],
     ["mail without a sender", { message: email({ from: null }) }, "no sender"],
