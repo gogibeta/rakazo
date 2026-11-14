@@ -293,8 +293,8 @@ async function seedRun(
   completedAt?: Date | null,
   threadId?: string,
 ) {
-  const thread = await prisma.thread.findUniqueOrThrow({
-    where: threadId ? { id: threadId } : { botId },
+  const thread = await prisma.thread.findFirstOrThrow({
+    where: threadId ? { id: threadId } : { botId, isPrimary: true },
   });
   const task = await prisma.task.create({
     data: {
