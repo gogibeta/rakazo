@@ -330,7 +330,8 @@ describe("toolCallBudgetExceededMessage", () => {
 });
 
 describe("toolCallBudgetFor", () => {
-  it("tracks every run now, so metering works with no bounds configured", () => {
+  it("keeps a bounded run's budget across calls until release, counts included", () => {
+    process.env.RUN_TOKEN_BUDGET_HARD = "1000";
     const first = toolCallBudgetFor("run-tracked");
     recordRunUsage(first, { inputTokens: 3, outputTokens: 2, costUsd: null });
     expect(toolCallBudgetFor("run-tracked")).toBe(first);
@@ -338,6 +339,13 @@ describe("toolCallBudgetFor", () => {
     releaseToolCallBudget("run-tracked", false);
     expect(toolCallBudgetFor("run-tracked")).not.toBe(first);
     releaseToolCallBudget("run-tracked", false);
+  });
+
+  it("does not keep a budget with no bound configured; metering still works on the object", () => {
+    const first = toolCallBudgetFor("run-unbounded");
+    recordRunUsage(first, { inputTokens: 3, outputTokens: 2, costUsd: null });
+    expect(first.inputTokens).toBe(3);
+    expect(toolCallBudgetFor("run-unbounded")).not.toBe(first);
   });
 
   it("resolves routine limits from the run kind", () => {
