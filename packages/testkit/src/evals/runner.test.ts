@@ -58,6 +58,7 @@ function fixture(options: { failDisable?: boolean; failStop?: boolean } = {}) {
     runtime: { abort },
     prisma: {
       bot: { findMany: vi.fn(async () => bots.map((bot) => ({ ...bot }))) },
+      thread: { findMany: vi.fn(async () => []) },
       run: { findMany: findRuns },
       routine: { updateMany, count: vi.fn(async () => 0) },
     },
