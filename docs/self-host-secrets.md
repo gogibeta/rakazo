@@ -18,6 +18,7 @@ overwrite an existing `.env` without an explicit backup and operator consent.**
 | `ENCRYPTION_KEY`           | `openssl rand -hex 32` | Encrypts stored credentials at rest                                           |
 | `SCREEN_PROXY_SECRET`      | `openssl rand -hex 32` | Signs short-lived `/novnc/*` screen capabilities                              |
 | `SANDBOX_SUPERVISOR_TOKEN` | `openssl rand -hex 32` | API ↔ sandbox supervisor auth                                                 |
+| `VAULT_SERVICE_TOKEN`      | `openssl rand -hex 32` | API/worker ↔ wallet vault auth                                                |
 
 Re-runs **preserve** an existing `.env` (they do not rotate secrets); they only append
 `POSTGRES_APP_PASSWORD` when an older `.env` lacks it. Empty
@@ -28,7 +29,7 @@ Manual generation (same shapes the installer uses):
 
 ```bash
 openssl rand -hex 16   # POSTGRES_PASSWORD, POSTGRES_APP_PASSWORD
-openssl rand -hex 32   # BETTER_AUTH_SECRET, ENCRYPTION_KEY, SCREEN_PROXY_SECRET, SANDBOX_SUPERVISOR_TOKEN
+openssl rand -hex 32   # BETTER_AUTH_SECRET, ENCRYPTION_KEY, SCREEN_PROXY_SECRET, SANDBOX_SUPERVISOR_TOKEN, VAULT_SERVICE_TOKEN
 ```
 
 Source-checkout `.env.example` also requires `POSTGRES_PASSWORD` and
@@ -58,6 +59,7 @@ secret into multiple keys):
 - `ENCRYPTION_KEY`
 - `SCREEN_PROXY_SECRET`
 - `SANDBOX_SUPERVISOR_TOKEN`
+- `VAULT_SERVICE_TOKEN`
 - `RAKAZO_UPDATER_TOKEN` (only if the updater profile is enabled; ≥32 chars,
   also distinct from the four above)
 

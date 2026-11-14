@@ -1,0 +1,29 @@
+{
+  "dependencies": {
+    "@hono/node-server": "2.1.6",
+    "@rakazo/adapters": "workspace:*",
+    "@rakazo/core": "workspace:*",
+    "@rakazo/db": "workspace:*",
+    "@rakazo/logging": "workspace:*",
+    "hono": "4.13.17",
+    "tsx": "4.23.15",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "license": "Apache-2.0",
+  "name": "@rakazo/vault",
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "dev": "node ../../scripts/dev-watch.mjs src/index.ts",
+    "start": "tsx src/index.ts",
+    "test": "vitest run --root ../.. apps/vault/src"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

@@ -201,6 +201,8 @@ x-app-environment: &app-environment # Runtime
   SANDBOX_PROVIDER: ${SANDBOX_PROVIDER:-docker}
   SANDBOX_SUPERVISOR_URL: http://supervisor:7091
   SANDBOX_SUPERVISOR_TOKEN: ${SANDBOX_SUPERVISOR_TOKEN:?Set SANDBOX_SUPERVISOR_TOKEN in .env}
+  VAULT_URL: http://vault:7092
+  VAULT_SERVICE_TOKEN: ${VAULT_SERVICE_TOKEN:?Set VAULT_SERVICE_TOKEN in .env}
   SANDBOX_HOST_URL: ${SANDBOX_HOST_URL:-}
   SANDBOX_HOST_TOKEN: ${SANDBOX_HOST_TOKEN:-}
   SANDBOX_COMMAND_TIMEOUT_MS:
@@ -421,6 +423,52 @@ services:
         - node
         - -e
         - fetch('http://127.0.0.1:7091/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # The wallet vault: the only process that holds owners' wallet passwords.
+  # Runs from the app image like the supervisor, on the internal networks
+  # only — it publishes no port, and it starts locked on every launch;
+  # grants live in its memory alone.
+  vault:
+    image: ${RAKAZO_IMAGE:-ghcr.io/elie222/rakazo/app}:${RAKAZO_IMAGE_TAG:-edge}
+    restart: unless-stopped
+    command: ["pnpm", "--filter", "@rakazo/vault", "start"]
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 512m
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
+      VAULT_HOST: "0.0.0.0"
+      VAULT_PORT: "7092"
+      VAULT_SERVICE_TOKEN: ${VAULT_SERVICE_TOKEN:?Set VAULT_SERVICE_TOKEN in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-}
+      AXIOM_API_TOKEN: ${AXIOM_API_TOKEN:-}
+      AXIOM_DATASET: ${AXIOM_DATASET:-}
+      AXIOM_EDGE_URL: ${AXIOM_EDGE_URL:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+    networks:
+      - app
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:7092/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
       interval: 10s
       timeout: 5s
       retries: 20

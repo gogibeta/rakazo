@@ -126,6 +126,7 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
   "UserWallet",
   "UserWalletUse",
   "WalletVault",
+  "VaultUnlock",
   "TrustedLinkSite",
   "FeedbackReport",
   "PaymentWallet",

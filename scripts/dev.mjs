@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `pnpm dev`: start the API, worker, web app, and sandbox supervisor for this checkout.
+// `pnpm dev`: start the API, worker, web app, sandbox supervisor, and wallet vault for this checkout.
 //
 // Several checkouts (git worktrees) can run at once. Each gets the first free block of ports,
 // and all of them share one Postgres database unless this branch adds migrations that main
@@ -40,7 +40,7 @@ const require = createRequire(path.join(dbPackage, "package.json"));
 const { Client } = require("pg");
 const dotenv = require("dotenv");
 
-const DEFAULT_PORTS = { web: 5173, api: 3100, supervisor: 7091 };
+const DEFAULT_PORTS = { web: 5173, api: 3100, supervisor: 7091, vault: 7092 };
 const PORT_STEP = 10;
 const MANAGED = {
   container: "rakazo-dev-postgres",
@@ -51,7 +51,13 @@ const MANAGED = {
   database: "rakazo",
 };
 const TAILSCALE_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-const SERVICES = ["@rakazo/api", "@rakazo/worker", "@rakazo/web", "@rakazo/sandbox-supervisor"];
+const SERVICES = [
+  "@rakazo/api",
+  "@rakazo/worker",
+  "@rakazo/web",
+  "@rakazo/sandbox-supervisor",
+  "@rakazo/vault",
+];
 
 const fileEnv = existsSync(path.join(root, ".env"))
   ? dotenv.parse(readFileSync(path.join(root, ".env")))
@@ -105,7 +111,7 @@ async function choosePorts() {
   throw new Error("No free port block found near the defaults. Set WEB_PORT and API_PORT in .env.");
 }
 
-function portEnv({ web, api, supervisor }) {
+function portEnv({ web, api, supervisor, vault }) {
   const webUrl = `http://127.0.0.1:${web}`;
   const apiUrl = `http://127.0.0.1:${api}`;
   return {
@@ -117,6 +123,8 @@ function portEnv({ web, api, supervisor }) {
     API_PROXY_TARGET: apiUrl,
     SUPERVISOR_PORT: String(supervisor),
     SANDBOX_SUPERVISOR_URL: `http://127.0.0.1:${supervisor}`,
+    VAULT_PORT: String(vault),
+    VAULT_URL: `http://127.0.0.1:${vault}`,
   };
 }
 

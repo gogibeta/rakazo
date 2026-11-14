@@ -4,6 +4,7 @@ import {
   DEV_ENCRYPTION_KEY_PLACEHOLDER,
   DEV_SCREEN_PROXY_SECRET_PLACEHOLDER,
   DEV_SUPERVISOR_TOKEN_PLACEHOLDER,
+  DEV_VAULT_TOKEN_PLACEHOLDER,
   encryptionKeyWarning,
   hasValidBearerToken,
   resolveAuthSecret,
@@ -12,6 +13,7 @@ import {
   resolveScreenProxySecret,
   resolveSupervisorToken,
   resolveUpdaterToken,
+  resolveVaultServiceToken,
   timingSafeStringEqual,
 } from "./secrets-guard.js";
 
@@ -20,6 +22,7 @@ describe("secrets-guard", () => {
     expect(resolveAuthSecret({ NODE_ENV: "test" })).toBe(DEV_AUTH_SECRET_PLACEHOLDER);
     expect(resolveEncryptionKey({ NODE_ENV: "test" })).toBe(DEV_ENCRYPTION_KEY_PLACEHOLDER);
     expect(resolveSupervisorToken({ NODE_ENV: "test" })).toBe(DEV_SUPERVISOR_TOKEN_PLACEHOLDER);
+    expect(resolveVaultServiceToken({ NODE_ENV: "test" })).toBe(DEV_VAULT_TOKEN_PLACEHOLDER);
     expect(resolveScreenProxySecret({ NODE_ENV: "test" })).toBe(
       DEV_SCREEN_PROXY_SECRET_PLACEHOLDER,
     );
@@ -36,6 +39,9 @@ describe("secrets-guard", () => {
     expect(() => resolveEncryptionKey({ NODE_ENV: "production" })).toThrow(/ENCRYPTION_KEY/);
     expect(() => resolveSupervisorToken({ NODE_ENV: "production" })).toThrow(
       /SANDBOX_SUPERVISOR_TOKEN/,
+    );
+    expect(() => resolveVaultServiceToken({ NODE_ENV: "production" })).toThrow(
+      /VAULT_SERVICE_TOKEN/,
     );
     expect(() => resolveScreenProxySecret({ NODE_ENV: "production" })).toThrow(
       /SCREEN_PROXY_SECRET/,
@@ -206,6 +212,45 @@ describe("secrets-guard", () => {
         NODE_ENV: "production",
         SANDBOX_SUPERVISOR_TOKEN: "too-short",
       }),
+    ).toThrow(/at least 32 characters/);
+  });
+
+  it("requires a dedicated vault credential", () => {
+    expect(
+      resolveVaultServiceToken({
+        NODE_ENV: "test",
+        VAULT_SERVICE_TOKEN: "vault-only",
+        BETTER_AUTH_SECRET: "custom-auth",
+      }),
+    ).toBe("vault-only");
+    expect(() =>
+      resolveVaultServiceToken({
+        NODE_ENV: "test",
+        VAULT_SERVICE_TOKEN: "custom-auth",
+        BETTER_AUTH_SECRET: "custom-auth",
+      }),
+    ).toThrow(/must differ/);
+    expect(() =>
+      resolveVaultServiceToken({
+        NODE_ENV: "test",
+        VAULT_SERVICE_TOKEN: "supervisor-only",
+        SANDBOX_SUPERVISOR_TOKEN: "supervisor-only",
+      }),
+    ).toThrow(/must differ/);
+    expect(
+      resolveVaultServiceToken({
+        NODE_ENV: "production",
+        VAULT_SERVICE_TOKEN: "prod-vault-token-with-enough-length",
+      }),
+    ).toBe("prod-vault-token-with-enough-length");
+    expect(() =>
+      resolveVaultServiceToken({
+        NODE_ENV: "production",
+        VAULT_SERVICE_TOKEN: "replace-with-32-plus-character-vault-token",
+      }),
+    ).toThrow(/VAULT_SERVICE_TOKEN/);
+    expect(() =>
+      resolveVaultServiceToken({ NODE_ENV: "production", VAULT_SERVICE_TOKEN: "too-short" }),
     ).toThrow(/at least 32 characters/);
   });
 

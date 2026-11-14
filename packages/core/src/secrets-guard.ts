@@ -1,9 +1,11 @@
 export const DEV_AUTH_SECRET_PLACEHOLDER = "dev-secret-change-me-please-32chars";
 export const DEV_ENCRYPTION_KEY_PLACEHOLDER = "dev-encryption-key";
 export const DEV_SUPERVISOR_TOKEN_PLACEHOLDER = "dev-supervisor-token-change-me-32chars";
+export const DEV_VAULT_TOKEN_PLACEHOLDER = "dev-vault-token-change-me-32-chars!";
 export const DEV_SCREEN_PROXY_SECRET_PLACEHOLDER = "dev-screen-proxy-secret-change-me-32chars";
 export const EXAMPLE_SUPERVISOR_TOKEN_PLACEHOLDER =
   "replace-with-32-plus-character-supervisor-token";
+export const EXAMPLE_VAULT_TOKEN_PLACEHOLDER = "replace-with-32-plus-character-vault-token";
 export const EXAMPLE_SCREEN_PROXY_SECRET_PLACEHOLDER =
   "replace-with-32-plus-character-screen-proxy-secret";
 
@@ -14,8 +16,10 @@ const RUNTIME_SECRETS_ERROR =
 
 const DEDICATED_SECRET_PLACEHOLDERS = new Set([
   DEV_SUPERVISOR_TOKEN_PLACEHOLDER,
+  DEV_VAULT_TOKEN_PLACEHOLDER,
   DEV_SCREEN_PROXY_SECRET_PLACEHOLDER,
   EXAMPLE_SUPERVISOR_TOKEN_PLACEHOLDER,
+  EXAMPLE_VAULT_TOKEN_PLACEHOLDER,
   EXAMPLE_SCREEN_PROXY_SECRET_PLACEHOLDER,
 ]);
 
@@ -140,6 +144,27 @@ export function resolveUpdaterToken(env: NodeJS.ProcessEnv = process.env): strin
     missingMessage: "Set RAKAZO_UPDATER_TOKEN to a dedicated random updater credential.",
     conflictMessage:
       "RAKAZO_UPDATER_TOKEN must differ from BETTER_AUTH_SECRET, SANDBOX_SUPERVISOR_TOKEN, and SCREEN_PROXY_SECRET.",
+  });
+}
+
+/**
+ * The wallet vault holds owners' password-derived wallet keys in memory, so its bearer
+ * credential must be independent from every other dedicated secret: a leak at one boundary
+ * must not unlock the others.
+ */
+export function resolveVaultServiceToken(env: NodeJS.ProcessEnv = process.env): string {
+  return resolveDedicatedSecret(env, {
+    name: "VAULT_SERVICE_TOKEN",
+    conflicts: [
+      "BETTER_AUTH_SECRET",
+      "SANDBOX_SUPERVISOR_TOKEN",
+      "SCREEN_PROXY_SECRET",
+      "RAKAZO_UPDATER_TOKEN",
+    ],
+    missingMessage: "Set VAULT_SERVICE_TOKEN to a dedicated random vault credential.",
+    conflictMessage:
+      "VAULT_SERVICE_TOKEN must differ from BETTER_AUTH_SECRET, SANDBOX_SUPERVISOR_TOKEN, SCREEN_PROXY_SECRET, and RAKAZO_UPDATER_TOKEN.",
+    developmentFallback: DEV_VAULT_TOKEN_PLACEHOLDER,
   });
 }
 

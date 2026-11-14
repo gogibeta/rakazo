@@ -190,6 +190,8 @@ x-app-environment: &app-environment # Runtime
   SANDBOX_PROVIDER: docker
   SANDBOX_SUPERVISOR_URL: http://supervisor:7091
   SANDBOX_SUPERVISOR_TOKEN:
+  VAULT_URL: http://vault:7092
+  VAULT_SERVICE_TOKEN:
   SANDBOX_HOST_URL:
   SANDBOX_HOST_TOKEN:
   SANDBOX_COMMAND_TIMEOUT_MS:
@@ -497,6 +499,31 @@ services:
         condition: service_healthy
       data-init:
         condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+
+  # The wallet vault: the only process that holds owners' wallet passwords.
+  # Internal like the supervisor — no published port — and it starts locked
+  # on every launch; grants live in its memory alone.
+  vault:
+    build:
+      context: ../..
+      dockerfile: apps/vault/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
+      VAULT_HOST: "0.0.0.0"
+      VAULT_PORT: "7092"
+      VAULT_SERVICE_TOKEN: ${VAULT_SERVICE_TOKEN:?Set VAULT_SERVICE_TOKEN in .env}
+      LOG_LEVEL: ${LOG_LEVEL:-}
+      LOG_FORMAT: ${LOG_FORMAT:-}
+      AXIOM_API_TOKEN: ${AXIOM_API_TOKEN:-}
+      AXIOM_DATASET: ${AXIOM_DATASET:-}
+      AXIOM_EDGE_URL: ${AXIOM_EDGE_URL:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
       migrate:
         condition: service_completed_successfully
 

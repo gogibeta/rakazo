@@ -261,6 +261,9 @@ create_env() {
       "SANDBOX_SUPERVISOR_TOKEN=")
         printf 'SANDBOX_SUPERVISOR_TOKEN=%s\n' "$(openssl rand -hex 32)"
         ;;
+      "VAULT_SERVICE_TOKEN=")
+        printf 'VAULT_SERVICE_TOKEN=%s\n' "$(openssl rand -hex 32)"
+        ;;
       *)
         printf '%s\n' "$line"
         ;;
@@ -285,6 +288,11 @@ add_missing_secrets() {
     printf 'POSTGRES_APP_PASSWORD=%s\n' "$(openssl rand -hex 16)" >> "$ENV_FILE"
     echo "Added POSTGRES_APP_PASSWORD to .env."
   fi
+  if ! grep -Eq '^VAULT_SERVICE_TOKEN=[^[:space:]]' "$ENV_FILE"; then
+    [[ ! -s "$ENV_FILE" || -z "$(tail -c 1 "$ENV_FILE")" ]] || printf '\n' >> "$ENV_FILE"
+    printf 'VAULT_SERVICE_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "$ENV_FILE"
+    echo "Added VAULT_SERVICE_TOKEN to .env."
+  fi
 }
 
 validate_required_secrets() {
@@ -296,6 +304,7 @@ validate_required_secrets() {
       required["ENCRYPTION_KEY"] = 1
       required["SCREEN_PROXY_SECRET"] = 1
       required["SANDBOX_SUPERVISOR_TOKEN"] = 1
+      required["VAULT_SERVICE_TOKEN"] = 1
     }
     {
       name = $0
@@ -323,6 +332,7 @@ services:
       _RAKAZO_VALIDATE_ENCRYPTION_KEY: ${ENCRYPTION_KEY:?Set ENCRYPTION_KEY in .env}
       _RAKAZO_VALIDATE_SCREEN_PROXY_SECRET: ${SCREEN_PROXY_SECRET:?Set SCREEN_PROXY_SECRET in .env}
       _RAKAZO_VALIDATE_SANDBOX_SUPERVISOR_TOKEN: ${SANDBOX_SUPERVISOR_TOKEN:?Set SANDBOX_SUPERVISOR_TOKEN in .env}
+      _RAKAZO_VALIDATE_VAULT_SERVICE_TOKEN: ${VAULT_SERVICE_TOKEN:?Set VAULT_SERVICE_TOKEN in .env}
 YAML
   then
     fail "set every required secret in .env to a non-empty value."
