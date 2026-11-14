@@ -131,9 +131,11 @@ function nextScheduledRunAt(
 
 /**
  * The routine's dedicated session, created on first fire and bound to the
- * routine so every later fire lands in the same conversation. Two fires
- * racing the first creation can each make one; the binding keeps the last,
- * and the loser sits empty and unused.
+ * routine so every later fire lands in the same conversation. The binding
+ * is claimed atomically: when two fires race the first creation, only the
+ * first binder's session is used — the other fire adopts it, so the run
+ * always lands in the session the routine ends up bound to. A binding left
+ * pointing at a thread that no longer exists is replaced.
  */
 async function routineSession(
   deps: ExecutorDeps,
@@ -148,10 +150,26 @@ async function routineSession(
     origin: "routine",
     title: routine.name,
   });
-  await deps.prisma.routine.update({
-    where: { id: routine.id },
+  const bound = await deps.prisma.routine.updateMany({
+    where: { id: routine.id, threadId: null },
     data: { threadId: session.id },
   });
+  if (bound.count === 1) return session;
+  const current = await deps.prisma.routine.findUnique({
+    where: { id: routine.id },
+    select: { threadId: true },
+  });
+  if (current?.threadId) {
+    const existing = await deps.prisma.thread.findFirst({
+      where: { id: current.threadId },
+      select: { id: true },
+    });
+    if (existing) return existing;
+    await deps.prisma.routine.update({
+      where: { id: routine.id },
+      data: { threadId: session.id },
+    });
+  }
   return session;
 }
 

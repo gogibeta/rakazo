@@ -2366,6 +2366,7 @@ describe("createRunExecutor", () => {
             ...model,
           })),
           update: vi.fn(async () => ({})),
+          updateMany: vi.fn(async () => ({ count: 1 })),
         },
         thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
         bot: {
@@ -2688,6 +2689,7 @@ description: Prepare standup notes
           nextRunAt: scheduledAt,
         })),
         update: vi.fn(async () => ({})),
+        updateMany: vi.fn(async () => ({ count: 1 })),
       },
       thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
       bot: {
@@ -2769,6 +2771,7 @@ description: Prepare standup notes
           lastRunAt: null,
         })),
         update: vi.fn(async () => ({})),
+        updateMany: vi.fn(async () => ({ count: 1 })),
       },
       thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
       bot: {
@@ -2838,6 +2841,7 @@ description: Prepare standup notes
           lastRunAt: previousLastRunAt,
         })),
         update: vi.fn(async () => ({})),
+        updateMany: vi.fn(async () => ({ count: 1 })),
       },
       thread: { create: vi.fn(async () => ({ id: "thread-routine" })) },
       bot: {

@@ -75,6 +75,7 @@ function pendingTimerFixture(reuse = true) {
     routine: {
       findUnique: vi.fn(async () => routine),
       update: vi.fn(async () => ({})),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     bot: { findUnique: vi.fn(async () => ({ id: "bot-1", threads: [{ id: "thread-1" }] })) },
     thread: {
