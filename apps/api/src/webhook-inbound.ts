@@ -21,7 +21,7 @@ export type WebhookEvents = {
     blocks: MessageBlock[];
     prompt: string;
     trigger: "webhook";
-    clientNonce?: string;
+    clientNonce: string;
     allowParallelRun?: boolean;
     modelPin?: {
       modelProvider: string;
