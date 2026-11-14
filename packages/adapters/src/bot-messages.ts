@@ -13,8 +13,10 @@ import {
 import type { PrismaClient } from "@rakazo/db";
 import {
   appendEventInTransaction,
+  createSession,
   createThreadMessageInTransaction,
   isUniqueViolation,
+  recordAuditEvent,
   spaceTakesWork,
   THREAD_LOCK_TRANSACTION_OPTIONS,
   withTransactionRetry,
@@ -65,6 +67,86 @@ export async function loadBotMessageContext(
         (block.intent === undefined || block.intent === "request" || block.intent === "question"),
     );
   return { ...context, repliesToRequest };
+}
+
+/** The session a bot message is delivered into, from the delegation it belongs to. */
+function delegationSessionTitle(message: string): string {
+  const firstLine = message.split("\n", 1)[0]?.trim() ?? "";
+  return firstLine.length > 80 ? firstLine.slice(0, 80) : firstLine;
+}
+
+/**
+ * Where a bot-to-bot delivery lands:
+ *
+ * - A reply or outcome to the bot that delegated this run goes back to the
+ *   session the delegation came from — even archived, since the outcome is
+ *   a system insertion, not a new send. If that session is gone entirely,
+ *   the delivery falls back to the delegator's primary session and an
+ *   outcome leaves an audit trail of the orphaning.
+ * - A fresh delegation gets its own child session of the parent session,
+ *   created lazily and reused while either side is active.
+ */
+async function resolveBotMessageThread(
+  prisma: PrismaClient,
+  input: {
+    run: { id: string; spaceId: string; threadId: string; userId: string };
+    target: { id: string; name: string; threads: ReadonlyArray<{ id: string }> };
+    sourceContext: Awaited<ReturnType<typeof loadBotMessageContext>>;
+    message: string;
+    sender: { id: string; name: string };
+    outcome: boolean;
+  },
+): Promise<string> {
+  const { run, target, sourceContext, message } = input;
+  const primaryThreadId = target.threads[0]!.id;
+  if (sourceContext?.fromBotId === target.id) {
+    const origin = sourceContext.returnToMessageId
+      ? await prisma.message.findUnique({
+          where: { id: sourceContext.returnToMessageId },
+          select: { threadId: true },
+        })
+      : null;
+    if (origin) {
+      const thread = await prisma.thread.findFirst({
+        where: { id: origin.threadId, botId: target.id, spaceId: run.spaceId },
+        select: { id: true },
+      });
+      if (thread) return thread.id;
+    }
+    if (input.outcome) {
+      await recordAuditEvent({
+        action: "delegation.outcome_orphaned",
+        actor: { type: "bot", id: input.sender.id, label: input.sender.name },
+        spaceId: run.spaceId,
+        threadId: primaryThreadId,
+        target: { type: "thread", id: run.threadId },
+        metadata: { runId: run.id },
+      });
+    }
+    return primaryThreadId;
+  }
+  const existing = await prisma.thread.findFirst({
+    where: {
+      botId: target.id,
+      spaceId: run.spaceId,
+      kind: "delegation",
+      parentThreadId: run.threadId,
+      archivedAt: null,
+    },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (existing) return existing.id;
+  const session = await createSession(prisma, {
+    spaceId: run.spaceId,
+    userId: run.userId,
+    botId: target.id,
+    kind: "delegation",
+    origin: "delegation",
+    parentThreadId: run.threadId,
+    title: delegationSessionTitle(message),
+  });
+  return session.id;
 }
 
 export async function messageBot(
@@ -130,7 +212,14 @@ export async function messageBot(
     };
   }
 
-  const targetThreadId = target.threads[0].id;
+  const targetThreadId = await resolveBotMessageThread(deps.prisma, {
+    run,
+    target,
+    sourceContext,
+    message,
+    sender,
+    outcome: returnsToSender,
+  });
 
   // A tool call can be re-executed after a lease expiry, so a delivery has to be
   // replayable: without this the recipient is messaged twice and woken twice.

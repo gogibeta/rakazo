@@ -51,6 +51,7 @@ export function useComposerActions({
   groupId,
   activeBotId,
   activeGroupId,
+  sessionId,
   botsRef,
   bootstrapMe,
   activeSnapshot,
@@ -73,6 +74,8 @@ export function useComposerActions({
   groupId: string | undefined;
   activeBotId: RefObject<string | undefined>;
   activeGroupId: RefObject<string | undefined>;
+  /** The open session of the active bot's chat; undefined is the primary session. */
+  sessionId: string | undefined;
   botsRef: RefObject<Bot[]>;
   bootstrapMe: Me | null | undefined;
   activeSnapshot: ThreadSnapshot | null;
@@ -88,6 +91,10 @@ export function useComposerActions({
   flushPendingBrowserNotifications: () => void;
 }) {
   const { t } = useLingui();
+  // The open session, read by the stable callbacks below the way they read
+  // the active bot and group refs.
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   usePendingAttachmentPreviewCleanup(pendingAttachments);
   const [replyTarget, setReplyTarget] = useState<ThreadMessage | null>(null);
@@ -208,7 +215,7 @@ export function useComposerActions({
     clearReply();
     setAttachmentNotice(null);
     setSendError(null);
-  }, [activeId, clearReply, groupId, inGroup]);
+  }, [activeId, clearReply, groupId, inGroup, sessionId]);
 
   const answerMessage = useCallback(
     async (
@@ -223,7 +230,9 @@ export function useComposerActions({
       if (!botId && !groupId) return;
       clearReadBoundary();
       await rpc.threads.answer({
-        ...(groupId ? { groupId } : { botId: botId! }),
+        ...(groupId
+          ? { groupId }
+          : { botId: botId!, ...(sessionIdRef.current ? { threadId: sessionIdRef.current } : {}) }),
         runId: message.runId ?? "",
         messageId: message.id,
         answer: text,
@@ -249,7 +258,12 @@ export function useComposerActions({
       if (!botId && !groupId) return;
       try {
         const result = await rpc.threads.react({
-          ...(groupId ? { groupId } : { botId: botId! }),
+          ...(groupId
+            ? { groupId }
+            : {
+                botId: botId!,
+                ...(sessionIdRef.current ? { threadId: sessionIdRef.current } : {}),
+              }),
           messageId: message.id,
           reaction,
           clientNonce: newClientId(),
@@ -340,6 +354,8 @@ export function useComposerActions({
       const initialBotTarget = activeBotId.current;
       const initialGroupTarget = activeGroupId.current;
       if ((!initialBotTarget && !initialGroupTarget) || sending) return false;
+      // The session this send belongs to; a send rerouted to a group drops it.
+      const sessionAtSend = initialGroupTarget ? undefined : sessionIdRef.current;
       const editsAtSend = draftEdits.current;
       // The reply this send carries, read from the ref so a callback that outlived
       // a re-pick of the same message still carries the armed one; a reply picked
@@ -389,7 +405,9 @@ export function useComposerActions({
         if (!plan.shouldSend) {
           if (plan.shouldRunRoutines) {
             await rpc.threads.sendWithRoutines({
-              ...(groupTarget ? { groupId: groupTarget } : { botId: botTarget! }),
+              ...(groupTarget
+                ? { groupId: groupTarget }
+                : { botId: botTarget!, ...(sessionAtSend ? { threadId: sessionAtSend } : {}) }),
               clientNonce,
               routineIds: plan.routineIds,
             });
@@ -457,6 +475,7 @@ export function useComposerActions({
         }
         const payload = {
           ...(groupTarget ? { groupId: groupTarget } : { botId: botTarget! }),
+          ...(botTarget && sessionAtSend ? { threadId: sessionAtSend } : {}),
           clientNonce,
           imageHandling: imageHandling ?? "confirm",
           text: trimmed || undefined,
@@ -570,7 +589,10 @@ export function useComposerActions({
       if (!botTarget) return;
       setSendError(null);
       try {
-        await rpc.threads.stop({ botId: botTarget });
+        await rpc.threads.stop({
+          botId: botTarget,
+          ...(sessionIdRef.current ? { threadId: sessionIdRef.current } : {}),
+        });
       } catch (error) {
         if (activeBotId.current === botTarget) {
           setSendError(errorText(error, t`Failed to stop`));

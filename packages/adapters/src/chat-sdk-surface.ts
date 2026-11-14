@@ -144,6 +144,13 @@ export interface MessagingPlatform {
    * cannot take one (not a forum, topics off, platform refused).
    */
   createTopic?: (threadId: string, name: string) => Promise<string | null>;
+  /**
+   * The provider handle of the message this raw payload replies to, in the
+   * same handle space the platform's sends return; null when the payload
+   * is not a reply or the platform does not say. Omitted by platforms that
+   * cannot report it — their replies route like plain messages.
+   */
+  replyToHandle?: (raw: unknown) => string | null;
   /** Register the chat command menu with the platform. Best-effort. */
   registerCommands?: (
     commands: ReadonlyArray<{ name: string; description: string }>,
@@ -589,6 +596,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
     if (!isDirect && platform.acceptsGroup?.(message.raw) === false) return null;
     const fromLabel = message.author.fullName || message.author.userName || null;
     const transport = platform.transport?.(message.raw) ?? null;
+    const replyToHandle = platform.replyToHandle?.(message.raw) ?? undefined;
     const attachments = inboundAttachments(message);
     const departures = isDirect ? undefined : platform.departures?.(message.raw);
     const rosterAt = isDirect ? undefined : (platform.rosterAt?.(message.raw) ?? undefined);
@@ -618,6 +626,7 @@ export class ChatSdkMessagingSurface implements MessagingSurface {
         .filter(Boolean)
         .join("\n"),
       mediaUrl: message.attachments.find((attachment) => attachment.url)?.url ?? null,
+      ...(replyToHandle ? { replyToHandle } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(!isDirect && message.isMention ? { mentionsBot: true } : {}),
       ...(departures ? { departures } : {}),

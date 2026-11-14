@@ -958,6 +958,14 @@ export async function runTrial(
             !realtime.failed && observed.some((event) => event.type === "run.completed"),
           scheduled,
         });
+        // The owner catches up between wakes: viewing a conversation clears
+        // its unread mark. A bot's sessions are separate threads now (F4), so
+        // clear them all — the next wake's no-unread check then measures only
+        // what that wake itself caused.
+        await prisma.threadRead.updateMany({
+          where: { thread: { botId } },
+          data: { unread: false },
+        });
       }
       if (/Eval spend cap|stopped scheduling inference|no configured pricing/i.test(lastText))
         throw new EvalFailure("incomplete", lastText);
@@ -1478,6 +1486,24 @@ export async function cleanupActors(
       }
       try {
         await rpc(handles.app, actorCookie, "threads/stop", { botId: bot.id });
+      } catch (error) {
+        failures.push(error);
+      }
+      // A bot's work no longer lives only in its main conversation: peer
+      // exchanges run in delegation sessions, routines in theirs. Stop every
+      // session of the bot too, or a run waiting in one of them never settles
+      // and the scope never reads as idle.
+      try {
+        const sessions = await prisma.thread.findMany({
+          where: { botId: bot.id, spaceId: bot.spaceId, isPrimary: false },
+          select: { id: true },
+        });
+        for (const session of sessions) {
+          await rpc(handles.app, actorCookie, "threads/stop", {
+            botId: bot.id,
+            threadId: session.id,
+          });
+        }
       } catch (error) {
         failures.push(error);
       }

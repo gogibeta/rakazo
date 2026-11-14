@@ -64,6 +64,12 @@ export type ThreadTarget =
       botId: string;
       threadId: string;
       bot: Awaited<ReturnType<ReturnType<typeof createRepos>["getBot"]>>;
+      /**
+       * The resolved session is archived: readable, but a user send into it
+       * is refused. resolveThreadTarget always sets it; hand-built targets
+       * in older callers omit it and mean not archived.
+       */
+      threadArchived?: boolean;
     }
   | {
       kind: "group";
@@ -72,6 +78,8 @@ export type ThreadTarget =
       groupName: string;
       members: GroupMember[];
       memberBotIds: string[];
+      /** The group's session is archived: readable, but a user send into it is refused. */
+      threadArchived?: boolean;
     };
 
 export const RUNS_NEEDING_CONTINUE = new Set(["queued", "waiting_takeover"]);
@@ -381,7 +389,7 @@ export function sendTargetBotIds(
 export async function resolveThreadTarget(
   prisma: PrismaClient,
   actor: Actor,
-  input: { botId?: string; groupId?: string },
+  input: { botId?: string; groupId?: string; threadId?: string },
   options: { includeArchived?: boolean } = {},
 ): Promise<ThreadTarget> {
   const repos = createRepos(prisma);
@@ -389,16 +397,35 @@ export async function resolveThreadTarget(
   if (input.botId) {
     const bot = await repos.getBot(actor, input.botId, options);
     if (!bot.thread) throw new IsolationError();
+    if (input.threadId && input.threadId !== bot.thread.id) {
+      // A named session of this bot: it must exist in the caller's space and
+      // belong to the bot, or the target is not the caller's to use.
+      const thread = await prisma.thread.findFirst({
+        where: { id: input.threadId, spaceId: actor.spaceId, botId: bot.id },
+        select: { id: true, archivedAt: true },
+      });
+      if (!thread) throw new IsolationError();
+      return {
+        kind: "bot",
+        botId: bot.id,
+        threadId: thread.id,
+        bot,
+        threadArchived: thread.archivedAt != null,
+      };
+    }
     return {
       kind: "bot",
       botId: bot.id,
       threadId: bot.thread.id,
       bot,
+      threadArchived: bot.thread.archivedAt != null,
     };
   }
   if (input.groupId) {
     const group = await groupRepos.getGroupTarget(actor, input.groupId);
     if (!group.thread) throw new IsolationError();
+    // Groups keep exactly one session; a threadId naming any other is not the caller's target.
+    if (input.threadId && input.threadId !== group.thread.id) throw new IsolationError();
     const members = group.members.map((member) => ({
       botId: member.bot.id,
       name: member.bot.name,
@@ -413,9 +440,57 @@ export async function resolveThreadTarget(
       groupName: group.name,
       members,
       memberBotIds: members.map((member) => member.botId),
+      threadArchived: group.thread.archivedAt != null,
     };
   }
   throw new IsolationError();
+}
+
+/**
+ * The bot a new conversation with nobody tagged goes to: the space's
+ * designated orchestrator when it names a live bot of the space, else the
+ * caller's most recently active bot (by its primary session's last
+ * message), else the first bot by position. Null when the caller has no
+ * bot to route to at all.
+ */
+export async function resolveNewConversationBotId(
+  prisma: PrismaClient,
+  actor: Actor,
+): Promise<string | null> {
+  const space = await prisma.space.findFirst({
+    where: { id: actor.spaceId },
+    select: { orchestratorBotId: true },
+  });
+  if (space?.orchestratorBotId) {
+    const orchestrator = await prisma.bot.findFirst({
+      where: { id: space.orchestratorBotId, spaceId: actor.spaceId, archivedAt: null },
+      select: { id: true },
+    });
+    if (orchestrator) return orchestrator.id;
+  }
+  const bots = await prisma.bot.findMany({
+    where: { spaceId: actor.spaceId, archivedAt: null },
+    select: {
+      id: true,
+      userId: true,
+      threads: {
+        where: { isPrimary: true },
+        take: 1,
+        select: { lastMessageAt: true },
+      },
+    },
+    orderBy: [{ position: "asc" }, { id: "asc" }],
+  });
+  const own = bots.filter((bot) => bot.userId === actor.userId);
+  const pool = own.length ? own : bots;
+  let mostRecent: { id: string; lastMessageAt: Date } | null = null;
+  for (const bot of pool) {
+    const lastMessageAt = bot.threads[0]?.lastMessageAt;
+    if (lastMessageAt && (!mostRecent || lastMessageAt > mostRecent.lastMessageAt)) {
+      mostRecent = { id: bot.id, lastMessageAt };
+    }
+  }
+  return mostRecent?.id ?? pool[0]?.id ?? null;
 }
 
 export async function threadHead(prisma: PrismaClient, target: ThreadTarget) {

@@ -66,6 +66,7 @@ function Harness({ extras }: { extras?: Record<string, unknown> }) {
     groupId: undefined,
     activeBotId,
     activeGroupId,
+    sessionId: undefined,
     botsRef,
     bootstrapMe: me,
     activeSnapshot,

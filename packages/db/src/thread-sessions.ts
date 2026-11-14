@@ -25,6 +25,11 @@ export type ThreadSessionOrigin =
   | "web"
   | "telegram"
   | "slack"
+  | "whatsapp"
+  | "teams"
+  | "sendblue"
+  | "lark"
+  | "photon"
   | "routine"
   | "delegation"
   | "import";

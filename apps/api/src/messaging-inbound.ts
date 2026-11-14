@@ -35,9 +35,11 @@ import type {
   ProvisionedMessagingIdentity,
   SignupPolicyEnv,
   ThreadEvents,
+  ThreadSessionOrigin,
 } from "@rakazo/db";
 import {
   accountDeactivated,
+  createSession,
   createThreadMessage,
   crossSpaceCommunicationAllowed,
   getPrimaryThread,
@@ -45,6 +47,7 @@ import {
   isUniqueViolation,
   normalizeMessagingLinkCode,
   redeemMessagingLinkCode,
+  resolveMessagingSession,
   SpaceDeletionInProgressError,
   THREAD_LOCK_TRANSACTION_OPTIONS,
 } from "@rakazo/db";
@@ -100,7 +103,7 @@ export interface MessagingInboundModels {
 
 export interface MessagingInboundDeps {
   prisma: PrismaClient;
-  events: Pick<ThreadEvents, "sendUserMessage" | "notify" | "answerRunInput" | "clearThread">;
+  events: Pick<ThreadEvents, "sendUserMessage" | "notify" | "answerRunInput">;
   jobs: Pick<JobPublisher, "enqueue">;
   /**
    * The deployment's public web origin, when known. Notices that must send
@@ -144,20 +147,6 @@ export interface MessagingInboundDeps {
    * cannot (no topics, topics off, not a forum group).
    */
   createTopic?: (provider: string, threadId: string, name: string) => Promise<string | null>;
-  /**
-   * The best-effort follow-through after /new clears a conversation —
-   * cancel the cleared runs' jobs and purge conversation-derived memory —
-   * mirroring what the app's Clear conversation does once the clear
-   * commits. The clear itself never waits on it.
-   */
-  afterThreadClear?: (input: {
-    spaceId: string;
-    userId: string;
-    threadId: string;
-    botId: string;
-    cancelledRunIds: string[];
-    historyCompactionGeneration: number;
-  }) => Promise<void>;
 }
 
 /** A stored inbound attachment, with spoken words when audio was transcribed. */
@@ -176,6 +165,7 @@ type IdentityRow = {
   userId: string;
   spaceId: string;
   botId: string;
+  activeThreadId: string | null;
 };
 
 /**
@@ -278,13 +268,18 @@ async function resolveAskTap(
     where: { id: identity.id },
     data: { outboundSinceInbound: 0, lastInboundAt: new Date(), dmThreadId: event.threadId },
   });
-  const thread = await getPrimaryThread(deps.prisma, identity.botId);
-  if (!thread) return;
   const message = await deps.prisma.message.findFirst({
-    where: { id: target.messageId, threadId: thread.id, role: "bot" },
-    select: { id: true, runId: true, blocks: true },
+    where: { id: target.messageId, role: "bot" },
+    select: { id: true, runId: true, blocks: true, threadId: true },
   });
   if (!message?.runId) return;
+  // The tap answers a message in whichever of the bot's sessions holds it —
+  // a question asked in an older session is answered in that session.
+  const thread = await deps.prisma.thread.findFirst({
+    where: { id: message.threadId, botId: identity.botId },
+    select: { id: true },
+  });
+  if (!thread) return;
   const ask = pendingAskOf(message.blocks);
   if (!ask) {
     await writeAskReceipt(deps, identity, message.id, "That question was already answered.");
@@ -417,6 +412,62 @@ function droppedWhileDeleting(error: unknown): void {
   getLogger().info("messaging inbound dropped", { reason: "space being deleted" });
 }
 
+/**
+ * The session a reply lands in: the session of the bot message it answers,
+ * when that message was delivered to this identity and sits in one of the
+ * identity bot's sessions. Anything else — no reply handle, an unknown or
+ * foreign message — returns null and the message stays on the active
+ * session. The active session itself never moves for a reply.
+ */
+async function resolveReplyThreadId(
+  deps: MessagingInboundDeps,
+  identity: IdentityRow,
+  replyToHandle: string | undefined,
+): Promise<string | null> {
+  if (!replyToHandle) return null;
+  const outbound = await deps.prisma.messagingOutbound.findFirst({
+    where: {
+      identityId: identity.id,
+      kind: "dm",
+      providerHandle: replyToHandle,
+      sourceMessageId: { not: null },
+    },
+    select: { sourceMessageId: true },
+  });
+  if (!outbound?.sourceMessageId) return null;
+  const message = await deps.prisma.message.findUnique({
+    where: { id: outbound.sourceMessageId },
+    select: { threadId: true },
+  });
+  if (!message) return null;
+  const thread = await deps.prisma.thread.findFirst({
+    where: { id: message.threadId, botId: identity.botId, spaceId: identity.spaceId },
+    select: { id: true },
+  });
+  return thread?.id ?? null;
+}
+
+/** The session origin a DM provider's conversations carry. */
+function sessionOriginForProvider(provider: string): ThreadSessionOrigin {
+  switch (provider) {
+    case "slack":
+      return "slack";
+    case "whatsapp":
+      return "whatsapp";
+    case "teams":
+      return "teams";
+    case "sendblue":
+      return "sendblue";
+    case "lark":
+      return "lark";
+    case "photon":
+      return "photon";
+    default:
+      // Telegram mounts, including named bots ("telegram-<name>").
+      return "telegram";
+  }
+}
+
 async function handleDirectEvent(
   deps: MessagingInboundDeps,
   event: MessagingInboundMessage,
@@ -465,7 +516,7 @@ async function handleDirectEvent(
 
   let ids: ProvisionedMessagingIdentity;
   if (existing) {
-    const thread = await getPrimaryThread(deps.prisma, existing.botId);
+    const thread = await resolveMessagingSession(deps.prisma, existing);
     if (!thread) throw new Error(`messaging identity ${existing.id} has no thread`);
     ids = {
       provider: existing.provider,
@@ -488,6 +539,14 @@ async function handleDirectEvent(
     );
   }
 
+  // A reply to a specific bot message lands in that message's session, not
+  // the active one; the active session itself does not move. Anything that
+  // does not resolve keeps the message on the active session.
+  const messageThreadId = existing
+    ? ((await resolveReplyThreadId(deps, existing, event.replyToHandle)) ?? ids.threadId)
+    : ids.threadId;
+  const messageIds = { ...ids, threadId: messageThreadId };
+
   // Slash commands (/bot, /new, /queue, /steer, /model, /help) act on the
   // sender's own line and never reach the bot as messages. Only a linked
   // sender has any, and a message carrying media stays a message.
@@ -500,15 +559,15 @@ async function handleDirectEvent(
   // question instead of starting a new turn. Only a linked sender can have
   // one waiting, and a message carrying media stays a message.
   if (existing && attachments.length === 0 && !event.mediaUrl) {
-    if (await tryAnswerPendingChoiceFromText(deps, existing, ids.threadId, text)) return;
+    if (await tryAnswerPendingChoiceFromText(deps, existing, messageThreadId, text)) return;
   }
 
-  const stored = await storeInboundMedia(deps, ids, event);
+  const stored = await storeInboundMedia(deps, messageIds, event);
 
   // Message-trigger routines own the delivery when configured. Do not also
   // start a normal messaging continue for the same inbound handle.
   if (
-    await wakeMessageRoutines(deps, ids, event, {
+    await wakeMessageRoutines(deps, messageIds, event, {
       artifacts: stored.artifacts,
       unavailable: stored.unavailable,
     })
@@ -517,7 +576,7 @@ async function handleDirectEvent(
   const body = [text, ...stored.unavailable].filter(Boolean).join("\n");
   const sent = await deps.events.sendUserMessage({
     spaceId: ids.spaceId,
-    threadId: ids.threadId,
+    threadId: messageThreadId,
     botId: ids.botId,
     userId: ids.userId,
     // The address is verified as this person\'s, so the line is theirs.
@@ -1100,9 +1159,12 @@ async function switchIdentityBot(
   if (!bot) return { status: "not-found" };
   if (identity.botId === bot.id) return { status: "already", bot };
   try {
+    // The switch moves the conversation too: the new bot's primary session
+    // becomes the identity's active one.
+    const primary = await getPrimaryThread(deps.prisma, bot.id);
     await deps.prisma.messagingIdentity.update({
       where: { id: identity.id },
-      data: { botId: bot.id, spaceId: bot.spaceId },
+      data: { botId: bot.id, spaceId: bot.spaceId, activeThreadId: primary?.id ?? null },
     });
   } catch (error) {
     if (isUniqueViolation(error)) return { status: "linked-elsewhere" };
@@ -1370,40 +1432,35 @@ async function applyQueueSteerCommand(
   }
 }
 
-/** /new in a DM: the app's own Clear conversation, then its best-effort follow-through. */
+/**
+ * /new in a DM: open a fresh session and make it the identity's active one.
+ * The old session is never cleared or deleted — it stays readable in the
+ * app, and switching the active session back is all it takes to return.
+ */
 async function applyNewConversationCommand(
   deps: MessagingInboundDeps,
   identity: IdentityRow,
-  threadId: string,
   reply: CommandReplier,
   keyBase: string,
 ): Promise<void> {
-  const cleared = await deps.events.clearThread({
+  const session = await createSession(deps.prisma, {
     spaceId: identity.spaceId,
-    threadId,
+    userId: identity.userId,
     botId: identity.botId,
+    kind: "direct",
+    origin: sessionOriginForProvider(identity.provider),
   });
-  if (deps.afterThreadClear) {
-    await deps
-      .afterThreadClear({
-        spaceId: identity.spaceId,
-        userId: identity.userId,
-        threadId,
-        botId: identity.botId,
-        cancelledRunIds: cleared.cancelledRunIds,
-        historyCompactionGeneration: cleared.historyCompactionGeneration,
-      })
-      .catch((error) => {
-        getLogger().error("messaging /new follow-through failed", error);
-      });
-  }
+  await deps.prisma.messagingIdentity.update({
+    where: { id: identity.id },
+    data: { activeThreadId: session.id },
+  });
   const bot = await deps.prisma.bot.findUnique({
     where: { id: identity.botId },
     select: { name: true },
   });
   await reply(
     `command:new:${keyBase}`,
-    `Started a fresh conversation with ${bot?.name ?? "your bot"}.`,
+    `Started a fresh conversation with ${bot?.name ?? "your bot"}. The previous conversation is still in the app.`,
   );
 }
 
@@ -1484,7 +1541,7 @@ async function applyDirectSlashCommand(
       await applyModelCommand(deps, identity, slash.argument, reply, event.handle, true);
       return true;
     case "new":
-      await applyNewConversationCommand(deps, identity, ids.threadId, reply, event.handle);
+      await applyNewConversationCommand(deps, identity, reply, event.handle);
       return true;
     case "queue":
     case "steer":

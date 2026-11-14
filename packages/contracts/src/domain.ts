@@ -1314,6 +1314,26 @@ export const ThreadSnapshotSchema = z.object({
 });
 export type ThreadSnapshot = z.infer<typeof ThreadSnapshotSchema>;
 
+/**
+ * One conversation of a bot, as the session list shows it: the primary
+ * conversation plus every session started since — routine and delegation
+ * sessions included, helper and external threads never listed here.
+ */
+export const ThreadSessionSchema = z.object({
+  id: Id,
+  botId: Id,
+  title: z.string().nullable(),
+  kind: z.enum(["direct", "routine", "delegation"]),
+  isPrimary: z.boolean(),
+  archivedAt: z.string().nullable(),
+  lastMessageAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type ThreadSession = z.infer<typeof ThreadSessionSchema>;
+
+/** Session titles are list labels, not documents. */
+export const SESSION_TITLE_MAX_LENGTH = 120;
+
 export const CONNECTION_LABEL_MAX_LENGTH = 80;
 
 export const SpaceMemoryConfigSchema = z.object({
