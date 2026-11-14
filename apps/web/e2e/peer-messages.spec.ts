@@ -375,7 +375,10 @@ test("answers a message sent while the bot works on another bot's request", asyn
   await expect(
     transcript.getByTestId("message-user-bubble").filter({ hasText: "peer-busy-alpha" }),
   ).toBeVisible({ timeout: 30_000 });
-  // The message landed while Chief's request was still running, so it was held behind it.
+  // The message landed while Chief's request was still running. Sessions
+  // split the bot's attention: the peer request runs in Researcher's
+  // delegation session (the peer view), so the user's message is answered by
+  // a run of its own in this chat instead of being held behind the peer run.
   const held = await rpc<{
     messages: Array<{
       role: string;
@@ -386,11 +389,26 @@ test("answers a message sent while the bot works on another bot's request", asyn
   const peerRunId = held.messages.find((message) =>
     message.blocks.some((block) => block.kind === "bot_message_received"),
   )?.runId;
-  const sent = held.messages.find((message) =>
-    message.blocks.some((block) => block.text === "remember peer-busy-alpha"),
-  );
   expect(peerRunId).toBeTruthy();
-  expect(sent?.runId).toBe(peerRunId);
+  let sentRunId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        const own = await rpc<{
+          messages: Array<{
+            runId?: string;
+            blocks: Array<{ kind: string; text?: string }>;
+          }>;
+        }>(page, "threads/messages", { botId: researcher.id });
+        sentRunId = own.messages.find((message) =>
+          message.blocks.some((block) => block.text === "remember peer-busy-alpha"),
+        )?.runId;
+        return sentRunId;
+      },
+      { timeout: 30_000 },
+    )
+    .toBeTruthy();
+  expect(sentRunId).not.toBe(peerRunId);
   // The answer is the user's own: inline in the chat, never folded under Chief's request.
   const answer = transcript.getByText("i will keep that in memory.");
   await expect(answer).toBeVisible({ timeout: 60_000 });

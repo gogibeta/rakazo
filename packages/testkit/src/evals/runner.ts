@@ -1489,6 +1489,24 @@ export async function cleanupActors(
       } catch (error) {
         failures.push(error);
       }
+      // A bot's work no longer lives only in its main conversation: peer
+      // exchanges run in delegation sessions, routines in theirs. Stop every
+      // session of the bot too, or a run waiting in one of them never settles
+      // and the scope never reads as idle.
+      try {
+        const sessions = await prisma.thread.findMany({
+          where: { botId: bot.id, spaceId: bot.spaceId, isPrimary: false },
+          select: { id: true },
+        });
+        for (const session of sessions) {
+          await rpc(handles.app, actorCookie, "threads/stop", {
+            botId: bot.id,
+            threadId: session.id,
+          });
+        }
+      } catch (error) {
+        failures.push(error);
+      }
     }
 
     let runsAfterStop: Array<{ id: string }> = [];
