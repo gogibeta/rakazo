@@ -81,14 +81,9 @@ ALTER TABLE "wallet_proposals" ADD CONSTRAINT "wallet_proposals_lifetime_chk" CH
   "expiresAt" > "createdAt" AND "expiresAt" <= "createdAt" + interval '1 hour'
 );
 
--- Ownership after an update, stated explicitly: the automatic fallback from USING
--- would already cover it, but naming it keeps the intent visible beside the trigger.
-ALTER POLICY wallet_proposals_tenant ON "wallet_proposals"
-  USING ("userId" = NULLIF(current_setting('app.user_id', true), ''))
-  WITH CHECK ("userId" = NULLIF(current_setting('app.user_id', true), ''));
-ALTER POLICY wallet_proposals_system ON "wallet_proposals"
-  USING ((SELECT app_rls_bypass()))
-  WITH CHECK ((SELECT app_rls_bypass()));
+-- Ownership after an update is already enforced: a policy with only USING applies the
+-- same expression as its check. Restating it as WITH CHECK would be redundant, and the
+-- repo keeps every *_system policy to USING alone (see the row-security guard test).
 
 /**
  * A proposal's canonical payload, its identity, its owner and its lifetime are written

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
-import { runAsSystem, runAsTenant } from "./row-security.js";
+import { asSystem, runAsSystem, runAsTenant } from "./row-security.js";
 
 /**
  * What the database itself guarantees about a stored wallet proposal, run as
@@ -118,8 +118,12 @@ describePostgres("wallet proposals are immutable (PostgreSQL)", () => {
   beforeAll(async () => {
     owner = createDb(migrationUrl!);
     app = createDb(runtimeUrl!, { poolMax: 2 });
+    // The runtime client stays a plain client: the immutability test must run under
+    // the same row-level security a request does, not a system bypass.
     db = app.prisma;
-    const o = owner.prisma;
+    // Fixture statements seed rows for more than one owner, which no request or job
+    // would do, so they run in an explicit system context.
+    const o = asSystem(owner.prisma, "wallet proposal fixture");
     await o.user.createMany({
       data: [
         { id: userId, name: "Proposal owner", email: `${userId}@rakazo.test` },
@@ -157,13 +161,15 @@ describePostgres("wallet proposals are immutable (PostgreSQL)", () => {
 
   afterAll(async () => {
     try {
-      await owner?.prisma.walletProposal.deleteMany({
+      if (!owner) return;
+      const cleanup = asSystem(owner.prisma, "wallet proposal teardown");
+      await cleanup.walletProposal.deleteMany({
         where: { userId: { in: [userId, otherUserId] } },
       });
-      await owner?.prisma.userWallet.deleteMany({
+      await cleanup.userWallet.deleteMany({
         where: { id: { in: [walletId, otherWalletId] } },
       });
-      await owner?.prisma.user.deleteMany({ where: { id: { in: [userId, otherUserId] } } });
+      await cleanup.user.deleteMany({ where: { id: { in: [userId, otherUserId] } } });
     } finally {
       await app?.prisma.$disconnect().catch(() => undefined);
       await app?.pool.end().catch(() => undefined);
@@ -265,7 +271,7 @@ describePostgres("wallet proposals are immutable (PostgreSQL)", () => {
     // preserving, and the cascade must keep working for account deletion.
     const throwawayWallet = `wp-throwaway-${suffix}`;
     const throwawayProposal = `wp-throwaway-proposal-${suffix}`;
-    await owner.prisma.userWallet.create({
+    await asSystem(owner.prisma, "wallet proposal fixture").userWallet.create({
       data: {
         id: throwawayWallet,
         userId,
@@ -283,9 +289,10 @@ describePostgres("wallet proposals are immutable (PostgreSQL)", () => {
       walletId: throwawayWallet,
       fromAddress: "0x6666666666666666666666666666666666666666",
     });
-    await owner.prisma.userWallet.delete({ where: { id: throwawayWallet } });
+    const cleanup = asSystem(owner.prisma, "wallet proposal fixture");
+    await cleanup.userWallet.delete({ where: { id: throwawayWallet } });
     await expect(
-      owner.prisma.walletProposal.findUnique({ where: { id: throwawayProposal } }),
+      cleanup.walletProposal.findUnique({ where: { id: throwawayProposal } }),
     ).resolves.toBeNull();
   });
 });
