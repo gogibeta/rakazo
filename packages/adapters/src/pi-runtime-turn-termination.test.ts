@@ -28,6 +28,7 @@ import {
   terminatingToolResult,
 } from "./approval-effect.js";
 import { PiAgentRuntime } from "./pi-runtime.js";
+import { releaseToolCallBudget } from "./pi-runtime-tools.js";
 
 const primary = model("provider-a", "primary", 32_768);
 
@@ -216,6 +217,12 @@ function refusingExecutor() {
 const previousMaxToolCalls = process.env.MAX_TOOL_CALLS_PER_TURN;
 
 beforeEach(() => {
+  // Every test in this file uses the same runId. Now that a tool-call fuse always
+  // applies, a run's budget is retained for its lifetime, so a budget spent by one
+  // test would otherwise be carried into the next. Release it, and clear the
+  // limit this file's own tests set so each starts from the shipped default.
+  releaseToolCallBudget("run", false);
+  delete process.env.MAX_TOOL_CALLS_PER_TURN;
   providerState.models.clear();
   providerState.models.set(`${primary.provider}/${primary.id}`, primary as never);
   providerState.stream.mockReset();

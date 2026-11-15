@@ -44,8 +44,8 @@ const MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS = 6;
 // Arguments that differ only by digits in their text (`echo noop-1`, `echo noop-2`) can be a real
 // sequence such as reading a file in chunks or paging through a site, so they get more room. So
 // does an identical call that keeps succeeding with the same answer: it may be waiting on a page.
-// Exported because the per-turn fuse's default must sit above it: a fuse lower than the loosest
-// shape check would stop ordinary work before the loop guard could ever decide.
+// Exported because the per-turn fuse's default must sit above it: a fuse lower than
+// the loosest shape check would stop ordinary work before the loop guard could decide.
 export const MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS = 25;
 const FAILED_RESULT = "failed:";
 
