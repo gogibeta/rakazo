@@ -310,26 +310,56 @@ export function RenameBotSectionDialog({
 
 export function ClearConversationDialog({
   bot,
+  kind,
+  sessionTitle,
   onCancel,
   onConfirm,
 }: {
   bot: Pick<Bot, "name">;
+  kind: "bot" | "group";
+  /**
+   * The non-primary session being cleared. Undefined clears the main conversation;
+   * null means the session is targeted but its title is still loading.
+   */
+  sessionTitle?: string | null;
   onCancel: () => void;
   onConfirm: () => Promise<void>;
 }) {
   const { t } = useLingui();
   const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const title =
+    kind === "group" ? (
+      <Trans>Clear {bot.name}’s conversation?</Trans>
+    ) : sessionTitle ? (
+      <Trans>Clear “{sessionTitle}”?</Trans>
+    ) : sessionTitle === null ? (
+      <Trans>Clear this conversation?</Trans>
+    ) : (
+      <Trans>Clear {bot.name}’s main conversation?</Trans>
+    );
+  const description =
+    kind === "group" ? (
+      <Trans>
+        This permanently removes every message and stops current work. The chat remains available.
+      </Trans>
+    ) : sessionTitle !== undefined ? (
+      <Trans>
+        This permanently removes every message in this conversation and stops current work.{" "}
+        {bot.name}’s main conversation is kept.
+      </Trans>
+    ) : (
+      <Trans>
+        This permanently removes every message in {bot.name}’s main conversation and stops current
+        work. Other conversations are kept.
+      </Trans>
+    );
 
   return (
     <ConfirmDialog
       onCancel={onCancel}
-      title={<Trans>Clear {bot.name}’s conversation?</Trans>}
-      description={
-        <Trans>
-          This permanently removes every message and stops current work. The chat remains available.
-        </Trans>
-      }
+      title={title}
+      description={description}
       error={error}
       busy={clearing}
       onConfirm={() => {

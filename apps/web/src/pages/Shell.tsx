@@ -1350,6 +1350,7 @@ function SpaceShell() {
           bots={bots}
           activeId={active?.id}
           activeGroupId={activeGroup?.id}
+          activeSessionId={activeSessionId}
           alive={alive}
           navigate={navigate}
           setPanel={setPanel}
