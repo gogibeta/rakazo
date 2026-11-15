@@ -83,7 +83,11 @@ describe.skipIf(!enabled)("send model gate with a bot's own model (PostgreSQL)",
     await close?.();
   });
 
-  const send = (input: Record<string, unknown>) => call("send", input);
+  const send = (input: Record<string, unknown>) =>
+    call("send", {
+      clientNonce: `model-gate-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      ...input,
+    });
   const useModel = (id: string, modelProvider: string | null) =>
     system.bot.update({
       where: { id },

@@ -956,6 +956,19 @@ async function rpc<T>(
   procedure: string,
   body: unknown = {},
 ): Promise<T> {
+  if (
+    (procedure === "threads/send" ||
+      procedure === "threads/followUp" ||
+      procedure === "threads/sendWithRoutines") &&
+    body !== null &&
+    typeof body === "object" &&
+    !("clientNonce" in (body as Record<string, unknown>))
+  ) {
+    body = {
+      ...(body as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const response = await fetch(`${apiUrl}/rpc/${procedure}`, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },

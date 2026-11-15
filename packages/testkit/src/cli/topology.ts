@@ -161,6 +161,19 @@ async function signup(baseUrl: string) {
 }
 
 async function rpc<T>(baseUrl: string, cookie: string, procedure: string, input: unknown = {}) {
+  if (
+    (procedure === "threads/send" ||
+      procedure === "threads/followUp" ||
+      procedure === "threads/sendWithRoutines") &&
+    input !== null &&
+    typeof input === "object" &&
+    !("clientNonce" in (input as Record<string, unknown>))
+  ) {
+    input = {
+      ...(input as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const response = await fetch(`${baseUrl}/rpc/${procedure}`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie, origin: baseUrl },

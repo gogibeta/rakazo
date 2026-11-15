@@ -6,6 +6,7 @@ import {
   TAKEOVER_COMPUTER_SKIPPED_STATE,
 } from "@rakazo/core";
 import { describe, expect, it, vi } from "vitest";
+import { installAuditEventStore } from "./audit-events.js";
 import { commitBotUpdate } from "./bot-update.js";
 import type { PrismaClient } from "./client.js";
 import { CrossSpaceCommunicationBlockedError } from "./cross-space-communication.js";
@@ -556,8 +557,11 @@ describe("thread lock transaction budget", () => {
       },
       run: { findMany: vi.fn().mockResolvedValue([]) },
       computerExecutionLease: { updateMany: vi.fn() },
-      message: { deleteMany: vi.fn() },
-      event: { deleteMany: vi.fn(), create: vi.fn().mockResolvedValue(event(1)) },
+      message: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      event: {
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        create: vi.fn().mockResolvedValue(event(1)),
+      },
       bot: { update: vi.fn() },
     };
     const $transaction = vi.fn(async (work: (client: typeof tx) => unknown) => work(tx));
@@ -3896,6 +3900,7 @@ describe("answerRunInput approvals", () => {
       },
     };
     const prisma = {
+      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
 
@@ -3952,6 +3957,7 @@ describe("queue admission beside pending cards", () => {
           blocks: [{ kind: "text", text: "New work" }],
           prompt: "New work",
           trigger,
+          clientNonce: "nonce-test",
         }),
       ).resolves.toMatchObject({ runId: "run-new", taskId: "task-new" });
       expect(tx.steeringMessage.create).not.toHaveBeenCalled();
@@ -4241,6 +4247,7 @@ describe("sendUserMessage", () => {
       blocks: [{ kind: "text", text: "ping" }],
       prompt: "ping",
       trigger: "webhook",
+      clientNonce: "nonce-test",
       modelPin: {
         modelProvider: "openai-compatible",
         modelId: "private-model",
@@ -4294,6 +4301,7 @@ describe("sendUserMessage", () => {
       },
     };
     const prisma = {
+      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
 
@@ -4306,6 +4314,7 @@ describe("sendUserMessage", () => {
         blocks: [{ kind: "text", text: "hello" }],
         prompt: "hello",
         trigger: "follow_up",
+        clientNonce: "nonce-test",
       }),
     ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "run-0" });
 
@@ -4365,6 +4374,7 @@ describe("sendUserMessage", () => {
         },
       };
       const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
 
@@ -4387,6 +4397,7 @@ describe("sendUserMessage", () => {
         ],
         prompt: "ping",
         trigger,
+        clientNonce: "nonce-test",
       });
 
       if (waiting === "user" && group) {
@@ -4441,6 +4452,7 @@ describe("sendUserMessage", () => {
       },
     };
     const prisma = {
+      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
 
@@ -4452,6 +4464,7 @@ describe("sendUserMessage", () => {
       blocks: [{ kind: "text", text: "ping" }],
       prompt: "ping",
       trigger: "webhook",
+      clientNonce: "nonce-test",
       modelPin: {
         modelProvider: "openai-compatible",
         modelId: "private-model",
@@ -4518,6 +4531,7 @@ describe("sendUserMessage", () => {
         blocks: [{ kind: "text", text: "Check the inbox" }],
         prompt: "Check the inbox",
         trigger: "user",
+        clientNonce: "nonce-test",
       }),
     ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "intro-run" });
 
@@ -4621,6 +4635,7 @@ describe("sendUserMessage", () => {
         },
       };
       const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
 
@@ -4633,6 +4648,7 @@ describe("sendUserMessage", () => {
           blocks: [{ kind: "text", text: "hello" }],
           prompt: "hello",
           trigger: "messaging",
+          clientNonce: "nonce-test",
         }),
       ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "run-routine" });
 
@@ -4684,6 +4700,7 @@ describe("sendUserMessage", () => {
       },
     };
     const prisma = {
+      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
 
@@ -4695,6 +4712,7 @@ describe("sendUserMessage", () => {
       blocks: [{ kind: "text", text: "hello" }],
       prompt: "hello",
       trigger: "follow_up",
+      clientNonce: "nonce-test",
     });
 
     // The continuation that starts when the busy run ends acts as this sender.
@@ -4736,6 +4754,7 @@ describe("sendUserMessage", () => {
       },
     };
     const prisma = {
+      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
 
@@ -4748,6 +4767,7 @@ describe("sendUserMessage", () => {
         blocks: [{ kind: "text", text: "hello" }],
         prompt: "hello",
         trigger: "messaging",
+        clientNonce: "nonce-test",
       }),
     ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "run-text" });
 
@@ -4858,6 +4878,7 @@ describe("sendUserMessage", () => {
       },
     };
     const prisma = {
+      message: { findUnique: vi.fn().mockResolvedValue(null) },
       $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
     } as unknown as PrismaClient;
 
@@ -4870,6 +4891,7 @@ describe("sendUserMessage", () => {
         blocks: blocks(incoming),
         prompt: "hello",
         trigger: "messaging",
+        clientNonce: "nonce-test",
       }),
     ).resolves.toEqual({ messageId: "message-1", seq: 4, taskId: null, runId: "run-text" });
 
@@ -4940,6 +4962,7 @@ describe("claimSteering", () => {
         },
       };
       const prisma = {
+        message: { findUnique: vi.fn().mockResolvedValue(null) },
         $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
       } as unknown as PrismaClient;
       const [claimed] = await claimSteering(prisma, {
@@ -5250,9 +5273,9 @@ describe("clearThread", () => {
       secret: { deleteMany: vi.fn() },
       computerExecutionLease: { updateMany: vi.fn() },
       computer: { updateMany: vi.fn() },
-      message: { deleteMany: vi.fn(), findMany: vi.fn(async () => []) },
+      message: { deleteMany: vi.fn(async () => ({ count: 3 })), findMany: vi.fn(async () => []) },
       event: {
-        deleteMany: vi.fn(),
+        deleteMany: vi.fn(async () => ({ count: 5 })),
         create: vi.fn().mockResolvedValue({ ...event(0), type: "thread.cleared" }),
       },
       bot: { update: vi.fn() },
@@ -5305,9 +5328,9 @@ describe("clearThread", () => {
       secret: { deleteMany: vi.fn() },
       computerExecutionLease: { updateMany: vi.fn() },
       computer: { updateMany: vi.fn() },
-      message: { deleteMany: vi.fn(), findMany: vi.fn(async () => []) },
+      message: { deleteMany: vi.fn(async () => ({ count: 3 })), findMany: vi.fn(async () => []) },
       event: {
-        deleteMany: vi.fn(),
+        deleteMany: vi.fn(async () => ({ count: 5 })),
         create: vi.fn().mockResolvedValue({
           ...event(0),
           type: "thread.cleared",
@@ -5400,9 +5423,9 @@ describe("clearThread", () => {
       secret: { deleteMany: vi.fn() },
       computerExecutionLease: { updateMany: vi.fn() },
       computer: { updateMany: vi.fn() },
-      message: { deleteMany: vi.fn(), findMany: vi.fn(async () => []) },
+      message: { deleteMany: vi.fn(async () => ({ count: 3 })), findMany: vi.fn(async () => []) },
       event: {
-        deleteMany: vi.fn(),
+        deleteMany: vi.fn(async () => ({ count: 5 })),
         create: vi.fn().mockResolvedValue({
           ...event(0),
           type: "thread.cleared",
@@ -5451,6 +5474,92 @@ describe("clearThread", () => {
     expect(tx.computerExecutionLease.updateMany).not.toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ botId: expect.anything() }) }),
     );
+  });
+
+  it("writes a thread.hard_deleted audit event with the removed counts", async () => {
+    const createMany = vi.fn(async (_args: unknown) => ({ count: 1 }));
+    installAuditEventStore({
+      auditEvent: { createMany },
+      space: { findUnique: vi.fn(async () => ({ organizationId: "org-1" })) },
+      user: { findUnique: vi.fn(async () => ({ email: "actor@example.com" })) },
+      member: { findMany: vi.fn(async () => []) },
+    } as never);
+    try {
+      const tx = {
+        $queryRaw: vi.fn(async () => []),
+        $executeRaw: vi.fn(async () => 0),
+        threadRead: {
+          deleteMany: vi.fn(async () => ({ count: 0 })),
+          updateMany: vi.fn(async () => ({ count: 0 })),
+        },
+        externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+        thread: {
+          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          update: vi
+            .fn()
+            .mockResolvedValueOnce({ nextMessageSeq: 3, historyCompactionGeneration: 0 })
+            .mockResolvedValue({ nextEventSeq: 1 }),
+        },
+        run: {
+          findMany: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "run-1", taskId: "task-1", userId: "user-1", spaceId: "workspace-1" },
+            ]),
+          updateManyAndReturn: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+            where.id.in.map((id) => ({ id })),
+          ),
+        },
+        attempt: { updateMany: vi.fn() },
+        task: { updateMany: vi.fn() },
+        secret: { deleteMany: vi.fn() },
+        computerExecutionLease: { updateMany: vi.fn() },
+        computer: { updateMany: vi.fn() },
+        message: { deleteMany: vi.fn(async () => ({ count: 3 })), findMany: vi.fn(async () => []) },
+        event: {
+          deleteMany: vi.fn(async () => ({ count: 5 })),
+          create: vi.fn().mockResolvedValue({ ...event(0), type: "thread.cleared" }),
+        },
+        bot: { update: vi.fn() },
+      };
+      const prisma = {
+        computer: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+
+      await clearThread(
+        prisma,
+        {
+          spaceId: "workspace-1",
+          threadId: "thread-1",
+          botId: "bot-1",
+          actorUserId: "user-9",
+        },
+        new TestFanout(),
+      );
+
+      expect(createMany).toHaveBeenCalledOnce();
+      const call = createMany.mock.calls[0]![0] as { data: Array<Record<string, unknown>> };
+      expect(call.data[0]).toMatchObject({
+        action: "thread.hard_deleted",
+        actorType: "user",
+        actorId: "user-9",
+        actorLabel: "actor@example.com",
+        organizationId: "org-1",
+        spaceId: "workspace-1",
+        threadId: "thread-1",
+        targetType: "thread",
+        targetId: "thread-1",
+        metadata: {
+          historyRowsRemoved: 3,
+          eventRowsRemoved: 5,
+          cancelledRunCount: 1,
+          botId: "bot-1",
+        },
+      });
+    } finally {
+      installAuditEventStore(undefined);
+    }
   });
 });
 
@@ -5807,6 +5916,7 @@ it("checks cross-space peer permission inside the message transaction before cre
       blocks: [{ kind: "text", text: "peer reply" }],
       prompt: "peer reply",
       trigger: "messaging",
+      clientNonce: "nonce-test",
       crossSpaceSenderBotId: "sender",
     }),
   ).rejects.toBeInstanceOf(CrossSpaceCommunicationBlockedError);

@@ -1,5 +1,5 @@
 import type { MessageBlock } from "@rakazo/contracts";
-import { toolStepsHistoryText } from "@rakazo/core";
+import { isRecallToolStep, toolStepsHistoryText } from "@rakazo/core";
 import type { Prisma } from "./client.js";
 
 function objectBlocks(blocks: Prisma.JsonValue): MessageBlock[] {
@@ -62,10 +62,14 @@ export function historyAttachmentBlocks(
 
 /**
  * What history search matches: the message text, its tool steps' labels and notes, and the
- * names of its attachments. Mirrors the expression of messages_history_search_steps_idx.
+ * names of its attachments. Mirrors the expression of messages_history_search_no_recall_idx.
+ * Recall tools' steps are excluded: a search or read of history is activity, never content,
+ * so text that only appears in a recall step never makes its message a search hit.
  */
 export function historySearchText(blocks: Prisma.JsonValue): string {
-  const steps = objectBlocks(blocks).flatMap(toolSteps);
+  const steps = objectBlocks(blocks)
+    .flatMap(toolSteps)
+    .filter((step) => !isRecallToolStep(step));
   return [
     historyMessageText(blocks),
     ...historyAttachmentBlocks(blocks).map((block) => block.name),

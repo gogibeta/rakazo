@@ -723,6 +723,7 @@ function fixture({
         },
       };
       const inboundPrisma = {
+        message: { findUnique: vi.fn(async () => null) },
         $transaction: async (action: (client: typeof tx) => unknown) => action(tx),
       } as unknown as PrismaClient;
       await sendUserMessage(inboundPrisma, {
@@ -732,6 +733,7 @@ function fixture({
         userId: run.userId,
         trigger: "webhook",
         prompt: promptText,
+        clientNonce: "readonly-approval-inbound",
         blocks: inboundMessage.blocks as never,
       });
       if (busyTrigger) {

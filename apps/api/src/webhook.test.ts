@@ -532,7 +532,15 @@ describe("inbound webhook HTTP route", () => {
     expect(nonces[1]).toBe(nonces[0]);
     expect(nonces[2]).not.toBe(nonces[0]);
     await post(JSON.stringify({ event: "ping" }));
-    expect(deps.sendUserMessage.mock.calls.at(-1)?.[0].clientNonce).toBeUndefined();
+    await post(JSON.stringify({ event: "ping" }));
+    const tail = deps.sendUserMessage.mock.calls.slice(-2).map((call) => call[0].clientNonce);
+    // Payloads without an id are never deduplicated: each delivery carries a
+    // fresh nonce (the send contract requires one), so identical bodies still
+    // land as separate messages.
+    expect(tail[0]).toBeDefined();
+    expect(tail[1]).toBeDefined();
+    expect(tail[1]).not.toBe(tail[0]);
+    expect(tail[0]).not.toBe(nonces[0]);
   });
 
   it("deduplicates on standard webhook delivery headers", async () => {

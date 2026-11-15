@@ -8,6 +8,7 @@ import {
   isAttachmentImageMimeType,
 } from "@rakazo/contracts";
 import { isApprovalAskBlock, isSecretAskBlock } from "./action-approval.js";
+import { humanizeToolName } from "./events.js";
 
 export class AttachmentValidationError extends Error {
   constructor(message: string) {
@@ -216,6 +217,43 @@ function toolStepOutcomeText(step: { count: number; outcomes?: unknown }): strin
   const [only] = counts;
   if (counts.length === 1 && only?.count === Number(step.count)) return only.outcome;
   return counts.map(({ outcome, count }) => `${count} ${outcome}`).join(", ");
+}
+
+/**
+ * History and memory retrieval tools. A call to one is activity, never content: what it
+ * returns quotes older conversation, so letting that output back into the search index or
+ * a compaction summary makes a bot's past searches match their own results and compounds
+ * whatever the earlier reply got wrong.
+ */
+export const RECALL_TOOL_NAMES = ["search_history", "read_history", "recall_memory"] as const;
+
+/** Stored steps carry only the humanized tool name as their label. */
+const RECALL_TOOL_STEP_LABELS: ReadonlySet<string> = new Set(
+  RECALL_TOOL_NAMES.map((name) => humanizeToolName(name)),
+);
+
+export function isRecallToolStep(step: { label?: unknown }): boolean {
+  return typeof step?.label === "string" && RECALL_TOOL_STEP_LABELS.has(step.label);
+}
+
+/**
+ * Compaction input: a recall step keeps its label — the fact that a search happened may be
+ * summarized — but loses its note, the text that would carry recalled output into the
+ * summary as if it were conversation.
+ */
+export function withoutRecallToolStepNotes(blocks: MessageBlock[]): MessageBlock[] {
+  return blocks.map((block) =>
+    block.kind === "steps"
+      ? {
+          ...block,
+          steps: block.steps.map((step) => {
+            if (!isRecallToolStep(step) || step.note === undefined) return step;
+            const { note: _dropped, ...rest } = step;
+            return rest;
+          }),
+        }
+      : block,
+  );
 }
 
 export function blocksToAgentHistoryText(blocks: MessageBlock[]): string {

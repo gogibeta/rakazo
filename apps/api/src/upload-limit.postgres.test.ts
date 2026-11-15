@@ -93,9 +93,17 @@ it.skipIf(!databaseUrl)(
         expect(attachment.status).toBe(200);
         artifactIds.push(((await attachment.json()) as { json: { id: string } }).json.id);
       }
-      const tooMany = await call("threads/send", { botId, artifactIds });
+      const tooMany = await call("threads/send", {
+        botId,
+        artifactIds,
+        clientNonce: "upload-limit-too-many",
+      });
       expect(tooMany.status).toBe(400);
-      const accepted = await call("threads/send", { botId, artifactIds: artifactIds.slice(0, 8) });
+      const accepted = await call("threads/send", {
+        botId,
+        artifactIds: artifactIds.slice(0, 8),
+        clientNonce: "upload-limit-accepted",
+      });
       expect(accepted.status).toBe(200);
     } finally {
       await handles.stop();

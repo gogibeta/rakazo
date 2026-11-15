@@ -17,6 +17,7 @@ import {
   clearEndedRunState,
   createThreadMessageInTransaction,
   expireComputerExecutionLeases,
+  settleTakeoverWaitOnCancel,
   THREAD_LOCK_TRANSACTION_OPTIONS,
   transientRunEventsWhere,
 } from "@rakazo/db";
@@ -73,6 +74,17 @@ export function cancelThreadRuns(
   };
   return async (tx: Prisma.TransactionClient) => {
     await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
+    // Which of the runs about to be cancelled are waiting on a user takeover, read before
+    // the flip: updateManyAndReturn reports the new status, not the one cancelled from.
+    const takeoverWaits = await tx.run.findMany({
+      where: {
+        ...(helperMessageId
+          ? { ...helpers, sourceMessageId: helperMessageId }
+          : { OR: [{ threadId: target.threadId }, helpers] }),
+        status: "waiting_takeover",
+      },
+      select: { id: true },
+    });
     const cancelled = await tx.run.updateManyAndReturn({
       where: {
         ...(helperMessageId
@@ -195,12 +207,16 @@ export function cancelThreadRuns(
         },
       });
     }
+    const cancelledIds = new Set(ids);
     return {
       runIds: ids,
       computers,
       leases,
       eventSeq,
       stoppedHelpers: cancelled.filter((run) => run.trigger === BACKGROUND_HELPER_TRIGGER),
+      cancelledTakeoverRunIds: takeoverWaits
+        .map((run) => run.id)
+        .filter((id) => cancelledIds.has(id)),
     };
   };
 }
@@ -216,6 +232,7 @@ export async function finishThreadStop(
     leases,
     eventSeq,
     stoppedHelpers,
+    cancelledTakeoverRunIds,
   }: Awaited<ReturnType<ReturnType<typeof cancelThreadRuns>>>,
 ) {
   if (eventSeq !== null) {
@@ -299,4 +316,15 @@ export async function finishThreadStop(
       executionLeaseExpiresAt: null,
     },
   });
+  // A run cancelled out of a takeover wait leaves the computer's controlRunId pointing at
+  // a run that can never resume. Settle it now the stop has committed — the settle locks
+  // the computer row, which the stop transaction must not reach for while holding the
+  // thread row. A failure leaves the binding for the next release or lease expiry.
+  for (const runId of cancelledTakeoverRunIds) {
+    await deps.prisma
+      .$transaction((tx) => settleTakeoverWaitOnCancel(tx, runId))
+      .catch((error) => {
+        getLogger().error("takeover wait settle after thread stop", error);
+      });
+  }
 }

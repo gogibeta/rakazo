@@ -8,7 +8,11 @@ import type {
 } from "@rakazo/adapter-kit";
 import { phoneCallSettings, resolveEncryptionKey, uploadSizeFromEnv } from "@rakazo/core";
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
-import { createSecurityEventPruner, securityEventRetentionDays } from "@rakazo/db";
+import {
+  createSecurityEventPruner,
+  createTransientEventPruner,
+  securityEventRetentionDays,
+} from "@rakazo/db";
 import { auditLogConfig, createAuditLogReconciler } from "./audit-forwarding.js";
 import { createBackgroundJobHandlers } from "./background-job-handlers.js";
 import { reconcileCloudAgents } from "./cloud-agent-service.js";
@@ -291,6 +295,7 @@ export function createRunReconciler(
       prisma,
       securityEventRetentionDays(),
     ),
+    reconcileTransientEventRetention: createTransientEventPruner(prisma),
     reconcileAuditLog: createAuditLogReconciler(prisma, auditLogConfig()),
     reconcileIdleComputers: createIdleComputerSweeper({ prisma, jobs }),
   });

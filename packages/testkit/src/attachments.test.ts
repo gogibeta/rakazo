@@ -220,6 +220,7 @@ describeAttachments("chat attachments", () => {
       botId: bot.id,
       text: "Unauthorized",
       replyToMessageId: parent.id,
+      clientNonce: "attachments-denied",
     });
     expect(denied.status).toBeGreaterThanOrEqual(400);
     const otherBot = await rpc<{ id: string }>(app, cookie, "bots/create", {
@@ -268,6 +269,19 @@ async function signup(app: App, email: string, name: string) {
 }
 
 async function rpc<T>(app: App, cookie: string, proc: string, body: unknown = {}): Promise<T> {
+  if (
+    (proc === "threads/send" ||
+      proc === "threads/followUp" ||
+      proc === "threads/sendWithRoutines") &&
+    body !== null &&
+    typeof body === "object" &&
+    !("clientNonce" in (body as Record<string, unknown>))
+  ) {
+    body = {
+      ...(body as Record<string, unknown>),
+      clientNonce: `test-send-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    };
+  }
   const res = await raw(app, cookie, proc, body);
   const text = await res.text();
   const parsed = JSON.parse(text) as { json?: T; error?: { message?: string } };

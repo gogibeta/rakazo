@@ -434,7 +434,9 @@ describe("mobile API requests", () => {
         : new Response("404 Not Found", { status: 404 }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await expect(rpc("threads/send", { botId: "bot" })).rejects.toThrow("Update your server");
+    await expect(
+      rpc("threads/send", { botId: "bot", clientNonce: "nonce-old-server" }),
+    ).rejects.toThrow("Update your server");
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
@@ -450,7 +452,9 @@ describe("mobile API requests", () => {
         "fetch",
         vi.fn(async () => ({ status: 404, body: { cancel } })),
       );
-      await expect(rpc("threads/send", { botId: "bot" })).rejects.toThrow("Update your server");
+      await expect(
+        rpc("threads/send", { botId: "bot", clientNonce: "nonce-old-server-2" }),
+      ).rejects.toThrow("Update your server");
       expect(cancel).toHaveBeenCalledOnce();
     },
   );
@@ -482,7 +486,11 @@ describe("mobile API requests", () => {
         });
       }),
     );
-    await rpc("threads/send", { botId: "bot-1", text: "authorized content" });
+    await rpc("threads/send", {
+      botId: "bot-1",
+      clientNonce: "nonce-authorized",
+      text: "authorized content",
+    });
     expect(calls).toEqual(["/rpc/aiConsent/status", "/rpc/aiConsent/allow", "/rpc/threads/send"]);
     expect(promptAiConsent).toHaveBeenLastCalledWith(recipient, "https://example.com/privacy");
   });
@@ -516,8 +524,8 @@ describe("mobile API requests", () => {
     );
 
     await Promise.all([
-      rpc("threads/send", { botId: "bot-1", text: "first" }),
-      rpc("threads/send", { botId: "bot-1", text: "second" }),
+      rpc("threads/send", { botId: "bot-1", clientNonce: "nonce-first", text: "first" }),
+      rpc("threads/send", { botId: "bot-1", clientNonce: "nonce-second", text: "second" }),
     ]);
 
     expect(promptAiConsent).toHaveBeenCalledTimes(1);
@@ -554,8 +562,12 @@ describe("mobile API requests", () => {
     );
 
     const results = await Promise.allSettled([
-      rpc("threads/send", { botId: "bot-1", text: "keep this draft" }),
-      rpc("threads/send", { botId: "bot-1", text: "keep this draft" }),
+      rpc("threads/send", { botId: "bot-1", clientNonce: "nonce-draft", text: "keep this draft" }),
+      rpc("threads/send", {
+        botId: "bot-1",
+        clientNonce: "nonce-draft-2",
+        text: "keep this draft",
+      }),
     ]);
 
     expect(results.every((result) => result.status === "rejected")).toBe(true);

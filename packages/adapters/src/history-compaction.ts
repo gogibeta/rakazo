@@ -1,7 +1,12 @@
 import type { AgentRunRequest, AgentRuntime, JobPublisher } from "@rakazo/adapter-kit";
 import { historyCompactJob } from "@rakazo/adapter-kit";
 import type { MessageBlock } from "@rakazo/contracts";
-import { blocksToAgentHistoryText, botMessageContext, escapePromptData } from "@rakazo/core";
+import {
+  blocksToAgentHistoryText,
+  botMessageContext,
+  escapePromptData,
+  withoutRecallToolStepNotes,
+} from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
 import { recordUsage, runAsTenant } from "@rakazo/db";
 import { getLogger, unwrapJobPayload } from "@rakazo/logging";
@@ -361,9 +366,12 @@ export async function compactHistory(
     if (botId) return botNames.get(botId) ?? UNKNOWN_BOT_SPEAKER;
     return message.role === "user" ? personLineSpeaker(people, message) : message.role;
   };
+  // Recall steps keep their label (a search happened) but not their note: what a search or
+  // history read returned quotes older conversation, and a summary must not re-inject it as
+  // if it were said here.
   const transcriptParts = batch.map(
     (message) =>
-      `${speaker(message)}: ${blocksToAgentHistoryText(message.blocks as MessageBlock[])}`,
+      `${speaker(message)}: ${blocksToAgentHistoryText(withoutRecallToolStepNotes(message.blocks as MessageBlock[]))}`,
   );
   let transcript = transcriptParts.join("\n\n");
   if (transcript.length > MAX_TRANSCRIPT_CHARS) {
@@ -528,6 +536,24 @@ export async function compactHistory(
     },
   });
   if (advanced.count === 0) return;
+
+  // Provenance for the batch, append-only: the generation it was written under, the seq
+  // range it covers, and how many messages went in — so a summary is never an anonymous
+  // replacement for history. Written after the compare-and-set, like the semantic save
+  // below: only the winning worker gets here, and the (thread, generation, toSeq) unique
+  // constraint keeps a repeated write from duplicating the record. The messages and events
+  // themselves are never touched by compaction.
+  await deps.prisma.continuationSummary.create({
+    data: {
+      threadId,
+      generation: previousGeneration,
+      fromSeq: fromSeqExclusive,
+      toSeq: lastSeq,
+      sourceMessageCount: batch.length,
+      summary,
+      createdByRunId: `compact:${threadId}:${fromSeqExclusive}`,
+    },
+  });
 
   // Local compaction is first-party behavior and must not depend on an optional external store.
   // Saving only after the compare-and-set also prevents losing workers from creating duplicates.

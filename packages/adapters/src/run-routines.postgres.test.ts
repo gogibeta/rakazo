@@ -202,6 +202,7 @@ describePostgres("routine tick prompt and model consistency (PostgreSQL)", () =>
         blocks: [{ kind: "text", text: "hello" }],
         prompt: "hello",
         trigger: "webhook",
+        clientNonce: "routines-hello",
       });
       await sent.catch(() => undefined);
     } finally {
@@ -331,6 +332,7 @@ describePostgres("routine tick prompt and model consistency (PostgreSQL)", () =>
         blocks: [{ kind: "text", text: "held" }],
         prompt: "held",
         trigger: "webhook",
+        clientNonce: "routines-held",
       });
       await system.space.update({ where: { id: identity.spaceId }, data: claimed });
       // The routine turn finishes while the organization deletion waits on billing.
@@ -412,6 +414,7 @@ describePostgres("routine tick prompt and model consistency (PostgreSQL)", () =>
           blocks: [{ kind: "text", text: "mirrored" }],
           prompt: "mirrored",
           trigger: "messaging",
+          clientNonce: "routines-mirrored",
           createRun: false,
         }),
       ).resolves.toMatchObject({ runId: null });
@@ -428,6 +431,7 @@ describePostgres("routine tick prompt and model consistency (PostgreSQL)", () =>
           blocks: [{ kind: "text", text: "racing" }],
           prompt: "racing",
           trigger: "webhook",
+          clientNonce: "routines-racing",
         }),
       );
       expect(outcome).toBeInstanceOf(SpaceDeletionInProgressError);

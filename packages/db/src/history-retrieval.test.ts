@@ -396,6 +396,49 @@ describe("local history retrieval", () => {
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]!.text).toContain("reply made]\n- Shell: Installing Quillfeather.");
   });
+  it("never matches text that only appears in a recall tool's step", async () => {
+    const { mock, prisma } = db();
+    // Indexed rows are verified in memory against historySearchText; unencrypted rows are
+    // gated by the same exclusion in the SQL expression (searchableText), which the
+    // no-recall index migration mirrors.
+    // The fact was said once, in an ordinary message.
+    const original = { ...row(1, "The archive passphrase is quillphrase."), indexed: true };
+    // A later reply searched history for it; the phrase survives only inside that
+    // search's step note. The reply must not become a hit for its own recall output.
+    const recallReply = {
+      ...row(2, ""),
+      role: "bot",
+      indexed: true,
+      blocks: [
+        {
+          kind: "steps",
+          steps: [{ label: "Search history", count: 1, note: "quillphrase" }],
+        },
+        { kind: "text", text: "Found it above." },
+      ],
+    };
+    mock.$queryRaw.mockResolvedValue([original, recallReply]);
+    const result = await searchHistory(prisma, scope, { query: "quillphrase" });
+    expect(result.messages.map((message) => message.messageId)).toEqual(["message-1"]);
+  });
+  it("keeps recall steps out of the search text while other steps stay searchable", () => {
+    const text = historySearchText([
+      {
+        kind: "steps",
+        steps: [
+          { label: "Search history", count: 1, note: "recalled words" },
+          { label: "Read history", count: 2 },
+          { label: "Recall memory", count: 1, note: "remembered words" },
+          { label: "Shell", count: 1, note: "installed words" },
+        ],
+      },
+    ]);
+    expect(text).not.toContain("recalled");
+    expect(text).not.toContain("remembered");
+    expect(text).not.toContain("Search history");
+    expect(text).toContain("installed words");
+    expect(text).toContain("Shell");
+  });
   it("lists earlier replies that used tools by kind, without a keyword", async () => {
     const { mock, prisma } = db();
     mock.$queryRaw.mockResolvedValue([

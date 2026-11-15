@@ -292,6 +292,40 @@ export async function finalizeComputerControlRelease(
 }
 
 /**
+ * Settle the computer's control binding for a run that was cancelled out of a takeover
+ * wait, in the cancelling transaction. The cancelled run can never resume, so its
+ * controlRunId claim is dropped — the same end state a release produces for a run that
+ * will not continue. One exception, shared with the stuck-run reaper: while the user
+ * holds this bot's screen (a control lease for the run's bot is on the row), the binding
+ * is theirs to end; their release clears it, and a release never resurrects a cancelled
+ * run. Locks the computer row, so a concurrent takeover grant either lands first and is
+ * seen here, or waits for this cancel.
+ */
+export async function settleTakeoverWaitOnCancel(
+  tx: Prisma.TransactionClient,
+  runId: string,
+): Promise<void> {
+  const [computer] = await tx.$queryRaw<
+    Array<{ botId: string; controlBotId: string | null; controlLeaseId: string | null }>
+  >`
+    SELECT r."botId", c."controlBotId", c."controlLeaseId"
+    FROM runs r
+    JOIN bots b ON b.id = r."botId"
+    JOIN computers c ON c.id = b."computerId"
+    WHERE r.id = ${runId}
+    FOR UPDATE OF c`;
+  if (computer?.controlLeaseId && computer.controlBotId === computer.botId) return;
+  // Dropping controlRunId first makes maintenance treat the takeover as idle.
+  await tx.computer.updateMany({
+    where: {
+      controlRunId: runId,
+      OR: [{ controlHolder: { not: "user" } }, { controlLeaseId: null }],
+    },
+    data: { controlRunId: null },
+  });
+}
+
+/**
  * Clear a pending takeover computer card when the run resumes.
  * Release already settles the card; this covers a card that is still pending.
  * No message write and no notify when nothing is pending.
