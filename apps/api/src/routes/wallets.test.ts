@@ -1,3 +1,10 @@
+import {
+  verifyWalletVaultPassword,
+  WalletVaultNotConfiguredError,
+} from "@rakazo/adapters/wallet-vault";
+import type { WalletVaultClient } from "@rakazo/adapters/wallet-vault-client";
+import { WalletVaultClientError } from "@rakazo/adapters/wallet-vault-client";
+import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterContext } from "./context.js";
 import { walletsRoutes } from "./wallets.js";
@@ -22,15 +29,67 @@ type Row = {
 };
 
 /** The route handlers with the oRPC builder stubbed to hand them back bare. */
-function routes(prisma: unknown, secrets: unknown) {
+function routes(prisma: unknown, secrets: unknown, walletVault?: WalletVaultClient | null) {
   const procedure = { handler: (fn: unknown) => fn };
   const family = new Proxy({}, { get: () => procedure });
   const authed = new Proxy({}, { get: () => family });
-  return walletsRoutes({ deps: { prisma, secrets }, authed } as unknown as RouterContext)
-    .wallets as unknown as Record<
+  return walletsRoutes({
+    deps: { prisma, secrets, walletVault },
+    authed,
+  } as unknown as RouterContext).wallets as unknown as Record<
     string,
     (call: { context: unknown; input?: unknown }) => Promise<unknown>
   >;
+}
+
+/**
+ * A vault client over the test store's password state: unlock verifies
+ * through the real shared throttle, grants last six hours, lock clears.
+ * Sign and fill refuse, as the real vault does until PRs 6–7 wire them.
+ */
+function fakeVaultClient(store: ReturnType<typeof walletStore>): WalletVaultClient {
+  const grants = new Map<string, { expiresAt: string; passwordEpoch: number }>();
+  return {
+    status: vi.fn(async (userId: string) => {
+      const row = store.vaultRows().get(userId);
+      const grant = grants.get(userId);
+      const live = grant !== undefined && Date.parse(grant.expiresAt) > Date.now();
+      return {
+        configured: row !== undefined,
+        unlocked: live,
+        expiresAt: live ? grant.expiresAt : null,
+        passwordEpoch: row ? row.passwordEpoch : null,
+      };
+    }),
+    unlock: vi.fn(async (userId: string, password: string) => {
+      let verified: { passwordEpoch: number };
+      try {
+        verified = await verifyWalletVaultPassword(
+          store.prisma as unknown as PrismaClient,
+          userId,
+          password,
+        );
+      } catch (error) {
+        if (error instanceof WalletVaultNotConfiguredError) {
+          throw new WalletVaultClientError("not_configured");
+        }
+        throw new WalletVaultClientError("password_rejected");
+      }
+      const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+      grants.set(userId, { expiresAt, passwordEpoch: verified.passwordEpoch });
+      return { grantId: "grant-test", expiresAt, passwordEpoch: verified.passwordEpoch };
+    }),
+    lock: vi.fn(async (userId: string) => {
+      grants.delete(userId);
+      return { locked: true as const };
+    }),
+    sign: vi.fn(async () => {
+      throw new WalletVaultClientError("signing_not_enabled");
+    }),
+    fill: vi.fn(async () => {
+      throw new WalletVaultClientError("fill_not_enabled");
+    }),
+  };
 }
 
 function walletStore() {
@@ -262,7 +321,14 @@ describe("wallets routes", () => {
     const password = "route-vault-password-one";
     const nextPassword = "route-vault-password-two";
 
-    expect(await api.vaultStatus!({ context })).toEqual({ configured: false, changedAt: null });
+    expect(await api.vaultStatus!({ context })).toEqual({
+      configured: false,
+      changedAt: null,
+      unlocked: false,
+      expiresAt: null,
+      passwordEpoch: null,
+      vaultAvailable: false,
+    });
 
     const set = await api.setVaultPassword!({ context, input: { password } });
     expect(set).toMatchObject({ configured: true });
@@ -293,6 +359,81 @@ describe("wallets routes", () => {
     expect(changed).toMatchObject({ configured: true });
     expect(row.passwordEpoch).toBe(2);
     expect(JSON.stringify(changed)).not.toContain(nextPassword);
+  });
+
+  it("unlocks for six hours and locks on demand, never returning the password or the grant", async () => {
+    const store = walletStore();
+    const vault = fakeVaultClient(store);
+    const api = routes(store.prisma, store.secrets, vault);
+    const password = "route-unlock-password-one";
+
+    // Before any password exists, unlock is refused as not configured.
+    await expect(api.vaultUnlock!({ context, input: { password } })).rejects.toThrow(
+      /No wallet password is set yet/,
+    );
+
+    await api.setVaultPassword!({ context, input: { password } });
+    expect(await api.vaultStatus!({ context })).toMatchObject({
+      configured: true,
+      unlocked: false,
+      vaultAvailable: true,
+    });
+
+    // A wrong password stays locked and mints nothing.
+    await expect(
+      api.vaultUnlock!({ context, input: { password: "route-unlock-password-wrong" } }),
+    ).rejects.toThrow("The wallet password could not be verified.");
+    expect(await api.vaultStatus!({ context })).toMatchObject({ unlocked: false });
+
+    const unlocked = (await api.vaultUnlock!({ context, input: { password } })) as {
+      expiresAt: string | null;
+    };
+    expect(unlocked).toMatchObject({ configured: true, unlocked: true, vaultAvailable: true });
+    const expiresIn = Date.parse(unlocked.expiresAt!) - Date.now();
+    expect(expiresIn).toBeGreaterThan(5 * 60 * 60 * 1000);
+    expect(expiresIn).toBeLessThanOrEqual(6 * 60 * 60 * 1000);
+    // Neither the password nor the grant handle ever crosses to the browser.
+    expect(JSON.stringify(unlocked)).not.toContain(password);
+    expect(JSON.stringify(unlocked)).not.toContain("grant-test");
+
+    const locked = await api.vaultLock!({ context });
+    expect(locked).toMatchObject({ unlocked: false, expiresAt: null });
+    expect(await api.vaultStatus!({ context })).toMatchObject({ unlocked: false });
+  });
+
+  it("fails closed as unavailable when the vault is absent or does not answer", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    const password = "route-unlock-password-one";
+    await api.setVaultPassword!({ context, input: { password } });
+
+    await expect(api.vaultUnlock!({ context, input: { password } })).rejects.toThrow(
+      "The wallet vault is unavailable.",
+    );
+    await expect(api.vaultLock!({ context })).rejects.toThrow("The wallet vault is unavailable.");
+    expect(await api.vaultStatus!({ context })).toMatchObject({
+      configured: true,
+      unlocked: false,
+      vaultAvailable: false,
+    });
+
+    // A vault that cannot be reached reads the same as no vault at all.
+    const down = fakeVaultClient(store);
+    const apiDown = routes(store.prisma, store.secrets, down);
+    vi.mocked(down.status).mockRejectedValueOnce(new WalletVaultClientError("vault_unavailable"));
+    expect(await apiDown.vaultStatus!({ context })).toMatchObject({
+      configured: true,
+      unlocked: false,
+      vaultAvailable: false,
+    });
+    vi.mocked(down.unlock).mockRejectedValueOnce(new WalletVaultClientError("vault_unavailable"));
+    await expect(apiDown.vaultUnlock!({ context, input: { password } })).rejects.toThrow(
+      "The wallet vault is unavailable.",
+    );
+    vi.mocked(down.lock).mockRejectedValueOnce(new WalletVaultClientError("vault_unavailable"));
+    await expect(apiDown.vaultLock!({ context })).rejects.toThrow(
+      "The wallet vault is unavailable.",
+    );
   });
 
   it("migrates a wallet to its password envelope and never returns secret material", async () => {

@@ -81,10 +81,21 @@ export const WalletMigrateInput = z.object({
 });
 export type WalletMigrateInput = z.infer<typeof WalletMigrateInput>;
 
-/** What the settings surface may know about the wallet password: that it exists, and when it last changed. */
+/**
+ * What the settings surface may know about the wallet vault: that a
+ * password exists, when it last changed, and whether the vault is unlocked
+ * right now. The grant itself — its handle, the password — never crosses:
+ * `expiresAt` is the fixed end of the six-hour grant, and `vaultAvailable`
+ * says whether the vault service answered at all. When the vault cannot be
+ * reached the vault is treated as locked.
+ */
 export const WalletVaultStatusSchema = z.object({
   configured: z.boolean(),
   changedAt: z.string().nullable(),
+  unlocked: z.boolean(),
+  expiresAt: z.string().nullable(),
+  passwordEpoch: z.number().int().positive().nullable(),
+  vaultAvailable: z.boolean(),
 });
 export type WalletVaultStatus = z.infer<typeof WalletVaultStatusSchema>;
 

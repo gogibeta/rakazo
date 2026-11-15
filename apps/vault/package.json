@@ -14,7 +14,9 @@
     "vitest": "5.1.0"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./app": "./src/app.ts",
+    "./store": "./src/store.ts"
   },
   "license": "Apache-2.0",
   "name": "@rakazo/vault",

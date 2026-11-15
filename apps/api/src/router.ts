@@ -32,6 +32,7 @@ import type {
   verifyModelServesAgents,
   WorkActivities,
 } from "@rakazo/adapters";
+import type { WalletVaultClient } from "@rakazo/adapters/wallet-vault-client";
 import type { Auth } from "@rakazo/auth";
 import type { NavLink } from "@rakazo/contracts";
 import type { BoardEvents, PrismaClient, ThreadEvents } from "@rakazo/db";
@@ -80,6 +81,11 @@ export interface RouterDeps {
   cloudAgent?: CloudAgentConnection | null;
   /** The deployment's wallet provider; absent hides purchases. */
   paymentWallet?: PaymentWalletProvider | null;
+  /**
+   * The wallet vault service; absent when the deployment has no vault
+   * (or its address/token is unset) — wallet unlock then fails closed.
+   */
+  walletVault?: WalletVaultClient | null;
   prisma: PrismaClient;
   events: ThreadEvents;
   boardEvents: BoardEvents;

@@ -70,6 +70,43 @@ test("sets and changes the wallet password, and rejects a wrong current password
   await expect(settings.getByText("Saved")).toBeVisible();
 });
 
+test("unlocks the wallet vault for six hours and locks it again", async ({ page }, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `wallet-unlock-${stamp}@rakazo.test`, "password12", "Unlock Owner");
+  await completeOnboarding(page);
+  const settings = await openUserSettings(page, "wallets");
+
+  // No unlock section before a wallet password exists.
+  await expect(settings.getByText("Unlock wallets")).toHaveCount(0);
+
+  await settings.getByLabel("Wallet password", { exact: true }).fill("unlock-password-one");
+  await settings.getByLabel("Confirm wallet password", { exact: true }).fill("unlock-password-one");
+  await settings.getByRole("button", { name: "Set wallet password", exact: true }).click();
+  await expect(settings.getByLabel("Current wallet password", { exact: true })).toBeVisible();
+
+  // A wrong password is refused generically and stays locked.
+  await settings.getByLabel("Unlock password", { exact: true }).fill("unlock-password-nope");
+  await settings.getByRole("button", { name: "Unlock for six hours", exact: true }).click();
+  await expect(settings.getByText("The wallet password could not be verified.")).toBeVisible();
+
+  await settings.getByLabel("Unlock password", { exact: true }).fill("unlock-password-one");
+  await settings.getByRole("button", { name: "Unlock for six hours", exact: true }).click();
+  await expect(settings.getByText(/Unlocked until/)).toBeVisible();
+  await expect(settings.getByRole("button", { name: "Lock wallets", exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "wallet-vault-unlocked");
+
+  // The status the server returns says unlocked with an expiry — never the password.
+  const status = JSON.stringify(await rpc(page, "wallets/vaultStatus", {}));
+  expect(status).toContain('"unlocked":true');
+  expect(status).toContain('"vaultAvailable":true');
+  expect(status).not.toContain("unlock-password-one");
+
+  await settings.getByRole("button", { name: "Lock wallets", exact: true }).click();
+  await expect(settings.getByText("Unlocking lasts six hours.")).toBeVisible();
+  const locked = JSON.stringify(await rpc(page, "wallets/vaultStatus", {}));
+  expect(locked).toContain('"unlocked":false');
+});
+
 test("migrates a wallet to password protection from Settings", async ({ page }, testInfo) => {
   const stamp = Date.now();
   await signup(page, `wallet-migrate-${stamp}@rakazo.test`, "password12", "Migration Owner");

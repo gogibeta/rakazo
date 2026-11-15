@@ -8,16 +8,22 @@ import {
   WalletVaultAlreadyConfiguredError,
   WalletVaultNotConfiguredError,
   WalletVaultPasswordError,
-  walletVaultStatus,
 } from "@rakazo/adapters/wallet-vault";
+import { WalletVaultClientError } from "@rakazo/adapters/wallet-vault-client";
+import { walletVaultUnlockStatus } from "@rakazo/adapters/wallet-vault-unlock";
 import type {
   WalletChain,
   WalletMigrationStatus,
   WalletSummary,
   WalletUseSummary,
+  WalletVaultStatus,
 } from "@rakazo/contracts";
 import { recordSecurityEvent } from "@rakazo/db";
-import { walletMigrationEvent, walletVaultPasswordRejectedEvent } from "../security-audit.js";
+import {
+  walletMigrationEvent,
+  walletVaultPasswordRejectedEvent,
+  walletVaultUnlockRejectedEvent,
+} from "../security-audit.js";
 import { evmWalletFromSecret, WalletSecretError } from "../wallet-address.js";
 import type { RouterContext } from "./context.js";
 
@@ -44,6 +50,20 @@ function summary(row: WalletRow): WalletSummary {
 
 export function walletsRoutes(ctx: RouterContext) {
   const { deps, authed } = ctx;
+
+  /**
+   * The owner's vault state as the settings surface may see it: the durable
+   * password state plus the vault's live grant. When the vault cannot be
+   * reached this reads as locked and unavailable — never a stale "unlocked".
+   */
+  async function vaultStatusFor(userId: string): Promise<WalletVaultStatus> {
+    return walletVaultUnlockStatus({
+      prisma: deps.prisma,
+      vaultClient: deps.walletVault ?? null,
+      userId,
+    });
+  }
+
   return {
     wallets: {
       list: authed.wallets.list.handler(async ({ context }) => {
@@ -182,26 +202,82 @@ export function walletsRoutes(ctx: RouterContext) {
         }));
         return { uses };
       }),
-      // The wallet-vault password: only its existence and last change are
-      // ever read back. Passwords arrive over the signed-in session and go
-      // straight to the vault state; they are never stored or logged.
+      // The wallet-vault password: only its existence, last change, and the
+      // live unlock state are ever read back. Passwords arrive over the
+      // signed-in session and go straight to the vault state; they are
+      // never stored or logged.
       vaultStatus: authed.wallets.vaultStatus.handler(async ({ context }) =>
-        walletVaultStatus(deps.prisma, context.actor.userId),
+        vaultStatusFor(context.actor.userId),
       ),
+      // Unlocking the vault for six hours. Owner-session only by
+      // construction: this surface is the signed-in Settings session, and
+      // no bot tool can reach it. The vault verifies the password against
+      // the shared throttle and writes the audit row before the grant
+      // returns; a rejected attempt is recorded here too. The grant handle
+      // never crosses — only the fresh status.
+      vaultUnlock: authed.wallets.vaultUnlock.handler(async ({ context, input }) => {
+        const client = deps.walletVault ?? null;
+        if (!client) {
+          throw new ORPCError("SERVICE_UNAVAILABLE", {
+            message: "The wallet vault is unavailable.",
+          });
+        }
+        try {
+          await client.unlock(context.actor.userId, input.password);
+        } catch (error) {
+          if (error instanceof WalletVaultClientError) {
+            if (error.code === "password_rejected") {
+              await recordSecurityEvent(walletVaultUnlockRejectedEvent(context.actor));
+              throw new ORPCError("BAD_REQUEST", { message: error.message });
+            }
+            if (error.code === "not_configured") {
+              throw new ORPCError("BAD_REQUEST", { message: error.message });
+            }
+            throw new ORPCError("SERVICE_UNAVAILABLE", {
+              message: "The wallet vault is unavailable.",
+            });
+          }
+          throw error;
+        }
+        return vaultStatusFor(context.actor.userId);
+      }),
+      // Locking the vault now: the grant ends immediately, whatever the
+      // clock said. When the vault cannot be reached the lock is refused
+      // rather than claimed — the grant may still be live in the vault.
+      vaultLock: authed.wallets.vaultLock.handler(async ({ context }) => {
+        const client = deps.walletVault ?? null;
+        if (!client) {
+          throw new ORPCError("SERVICE_UNAVAILABLE", {
+            message: "The wallet vault is unavailable.",
+          });
+        }
+        try {
+          await client.lock(context.actor.userId);
+        } catch (error) {
+          if (error instanceof WalletVaultClientError) {
+            throw new ORPCError("SERVICE_UNAVAILABLE", {
+              message: "The wallet vault is unavailable.",
+            });
+          }
+          throw error;
+        }
+        return vaultStatusFor(context.actor.userId);
+      }),
       setVaultPassword: authed.wallets.setVaultPassword.handler(async ({ context, input }) => {
         try {
-          return await setupWalletVaultPassword(deps.prisma, context.actor.userId, input.password);
+          await setupWalletVaultPassword(deps.prisma, context.actor.userId, input.password);
         } catch (error) {
           if (error instanceof WalletVaultAlreadyConfiguredError) {
             throw new ORPCError("BAD_REQUEST", { message: error.message });
           }
           throw error;
         }
+        return vaultStatusFor(context.actor.userId);
       }),
       changeVaultPassword: authed.wallets.changeVaultPassword.handler(
         async ({ context, input }) => {
           try {
-            return await changeWalletVaultPassword(deps.prisma, context.actor.userId, input, {
+            await changeWalletVaultPassword(deps.prisma, context.actor.userId, input, {
               onRejected: async (info) => {
                 await recordSecurityEvent(walletVaultPasswordRejectedEvent(context.actor, info));
               },
@@ -212,6 +288,7 @@ export function walletsRoutes(ctx: RouterContext) {
             }
             throw error;
           }
+          return vaultStatusFor(context.actor.userId);
         },
       ),
     },

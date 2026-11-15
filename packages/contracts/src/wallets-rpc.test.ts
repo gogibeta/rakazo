@@ -82,7 +82,9 @@ describe("wallets rpc contract", () => {
       "remove",
       "setVaultPassword",
       "uses",
+      "vaultLock",
       "vaultStatus",
+      "vaultUnlock",
     ]);
   });
 });

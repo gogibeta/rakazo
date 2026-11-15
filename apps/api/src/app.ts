@@ -81,6 +81,7 @@ import {
   withHostComputerScreen,
   withSecretPersistence,
 } from "@rakazo/adapters";
+import { vaultClientFromEnv } from "@rakazo/adapters/wallet-vault-client";
 import type { DirectoryAccountChange } from "@rakazo/auth";
 import {
   buildTrustedOrigins,
@@ -760,6 +761,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     pluginMarketplaceRead,
     cloudAgent,
     paymentWallet,
+    // Absent without a vault service: wallet unlock then fails closed.
+    walletVault: vaultClientFromEnv(),
     codexCatalog,
     prisma,
     notifications,

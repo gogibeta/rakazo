@@ -90,76 +90,197 @@ function WalletPasswordSettings({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-3 rounded-xl border border-border px-4 py-4">
-      <div className="text-body text-foreground">
-        <Trans>Wallet password</Trans>
-      </div>
-      <p className="text-body-sm text-muted-foreground">
-        <Trans>
-          This password locks your wallet keys. It cannot be recovered: if you forget it, you will
-          need to import your wallets again.
-        </Trans>
-      </p>
-      {status === null ? (
-        <Spinner />
-      ) : (
-        <>
-          {configured ? (
+    <>
+      <form onSubmit={submit} className="space-y-3 rounded-xl border border-border px-4 py-4">
+        <div className="text-body text-foreground">
+          <Trans>Wallet password</Trans>
+        </div>
+        <p className="text-body-sm text-muted-foreground">
+          <Trans>
+            This password locks your wallet keys. It cannot be recovered: if you forget it, you will
+            need to import your wallets again.
+          </Trans>
+        </p>
+        {status === null ? (
+          <Spinner />
+        ) : (
+          <>
+            {configured ? (
+              <Field>
+                <FieldLabel htmlFor={`${formId}-current`}>
+                  <Trans>Current wallet password</Trans>
+                </FieldLabel>
+                <Input
+                  id={`${formId}-current`}
+                  type="password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </Field>
+            ) : null}
             <Field>
-              <FieldLabel htmlFor={`${formId}-current`}>
-                <Trans>Current wallet password</Trans>
+              <FieldLabel htmlFor={`${formId}-password`}>
+                {configured ? <Trans>New wallet password</Trans> : <Trans>Wallet password</Trans>}
               </FieldLabel>
               <Input
-                id={`${formId}-current`}
+                id={`${formId}-password`}
                 type="password"
-                value={currentPassword}
-                onChange={(event) => setCurrentPassword(event.target.value)}
-                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete="new-password"
                 required
               />
             </Field>
-          ) : null}
+            <Field>
+              <FieldLabel htmlFor={`${formId}-confirm`}>
+                <Trans>Confirm wallet password</Trans>
+              </FieldLabel>
+              <Input
+                id={`${formId}-confirm`}
+                type="password"
+                value={confirmation}
+                onChange={(event) => setConfirmation(event.target.value)}
+                autoComplete="new-password"
+                required
+              />
+            </Field>
+          </>
+        )}
+        {error ? (
+          <p role="alert" className="text-body-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex items-center gap-3">
+          <Button type="submit" size="sm" disabled={pending || !canSubmit}>
+            {pending ? <Spinner /> : null}
+            {configured ? (
+              <Trans>Change wallet password</Trans>
+            ) : (
+              <Trans>Set wallet password</Trans>
+            )}
+          </Button>
+          {saved ? <SuccessPop label={t`Saved`} /> : null}
+        </div>
+      </form>
+      {status?.configured ? (
+        <WalletUnlockSettings
+          status={status}
+          onStatus={(next) => {
+            setStatus(next);
+            onStatusChange?.(next.configured);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The wallet vault, unlocked: one entry of the wallet password opens it
+ * for six hours, fixed — nothing extends the window — and Lock ends it
+ * now. The password goes straight to the vault and is never stored, read
+ * back, or shown again; the grant itself never reaches the browser, only
+ * the status above. Bots may use the vault only while it is unlocked and
+ * only in runs the owner started.
+ */
+function WalletUnlockSettings({
+  status,
+  onStatus,
+}: {
+  status: WalletVaultStatus;
+  onStatus: (next: WalletVaultStatus) => void;
+}) {
+  const { t } = useLingui();
+  const formId = useId();
+  const [password, setPassword] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const unlocked = status.unlocked;
+  const expiresAt = status.expiresAt ? new Date(status.expiresAt).toLocaleString() : null;
+
+  async function unlock(event: FormEvent) {
+    event.preventDefault();
+    if (pending || password.length === 0) return;
+    setPending(true);
+    setError(null);
+    try {
+      const next = await rpc.wallets.vaultUnlock({ password });
+      onStatus(next);
+      setPassword("");
+    } catch (caught) {
+      setError(errorText(caught, t`Could not unlock the wallet vault`));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function lock() {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      onStatus(await rpc.wallets.vaultLock());
+    } catch (caught) {
+      setError(errorText(caught, t`Could not lock the wallet vault`));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border px-4 py-4">
+      <div className="text-body text-foreground">
+        <Trans>Unlock wallets</Trans>
+      </div>
+      {unlocked && expiresAt ? (
+        <p className="text-body-sm text-muted-foreground">
+          <Trans>Unlocked until {expiresAt}.</Trans>
+        </p>
+      ) : (
+        <p className="text-body-sm text-muted-foreground">
+          <Trans>Unlocking lasts six hours.</Trans>
+        </p>
+      )}
+      {!status.vaultAvailable ? (
+        <p role="alert" className="text-body-sm text-destructive">
+          <Trans>The wallet vault is unavailable.</Trans>
+        </p>
+      ) : unlocked ? (
+        <Button type="button" size="sm" disabled={pending} onClick={() => void lock()}>
+          {pending ? <Spinner /> : null}
+          <Trans>Lock wallets</Trans>
+        </Button>
+      ) : (
+        <form onSubmit={unlock} className="space-y-3">
           <Field>
-            <FieldLabel htmlFor={`${formId}-password`}>
-              {configured ? <Trans>New wallet password</Trans> : <Trans>Wallet password</Trans>}
+            <FieldLabel htmlFor={`${formId}-unlock`}>
+              <Trans>Unlock password</Trans>
             </FieldLabel>
             <Input
-              id={`${formId}-password`}
+              id={`${formId}-unlock`}
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete="new-password"
+              autoComplete="current-password"
               required
             />
           </Field>
-          <Field>
-            <FieldLabel htmlFor={`${formId}-confirm`}>
-              <Trans>Confirm wallet password</Trans>
-            </FieldLabel>
-            <Input
-              id={`${formId}-confirm`}
-              type="password"
-              value={confirmation}
-              onChange={(event) => setConfirmation(event.target.value)}
-              autoComplete="new-password"
-              required
-            />
-          </Field>
-        </>
+          <Button type="submit" size="sm" disabled={pending || password.length === 0}>
+            {pending ? <Spinner /> : null}
+            <Trans>Unlock for six hours</Trans>
+          </Button>
+        </form>
       )}
       {error ? (
         <p role="alert" className="text-body-sm text-destructive">
           {error}
         </p>
       ) : null}
-      <div className="flex items-center gap-3">
-        <Button type="submit" size="sm" disabled={pending || !canSubmit}>
-          {pending ? <Spinner /> : null}
-          {configured ? <Trans>Change wallet password</Trans> : <Trans>Set wallet password</Trans>}
-        </Button>
-        {saved ? <SuccessPop label={t`Saved`} /> : null}
-      </div>
-    </form>
+    </div>
   );
 }
 

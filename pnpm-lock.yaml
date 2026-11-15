@@ -1497,6 +1497,9 @@ importers:
       '@rakazo/sandbox-supervisor':
         specifier: workspace:*
         version: link:../../infra/sandboxes/supervisor
+      '@rakazo/vault':
+        specifier: workspace:*
+        version: link:../../apps/vault
       '@types/pngjs':
         specifier: 6.0.5
         version: 6.0.5
