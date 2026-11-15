@@ -74,6 +74,7 @@ async function main() {
     const databaseUrl = runtimeUrl.toString();
     const apiPort = Number(process.env.API_PORT ?? 3110);
     const webPort = Number(process.env.WEB_PORT ?? 5180);
+    const vaultPort = Number(process.env.VAULT_PORT ?? 3120);
     const webOrigin = `http://127.0.0.1:${webPort}`;
 
     process.env.DATABASE_URL = databaseUrl;
@@ -110,6 +111,12 @@ async function main() {
     process.env.API_PROXY_TARGET = `http://127.0.0.1:${apiPort}`;
     process.env.WEB_PORT = String(webPort);
     process.env.PLAYWRIGHT_BASE_URL = webOrigin;
+    // The wallet vault, for the e2e API below: its own loopback port and a
+    // dedicated test credential, distinct from every other test secret
+    // (the vault refuses a credential shared with one).
+    const vaultServiceToken = "test-vault-service-token-test-vault-service";
+    process.env.VAULT_URL = `http://127.0.0.1:${vaultPort}`;
+    process.env.VAULT_SERVICE_TOKEN = vaultServiceToken;
     process.env.DATA_DIR = path.join(reportDir, "data");
     process.env.SIGNUPS_ENABLED = "true";
     process.env.SIGNUP_ALLOWLIST = "";
@@ -243,6 +250,31 @@ async function main() {
     });
     await waitForHealth(`http://127.0.0.1:${apiPort}/health`, 15_000);
 
+    // The wallet vault: the API's unlock calls reach it over HTTP, so the
+    // e2e run needs a live one. The same vault the deployment runs, booted
+    // in-process on its own loopback port, with grants held only in this
+    // process's memory and its store tenant-scoped to the e2e database.
+    const [{ createVaultApp }, { createPrismaVaultStore }, { createWalletVaultService }] =
+      await Promise.all([
+        import("@rakazo/vault/app"),
+        import("@rakazo/vault/store"),
+        import("@rakazo/adapters/wallet-vault-service"),
+      ]);
+    const vaultService = createWalletVaultService({
+      store: createPrismaVaultStore(handles.prisma),
+    });
+    const vaultApp = createVaultApp({
+      service: vaultService,
+      serviceToken: vaultServiceToken,
+      onError: (report) => console.error("vault request failed", report),
+    });
+    const vaultServer = serve({
+      fetch: vaultApp.fetch,
+      port: vaultPort,
+      hostname: "127.0.0.1",
+    });
+    await waitForHealth(`http://127.0.0.1:${vaultPort}/health`, 15_000);
+
     try {
       try {
         await runProcess(
@@ -295,6 +327,10 @@ async function main() {
         return [];
       });
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      // Grants end with this process; wipe them explicitly first, then stop
+      // the vault listening so no late unlock call can land after teardown.
+      vaultService.lockAll();
+      await new Promise<void>((resolve) => vaultServer.close(() => resolve()));
       if (activeRequests > 0) {
         await new Promise<void>((resolve) => requestWaiters.add(resolve));
       }
