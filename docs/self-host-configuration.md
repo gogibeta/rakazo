@@ -49,7 +49,7 @@ SANDBOX_IDLE_MS=600000    # pause or stop after 10 minutes idle; 0 disables idle
 COMPUTER_MAX_ACTIVE_MS=7200000 # uptime cap for providers that bill while running; minimum 60000; 0 disables
 COMPUTER_MAX_ACTIVE_UNBILLED_MS=0 # uptime cap for providers that do not bill while running (Docker, Kubernetes, Incus); minimum 60000; 0 (default) disables; needs SANDBOX_IDLE_MS on
 SANDBOX_COMMAND_TIMEOUT_MS=300000 # stop a shell command after 5 minutes
-MAX_TOOL_CALLS_PER_TURN=  # optional Pi turn tool-call fuse; unset/0 = unlimited
+MAX_TOOL_CALLS_PER_TURN=60 # tool calls a run may make in one turn; default 60, 0 = unlimited
 RUN_TOKEN_BUDGET_HARD=    # optional per-run token budget (input + output); unset/0 = unlimited
 RUN_TOKEN_BUDGET_SOFT=    # soft token budget: the model gets a wrap-up note past it; default 80% of the hard budget
 RUN_COST_BUDGET_USD_HARD= # optional per-run cost budget in USD; unset/0 = unlimited
