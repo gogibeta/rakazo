@@ -248,6 +248,23 @@ describePostgres("wallet proposals are immutable (PostgreSQL)", () => {
     ).rejects.toThrow(/wallet_proposals_walletId_userId_fkey/);
   });
 
+  it("refuses a proposal born in a terminal status", async () => {
+    // The update trigger limits transitions, but an INSERT could name a terminal
+    // status directly: the CHECK permits all three values, and no update would
+    // ever have to happen. A row born `cancelled` would read as the owner's
+    // decision with no proposal ever having existed.
+    for (const status of ["cancelled", "expired"]) {
+      await expect(
+        insertProposal({ id: `wp-born-${status}-${suffix}`, status }),
+        status,
+      ).rejects.toThrow(/a wallet proposal is created as proposed/);
+    }
+    // Creation in the one permitted status still works.
+    await expect(
+      insertProposal({ id: `wp-born-proposed-${suffix}`, status: "proposed" }),
+    ).resolves.toBe(1);
+  });
+
   it("refuses a malformed or out-of-range row outright", async () => {
     const attempts: Array<[Record<string, string | number>, RegExp]> = [
       [{ chainId: 1 }, /wallet_proposals_chain_chk/],
@@ -255,7 +272,9 @@ describePostgres("wallet proposals are immutable (PostgreSQL)", () => {
       [{ amountWei: "-1" }, /amount_canonical_chk/],
       [{ gasLimit: "0" }, /gas_canonical_chk/],
       [{ maxPriorityFeePerGas: "9000000000" }, /fees_canonical_chk/],
-      [{ status: "signed" }, /wallet_proposals_status_chk/],
+      // An unknown status now meets the create-as-proposed trigger first; the
+      // CHECK still stands behind it for any statement the trigger lets through.
+      [{ status: "signed" }, /a wallet proposal is created as proposed/],
       [{ expiresAt: "3 hours" }, /wallet_proposals_lifetime_chk/],
       [{ fromAddress: "0x1234" }, /wallet_proposals_from_chk/],
     ];

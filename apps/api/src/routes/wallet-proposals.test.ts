@@ -52,6 +52,8 @@ function proposalStore(rows: Row[]) {
   const events: Array<Record<string, unknown>> = [];
   /** The next raw UPDATE consumes one of these, in order. */
   const queued: Array<{ to: string; requireLive: boolean }> = [];
+  /** How many transactions the route opened, so a two-step read is visible. */
+  let transactions = 0;
   const prisma = {
     walletProposal: {
       findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
@@ -82,12 +84,16 @@ function proposalStore(rows: Row[]) {
       });
       return wins.map((row) => ({ id: row.id }));
     }),
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      transactions += 1;
+      return fn(prisma);
+    }),
   };
   return {
     prisma: prisma as unknown as PrismaClient,
     rows,
     events,
+    transactions: () => transactions,
     queue: (to: string, requireLive = false) => queued.push({ to, requireLive }),
   };
 }
@@ -177,6 +183,25 @@ describe("wallet proposal routes", () => {
     expect(store.events[0]).toMatchObject({
       metadata: expect.objectContaining({ proposalId: "p1", outcome: "expired" }),
     });
+  });
+
+  it("reads one proposal after expiry in the SAME transaction as the sweep", async () => {
+    // The get path must not sweep in one transaction and read in another: a deadline
+    // can pass in between, and the caller would see "proposed" for a row the
+    // database would already call expired. The store records transaction boundaries
+    // so the test can assert there is exactly one.
+    const store = proposalStore([
+      row({ expiresAt: new Date(Date.now() - 60_000), status: "proposed" }),
+    ]);
+    store.queue("expired");
+    const api = routes(store.prisma);
+    const found = (await api.proposal!({ context, input: { proposalId: "p1" } })) as {
+      status: string;
+    };
+    expect(found.status).toBe("expired");
+    expect(store.rows[0]!.status).toBe("expired");
+    expect(store.transactions()).toBe(1);
+    expect(store.events).toHaveLength(1);
   });
 
   it("persists expiry on read, so a list never shows a stale proposal as live", async () => {

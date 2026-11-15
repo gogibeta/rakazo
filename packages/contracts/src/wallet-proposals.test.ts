@@ -142,3 +142,22 @@ describe("the tool schema the model reads", () => {
     ).toBe(false);
   });
 });
+
+describe("the wei schema never converts a bad amount", () => {
+  it("rejects an oversized digit string without reaching BigInt", () => {
+    // Zod keeps evaluating refinements after an earlier issue, so a refinement that
+    // converted first would call BigInt on an arbitrarily long string. The length
+    // and digits are checked before the conversion, and the message still says the
+    // amount is out of range rather than surfacing a conversion error.
+    const huge = "9".repeat(5_000);
+    const parsed = WalletWeiSchema.safeParse(huge);
+    expect(parsed.success).toBe(false);
+    const messages = parsed.success ? [] : parsed.error.issues.map((issue) => issue.message);
+    expect(messages).toContain("Amount exceeds uint256");
+  });
+
+  it("still accepts the uint256 maximum and rejects one wei more", () => {
+    expect(WalletWeiSchema.safeParse(((1n << 256n) - 1n).toString(10)).success).toBe(true);
+    expect(WalletWeiSchema.safeParse((1n << 256n).toString(10)).success).toBe(false);
+  });
+});

@@ -68,16 +68,27 @@ export const WalletHexDataSchema = z
   .max(2 + 2 * 128 * 1_024)
   .regex(HEX_DATA, "Use 0x-prefixed hex with whole bytes");
 
-/** A uint256 as a decimal string: exact wei, never a float. */
+/**
+ * A uint256 as a decimal string: exact wei, never a float.
+ *
+ * Every check that must run before `BigInt` runs here, in order, and each one
+ * short-circuits: Zod keeps evaluating later refinements even after an earlier
+ * issue is recorded, so a refinement that converted first would reach `BigInt`
+ * on an arbitrarily long digit string. The conversion happens only once the
+ * length and the digits are known good.
+ */
 export const WalletWeiSchema = z
   .string()
   .trim()
   .max(78)
   .regex(WEI, "Use a decimal wei amount")
-  .refine(
-    (value) => /^[0-9]+$/.test(value) && BigInt(value) <= UINT256_MAX,
-    "Amount exceeds uint256",
-  );
+  .refine((value) => {
+    // Digits only (the regex above may already have failed), then a length check
+    // that cannot itself overflow, and only then the conversion.
+    if (!/^[0-9]+$/.test(value)) return false;
+    if (value.length > 78) return false;
+    return BigInt(value) <= UINT256_MAX;
+  }, "Amount exceeds uint256");
 
 /**
  * What a bot proposes: the general transaction shape, not a send-only one.

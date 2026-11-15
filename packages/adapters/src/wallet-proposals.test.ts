@@ -405,6 +405,132 @@ describe("the proposal RPC client", () => {
     });
     await expect(rpc.nonce(ADDRESS)).rejects.toMatchObject({ code: "rpc_error" });
   });
+
+  it("uses ONE absolute deadline: a slow body cannot borrow a second timeout", async () => {
+    // Headers arrive at once; the body trickles one byte per tick for longer than the
+    // whole budget. With a deadline restarted per step this call would still succeed.
+    const fetch: typeof globalThis.fetch = (async () => {
+      const payload = new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":"0x185d9"}');
+      let index = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (index >= payload.length) {
+            controller.close();
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          controller.enqueue(payload.slice(index, index + 1));
+          index += 1;
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof fetch;
+    const started = Date.now();
+    const rpc = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch,
+      timeoutMs: 80,
+    });
+    await expect(rpc.chainId()).rejects.toMatchObject({ code: "rpc_unavailable" });
+    // It gave up near the one deadline, not after a second one per step.
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("refuses an envelope carrying both result and error", async () => {
+    // Presence is judged by key alone: `error: null` beside a result is still two
+    // answers in one envelope, and picking either one would be a guess.
+    for (const body of [
+      { jsonrpc: "2.0", id: 1, result: "0x185d9", error: null },
+      { jsonrpc: "2.0", id: 1, result: "0x185d9", error: { code: -32000 } },
+    ]) {
+      const fetch = (async () =>
+        new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof globalThis.fetch;
+      const rpc = createWalletRpcClient({
+        chainId: 99801,
+        rpcUrl: "https://rpc.test",
+        fetch,
+      });
+      await expect(rpc.chainId()).rejects.toMatchObject({ code: "rpc_error" });
+    }
+  });
+
+  it("refuses a non-canonical or over-64-digit quantity before converting it", async () => {
+    // 2^256 exactly: 65 hex digits. A decimal-digit bound would let this through,
+    // and so would BigInt parsing it happily. Also: zero-padded and uppercase are
+    // not canonical RPC quantities.
+    const cases = [`0x1${"0".repeat(64)}`, "0x00ff", "0x00", "0xFF", "0x", "ff", "0x-1"];
+    for (const value of cases) {
+      const fetch = (async (_url: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
+        return jsonRpcAnswer(body.method === "eth_chainId" ? "0x185d9" : value, body.id);
+      }) as unknown as typeof globalThis.fetch;
+      const rpc = createWalletRpcClient({ chainId: 99801, rpcUrl: "https://rpc.test", fetch });
+      await expect(rpc.balanceWei(ADDRESS), value).rejects.toMatchObject({ code: "rpc_error" });
+    }
+    // The largest canonical quantity still parses: 64 hex digits.
+    const max = `0x${"f".repeat(64)}`;
+    const fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
+      return jsonRpcAnswer(body.method === "eth_chainId" ? "0x185d9" : max, body.id);
+    }) as unknown as typeof globalThis.fetch;
+    const rpc = createWalletRpcClient({ chainId: 99801, rpcUrl: "https://rpc.test", fetch });
+    await expect(rpc.balanceWei(ADDRESS)).resolves.toBe(((1n << 256n) - 1n).toString(10));
+  });
+
+  it("falls back to eth_gasPrice only when the node does not implement the tip method", async () => {
+    // Method-not-found: the fallback runs.
+    const unsupported: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
+      if (body.method === "eth_maxPriorityFeePerGas") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "no" } }),
+          { status: 200 },
+        );
+      }
+      const result =
+        body.method === "eth_chainId"
+          ? "0x185d9"
+          : body.method === "eth_gasPrice"
+            ? "0x3b9aca00"
+            : { number: "0x1", baseFeePerGas: "0x3b9aca00" };
+      return jsonRpcAnswer(result, body.id);
+    }) as unknown as typeof fetch;
+    const ok = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch: unsupported,
+    });
+    await expect(ok.fees()).resolves.toEqual({
+      maxFeePerGas: "3000000000",
+      maxPriorityFeePerGas: "1000000000",
+    });
+
+    // A timeout on the tip method is NOT a reason to try another method: it must
+    // surface as the proposal refusal it is, not be swallowed.
+    const timingOut: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
+      if (body.method === "eth_maxPriorityFeePerGas") {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+            init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+          },
+        });
+        return new Response(stream, { status: 200 });
+      }
+      const result =
+        body.method === "eth_chainId" ? "0x185d9" : { number: "0x1", baseFeePerGas: "0x3b9aca00" };
+      return jsonRpcAnswer(result, body.id);
+    }) as unknown as typeof fetch;
+    const failing = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch: timingOut,
+      timeoutMs: 60,
+    });
+    await expect(failing.fees()).rejects.toMatchObject({ code: "rpc_unavailable" });
+  });
 });
 
 describe("creating a proposal", () => {

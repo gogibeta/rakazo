@@ -516,19 +516,57 @@ export async function createWalletProposal(input: {
 }
 
 /** A proposal owned by this user, with the wallet name its view needs. */
+/**
+ * One proposal owned by this user, read AFTER the owner's overdue proposals are
+ * expired, with the sweep and the read in the SAME transaction.
+ *
+ * The single-get path needs the same guarantee the list has: a row returned as
+ * `proposed` must have been live at the moment it was read. Sweeping and then
+ * reading in two transactions allows a deadline to pass in between, so the
+ * caller sees `proposed` for a proposal the database would already call
+ * expired. Here both statements see one snapshot, and the sweep's conditional
+ * UPDATE is what makes the status the read returns the real one.
+ */
 export async function findWalletProposal(input: {
   prisma: PrismaClient;
   userId: string;
   proposalId: string;
+  spaceId?: string | null;
 }): Promise<{ row: WalletProposalRow; walletName: string; chain: WalletChainDefinition } | null> {
-  const row = await input.prisma.walletProposal.findFirst({
-    where: { id: input.proposalId, userId: input.userId },
-    select: { ...WALLET_PROPOSAL_COLUMNS, wallet: { select: { name: true } } },
+  const found = await input.prisma.$transaction(async (tx) => {
+    // Passing a spaceId opts into the sweep; the pure lookup used by write paths
+    // does not need it, and stays a plain read.
+    if (input.spaceId !== undefined) {
+      await expireOverdueInTransaction(tx, input.userId, input.spaceId);
+    }
+    return tx.walletProposal.findFirst({
+      where: { id: input.proposalId, userId: input.userId },
+      select: { ...WALLET_PROPOSAL_COLUMNS, wallet: { select: { name: true } } },
+    });
   });
-  if (!row) return null;
-  const chain = walletChain(row.chainId);
+  if (!found) return null;
+  const chain = walletChain(found.chainId);
   if (!chain) return null;
-  return { row, walletName: row.wallet.name, chain };
+  return { row: found, walletName: found.wallet.name, chain };
+}
+
+/**
+ * Read one proposal with expiry applied, for the owner's single-get path: the
+ * sweep and the read share one transaction, so the status returned was true at
+ * the snapshot the read saw.
+ */
+export async function getWalletProposal(input: {
+  prisma: PrismaClient;
+  userId: string;
+  spaceId: string | null;
+  proposalId: string;
+}): Promise<{ row: WalletProposalRow; walletName: string; chain: WalletChainDefinition } | null> {
+  return findWalletProposal({
+    prisma: input.prisma,
+    userId: input.userId,
+    proposalId: input.proposalId,
+    spaceId: input.spaceId,
+  });
 }
 
 /**

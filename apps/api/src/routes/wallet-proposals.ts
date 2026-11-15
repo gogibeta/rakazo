@@ -1,8 +1,8 @@
 import { ORPCError } from "@orpc/server";
 import {
   cancelWalletProposal,
-  expireOverdueWalletProposals,
   findWalletProposal,
+  getWalletProposal,
   listWalletProposals,
   WalletProposalError,
   walletProposalView,
@@ -34,16 +34,12 @@ export function walletProposalRoutes(ctx: RouterContext) {
       };
     }),
     proposal: authed.wallets.proposal.handler(async ({ context, input }) => {
-      // The sweep and the read share one transaction, so the row returned is
-      // the row after expiry, never a stale "proposed" the caller then believes.
-      await expireOverdueWalletProposals({
+      // One transaction: the sweep and the read see the same snapshot, so a row
+      // returned as "proposed" was live at the moment it was read.
+      const found = await getWalletProposal({
         prisma: deps.prisma,
         userId: context.actor.userId,
         spaceId: context.actor.spaceId,
-      });
-      const found = await findWalletProposal({
-        prisma: deps.prisma,
-        userId: context.actor.userId,
         proposalId: input.proposalId,
       });
       if (!found) throw new ORPCError("NOT_FOUND", { message: "Proposal not found" });
