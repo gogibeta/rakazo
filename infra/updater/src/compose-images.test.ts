@@ -184,6 +184,23 @@ describe("the images compose file", () => {
     expect(compose.services.supervisor?.ports).toBeUndefined();
   });
 
+  // Every stack the supervisor ships in must set it, or a deployment that allows private page hosts
+  // gets the route and the computer disagreeing about the same URL.
+  it.each([
+    "docker-compose.yml",
+    "docker-compose.images.yml",
+    "docker-compose.prod.docker.yml",
+    "docker-compose.topology.yml",
+  ])("passes the page browser's private-host opt-in through %s", (file) => {
+    const stack = parse(readFileSync(path.resolve(repoRoot, "infra/compose", file), "utf8"), {
+      merge: true,
+    }) as { services: Record<string, ComposeService> };
+    expect(stack.services.supervisor?.environment?.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: this is the literal Compose expression
+      "${RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS:-}",
+    );
+  });
+
   it("passes logging variables to the supervisor without putting them on computer containers", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: this is the literal Compose expression
     expect(compose.services.supervisor?.environment?.AXIOM_TOKEN).toBe("${AXIOM_TOKEN:-}");

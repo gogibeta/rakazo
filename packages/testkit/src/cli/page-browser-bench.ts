@@ -129,6 +129,8 @@ function driverRunner(exec: Exec, driverPath: string) {
       "HOME=/home/rakazo",
       "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
       "RAKAZO_BROWSER_ARGS_STDIN=1",
+      // The fixtures are served inside this one throwaway computer.
+      "RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS=1",
     ];
     try {
       const out = await exec(

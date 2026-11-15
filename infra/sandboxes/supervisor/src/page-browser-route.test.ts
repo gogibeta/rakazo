@@ -118,6 +118,85 @@ it.each(["http", "https"])(
 );
 
 it.each([
+  "http://127.0.0.1/",
+  "http://localhost:3000/",
+  "http://host.docker.internal:45175/",
+  "http://10.0.0.1/",
+  "http://192.168.1.10/",
+  "http://169.254.169.254/latest/meta-data",
+  "http://metadata.google.internal/",
+  "http://[::1]/",
+  "http://[fd00:ec2::254]/",
+])("refuses a non-public navigate destination before running a command: %s", async (url) => {
+  const response = await supervisorApp.request("/computers/computer-private-host/browser", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ command: "navigate", url }),
+  });
+  // The supervisor's own refusal, with a code that proves nothing was sent to the computer.
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ ok: false, code: "invalid_browser_request" });
+  expect(mock.exec).not.toHaveBeenCalled();
+  expect(mock.inspect).not.toHaveBeenCalled();
+});
+
+it.each(["http://127.0.0.1:3000/", "http://host.docker.internal:45175/"])(
+  "runs a navigate to this machine's own address when the operator allows it: %s",
+  async (url) => {
+    const original = process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+    process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS = "1";
+    try {
+      expect(await (await browserRequest({ command: "navigate", url })).json()).toMatchObject({
+        ok: true,
+      });
+      expect(JSON.parse(mock.stdin.join(""))).toEqual({ command: "navigate", url });
+    } finally {
+      if (original === undefined) delete process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+      else process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS = original;
+    }
+  },
+);
+
+it("passes the private-host opt-in to the computer, which checks the destination too", async () => {
+  const original = process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+  const helperEnv = () =>
+    mock.exec.mock.calls.find(([options]) =>
+      options.Cmd.includes("/usr/local/bin/rakazo-page-browser"),
+    )![0].Env as string[];
+  try {
+    delete process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+    await browserRequest({ command: "snapshot" });
+    expect(helperEnv()).not.toContain("RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS=1");
+    mock.exec.mockClear();
+    process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS = "1";
+    await browserRequest({ command: "snapshot" });
+    expect(helperEnv()).toContain("RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS=1");
+  } finally {
+    if (original === undefined) delete process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+    else process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS = original;
+  }
+});
+
+it("still refuses a metadata service when the operator allows private hosts", async () => {
+  const original = process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+  process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS = "1";
+  try {
+    const response = await browserRequest({
+      command: "navigate",
+      url: "http://169.254.169.254/latest/meta-data",
+    });
+    expect(response.status).toBe(400);
+    expect(mock.exec).not.toHaveBeenCalled();
+  } finally {
+    if (original === undefined) delete process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS;
+    else process.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS = original;
+  }
+});
+
+it.each([
   [
     "a saved-login fill that does not say which field it is",
     { kind: "fill", ref: "e1", text: "fake-password-1", origin: "https://login.example.test" },

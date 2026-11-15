@@ -421,6 +421,8 @@ describe("LocalStackController", () => {
       // The laptop's disk encryption covers content; a lost key must not lose it.
       expect(call.env.CONTENT_ENCRYPTION).toBe("off");
       expect(call.env.MCP_ALLOW_PRIVATE_ENDPOINT).toBe("true");
+      // The person's own laptop serves the pages this bot opens.
+      expect(call.env.RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS).toBe("1");
     }
     expect(
       await controller({

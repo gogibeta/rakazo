@@ -660,6 +660,9 @@ export class LocalStackController {
         CONTENT_ENCRYPTION: "off",
         // Only this computer can reach the stack, so its own model and tool servers are fair game.
         MCP_ALLOW_PRIVATE_ENDPOINT: "true",
+        // The person is watching their own screen, so a page on their own machine or LAN is theirs
+        // to open. A metadata service stays refused.
+        RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS: "1",
         ...(this.currentStackToken === null
           ? {}
           : { RAKAZO_DESKTOP_STACK_TOKEN: this.currentStackToken }),
