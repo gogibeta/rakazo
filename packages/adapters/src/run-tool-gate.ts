@@ -297,7 +297,12 @@ export async function gateToolCall(
     walletAsk ||
     commandWatch ||
     scheduleNamesNewSite ||
-    toolRequiresExplicitApproval(name);
+    toolRequiresExplicitApproval(name) ||
+    // A memory write is a standing instruction, so a run outside text may have
+    // steered must never reach it without the owner — including in Never ask,
+    // where the steerable flag below is what refuses it.
+    name === "save_shared_memory" ||
+    name === "save_memory";
   // No allow rule skips these, and without them the tool needs no approval, so "Always allow"
   // on their card would save a rule that never takes effect.
   const asksEveryTime =
@@ -305,7 +310,14 @@ export async function gateToolCall(
   // Never ask runs everything else: only another owner's connection could have been steered into it.
   // Restarting the host is guarded the same way: it takes every bot down with it, so a run
   // outside text could have steered must not reach it without the owner's approval either.
-  const guardedInNeverAsk = name === "respond_agent_connection" || name === "restart_host";
+  // Writing durable memory is guarded too: a shared memory document is loaded into every later
+  // run of every bot in the space, so a run that read outside text could plant instructions there
+  // once and have them read back as trusted background by everything that follows.
+  const guardedInNeverAsk =
+    name === "respond_agent_connection" ||
+    name === "restart_host" ||
+    name === "save_shared_memory" ||
+    name === "save_memory";
   const resolvedRules = resolveActionApprovalForTools({
     tools: approvalToolNames.map((toolName) => ({
       name: toolName,

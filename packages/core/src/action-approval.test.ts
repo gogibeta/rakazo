@@ -87,12 +87,26 @@ describe("toolRequiresApproval", () => {
       "write_file",
       "shell",
       "remember",
-      "save_shared_memory",
       "spawn_bot",
       "run_subagent",
     ]) {
       expect(toolRequiresApproval(name, false)).toBe(false);
     }
+  });
+
+  it("asks before a write to durable memory, which outlives the run", () => {
+    // A shared memory document is read back into every later run of every bot that
+    // shares it, so writing one is closer to installing an instruction than to
+    // sending a message. Both surfaces ask.
+    for (const name of ["save_shared_memory", "save_memory"]) {
+      expect(toolRequiresApproval(name, false), name).toBe(true);
+      expect(toolRequiresApproval(name, false), name).toBe(
+        !toolRequiresExplicitApproval(name) || true,
+      );
+    }
+    // The bot's own private note still does not ask: it is scoped to this bot and
+    // its owner, not to everything that shares the space.
+    expect(toolRequiresApproval("remember", false)).toBe(false);
   });
 
   it("always asks before bot management writes that cost money or rewrite a bot", () => {

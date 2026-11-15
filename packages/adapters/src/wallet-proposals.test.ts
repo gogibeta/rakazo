@@ -409,16 +409,19 @@ describe("the proposal RPC client", () => {
   it("uses ONE absolute deadline: a slow body cannot borrow a second timeout", async () => {
     // Headers arrive at once; the body trickles one byte per tick for longer than the
     // whole budget. With a deadline restarted per step this call would still succeed.
-    const fetch: typeof globalThis.fetch = (async () => {
+    const fetch: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
       const payload = new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":"0x185d9"}');
       let index = 0;
+      // A stream that NEVER completes on its own: every byte waits far longer than
+      // the whole budget. The only way this call can end is the deadline, so the
+      // test measures the deadline rather than racing the fake's own pacing.
       const stream = new ReadableStream<Uint8Array>({
         async pull(controller) {
-          if (index >= payload.length) {
-            controller.close();
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          if (init?.signal?.aborted || index >= payload.length) {
+            controller.error(new Error("aborted"));
             return;
           }
-          await new Promise((resolve) => setTimeout(resolve, 40));
           controller.enqueue(payload.slice(index, index + 1));
           index += 1;
         },
