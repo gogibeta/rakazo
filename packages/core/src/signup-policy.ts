@@ -30,8 +30,14 @@ export function signupRequiresEmailVerification(response: unknown): boolean {
   );
 }
 
+/**
+ * Whether open signup is on. Unset means CLOSED: a deployment that never configured
+ * this must not accept strangers' accounts by default, and a missing environment
+ * value is far more likely to be an oversight than a decision. Turning it on is one
+ * explicit `SIGNUPS_ENABLED=true`.
+ */
 export function signupsOpen(enabled: string | undefined): boolean {
-  if (enabled === undefined) return true;
+  if (enabled === undefined || enabled.trim() === "") return false;
   return enabled !== "false" && enabled !== "0";
 }
 

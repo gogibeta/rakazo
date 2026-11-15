@@ -8,6 +8,9 @@ import {
 
 const actor = { userId: "user-1", spaceId: "space-1", email: "admin@example.com" } as never;
 
+// Signup is closed until a deployment turns it on, so an env that never set
+// SIGNUPS_ENABLED reports closed here. The tests that care about the setting
+// save a value first and assert the stored policy.
 const EMPTY_STATUS = {
   tinyfishApiKey: false,
   naceApiKey: false,
@@ -18,7 +21,7 @@ const EMPTY_STATUS = {
   whatsappAppSecret: false,
   whatsappVerifyToken: false,
   telegramOwnerUserIds: [] as string[],
-  signupsEnabled: true,
+  signupsEnabled: false,
 };
 
 /** An in-memory deployment settings row and secret table behind the calls the config makes. */
