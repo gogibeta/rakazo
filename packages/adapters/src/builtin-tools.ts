@@ -23,6 +23,7 @@ import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
   TICKET_TITLE_MAX_LENGTH,
+  WalletProposeInput,
 } from "@rakazo/contracts";
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
@@ -672,9 +673,19 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "list_wallets",
     description:
-      "List the user's saved crypto wallets with their chain and public address, for planning testnet and airdrop work. Keys and seed phrases are never returned; type one into a page with browser_act fill_wallet, which asks the user first, every time.",
+      "List the user's saved crypto wallets with their chain and public address, for planning testnet and airdrop work. Keys and seed phrases are never returned; type one into a page with browser_act fill_wallet, which asks the user first, every time. To send value or call a contract, use wallet_propose.",
     inputSchema: { type: "object", properties: {} },
     readOnly: true,
+  },
+  {
+    name: "wallet_propose",
+    description:
+      "Propose one transaction from a saved wallet for the user to sign: to, value in wei, and data. Covers a native send, a token transfer or mint, an arbitrary contract call, and a deploy (to null with bytecode in data). Pick chainId 99801 (Elysium Testnet), 998 (HyperEVM Testnet) or 11155111 (Sepolia). The server fills nonce, fees and gas from the chain and rejects a transaction the wallet cannot pay for. Nothing is signed or sent; the user sees the proposal and signs it in Settings. Only works in a run the user started, and only for a wallet protected by the wallet password.",
+    // Generated from the same contract the server validates with, so the tool the
+    // model reads and the input the handler accepts cannot drift. `to` is
+    // required in the contract (explicit null for a deploy), and the required
+    // list follows from that.
+    inputSchema: z.toJSONSchema(WalletProposeInput, { io: "input" }),
   },
   {
     name: "restart_host",

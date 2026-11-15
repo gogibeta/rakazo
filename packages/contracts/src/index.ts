@@ -56,4 +56,5 @@ export * from "./user-devices.js";
 export * from "./vault-items.js";
 export * from "./voice-connection-ui.js";
 export * from "./voice-errors.js";
+export * from "./wallet-proposals.js";
 export * from "./wallets.js";

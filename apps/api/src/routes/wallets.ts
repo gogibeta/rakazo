@@ -26,6 +26,7 @@ import {
 } from "../security-audit.js";
 import { evmWalletFromSecret, WalletSecretError } from "../wallet-address.js";
 import type { RouterContext } from "./context.js";
+import { walletProposalRoutes } from "./wallet-proposals.js";
 
 type WalletRow = {
   id: string;
@@ -66,6 +67,8 @@ export function walletsRoutes(ctx: RouterContext) {
 
   return {
     wallets: {
+      // Proposal RPCs live beside the wallet list, in the same family.
+      ...walletProposalRoutes(ctx),
       list: authed.wallets.list.handler(async ({ context }) => {
         const rows = await deps.prisma.userWallet.findMany({
           where: { userId: context.actor.userId },

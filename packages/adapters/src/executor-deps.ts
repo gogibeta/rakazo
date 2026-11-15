@@ -28,6 +28,8 @@ import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import type { RemoteTransportDependencies } from "./remote-mcp.js";
 import type { TicketChangeNotifier } from "./ticket-changes.js";
 import type { UserDeviceGateway } from "./user-device-protocol.js";
+import type { WalletChainDefinition } from "./wallet-chains.js";
+import type { WalletRpcClient } from "./wallet-rpc.js";
 
 export interface ExecutorDeps {
   /** The present moment the agent is told; evals move it to a follow-up's due time. */
@@ -79,6 +81,12 @@ export interface ExecutorDeps {
   documents?: DocumentProvider;
   /** The deployment's own host machine for the `restart_host` tool. Defaults from env when omitted. */
   hostRestart?: HostRestarter;
+  /**
+   * Read-only chain access for transaction proposals. Defaults to a real client on the
+   * allowlisted chain's endpoint; the seam exists so tests and offline harnesses never
+   * reach a network. A client has no sign or send method by construction.
+   */
+  walletRpc?: (chain: WalletChainDefinition) => WalletRpcClient;
   /** Page browser (DOM refs) on the bot computer. Defaults to the sandbox live browser when supported. */
   browser?: BrowserProvider;
   secretHttp?: RemoteTransportDependencies;

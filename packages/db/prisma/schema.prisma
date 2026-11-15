@@ -68,6 +68,7 @@ model User {
   proxies                     UserProxy[]
   wallets                     UserWallet[]
   walletUses                  UserWalletUse[]
+  walletProposals             WalletProposal[]
   walletVault                 WalletVault?
   vaultUnlocks                VaultUnlock[]
   voiceCredentials            UserVoiceCredential[]
@@ -954,10 +955,63 @@ model UserWallet {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   uses         UserWalletUse[]
+  proposals    WalletProposal[]
 
   @@unique([userId, name])
+  /// The key a proposal's composite foreign key points at, so a proposal's
+  /// wallet provably belongs to the proposal's owner in the database itself.
+  @@unique([userId, id])
   @@index([userId, createdAt])
   @@map("user_wallets")
+}
+
+/// One proposed EVM transaction a bot asked its owner to sign. Immutable in
+/// every field that defines the transaction: the server validates the inputs
+/// against the chain, fills nonce, fees and gas from the allowlisted RPC, and
+/// stores the canonical result. Any change to the transaction is a new
+/// proposal, so the row the owner is asked to confirm is the row that was
+/// validated. No key material and no signed bytes ever live here — signing is
+/// a separate, password-gated step.
+model WalletProposal {
+  id                  String     @id @default(cuid())
+  userId              String
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId            String
+  /// Bound with userId, so the wallet is provably this owner's.
+  wallet              UserWallet @relation(fields: [walletId, userId], references: [id, userId], onDelete: Cascade)
+  /// The sender the canonical hash covers, fixed at creation. Reading the wallet's
+  /// current address instead would let a wallet change re-point a stored proposal.
+  fromAddress         String
+  /// The EVM chain id; only allowlisted chains can be proposed.
+  chainId             Int
+  /// Where the transaction goes; null for a contract deploy.
+  to                  String?
+  /// The native asset symbol the amount is denominated in, for display.
+  asset               String
+  /// The native value in wei, as an exact decimal string (uint256).
+  amountWei           String
+  /// 0x-prefixed calldata or creation bytecode; null when the call carries none.
+  data                String?
+  nonce               Int
+  /// Gas fields as decimal strings (uint256).
+  gasLimit            String
+  maxFeePerGas        String
+  maxPriorityFeePerGas String
+  /// The server's RPC profile for the chain; bots never choose a URL.
+  rpcProfile          String
+  /// "proposed", then "expired" or "cancelled"; PR 6 never signs or broadcasts.
+  status              String     @default("proposed")
+  /// sha256 of the canonical serialization of the transaction fields above.
+  canonicalHash       String
+  createdAt           DateTime   @default(now())
+  expiresAt           DateTime
+  /// The run that proposed it, for the audit trail; null once that run is gone.
+  runId               String?
+
+  @@index([userId, createdAt])
+  @@index([walletId, createdAt])
+  @@index([status, expiresAt])
+  @@map("wallet_proposals")
 }
 
 /// One approved use of a wallet: a bot's fill of the wallet's secret into a

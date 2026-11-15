@@ -179,3 +179,193 @@ describe("list_wallets", () => {
     expect(seen).not.toContain("secretCipher");
   });
 });
+
+describe("wallet_propose", () => {
+  const RECIPIENT = "0x000000000000000000000000000000000000dEaD";
+  const PROPOSED = {
+    walletId: "w1",
+    chainId: 99801,
+    to: RECIPIENT,
+    value: "1000000000000000",
+    data: null,
+  };
+
+  /**
+   * A store with one wallet and its proposals, and a stand-in chain that reports
+   * fixed values: the seam the executor uses so no test reaches a network.
+   */
+  function proposeContext(
+    options: {
+      ownerStartedRun?: boolean;
+      migrationStatus?: string;
+      balanceWei?: string;
+      gas?: string;
+      audits?: unknown[];
+    } = {},
+  ) {
+    const created: Array<Record<string, unknown>> = [];
+    const wallet = {
+      id: "w1",
+      userId: "u",
+      name: "burner",
+      address: ADDRESS,
+      migrationStatus: options.migrationStatus ?? "password_protected",
+    };
+    const prisma = {
+      userWallet: { findFirst: vi.fn(async () => wallet), findMany: vi.fn(async () => [wallet]) },
+
+      securityEvent: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+      // The service's parameterized INSERT ... RETURNING: one row appears for
+      // each insert the handler performs, with the database clock's timestamps.
+      $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        // Prisma issues a few of its own statements through this path; only the
+        // proposal INSERT binds an id in the cuid shape as its first value.
+        const id = String(values[0] ?? "");
+        if (!/^c[a-z0-9]{24}$/.test(id)) return [];
+        // A retry of the same insert is the same row, not a second one.
+        const existing = created.find((row) => row.id === id);
+        if (existing) {
+          return [{ id, createdAt: existing.createdAt, expiresAt: existing.expiresAt }];
+        }
+        const createdAt = new Date("2026-11-15T12:00:00.000Z");
+        const stored = {
+          id,
+          walletId: values[2],
+          fromAddress: values[3],
+          chainId: values[4],
+          to: values[5],
+          asset: values[6],
+          amountWei: values[7],
+          data: values[8],
+          nonce: values[9],
+          gasLimit: values[10],
+          maxFeePerGas: values[11],
+          maxPriorityFeePerGas: values[12],
+          rpcProfile: values[13],
+          canonicalHash: values[15],
+          createdAt,
+          expiresAt: new Date(createdAt.getTime() + 15 * 60 * 1_000),
+        };
+        created.push(stored);
+        return [{ id, createdAt, expiresAt: stored.expiresAt }];
+      }),
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
+      externalEffect: {
+        findUnique: vi.fn(async () => null),
+        findMany: vi.fn(async () => []),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: "e1",
+          ...data,
+        })),
+      },
+      auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
+      space: { findUnique: vi.fn(async () => ({ organizationId: "org", name: "Test" })) },
+      user: { findUnique: vi.fn(async () => ({ email: "owner@rakazo.test" })) },
+    };
+    const walletRpc = () => ({
+      chainId: async () => 99801,
+      balanceWei: async () => options.balanceWei ?? "1000000000000000000",
+      nonce: async () => 0,
+      estimateGas: async () => options.gas ?? "21000",
+      fees: async () => ({ maxFeePerGas: "3000000000", maxPriorityFeePerGas: "1000000000" }),
+    });
+    const ctx = {
+      deps: { prisma, walletRpc },
+      run: { id: "run-1", userId: "u", spaceId: "space", threadId: "t1", trigger: "user" },
+      bot: { id: "b1", name: "Chief" },
+      thread: { id: "t1" },
+      runId: "run-1",
+      source: { ownerStartedRun: options.ownerStartedRun ?? true },
+      secrets: [],
+      state: {},
+    };
+    return { ctx, created, prisma };
+  }
+
+  it("returns a deterministic summary and stores the validated proposal", async () => {
+    const { ctx, created } = proposeContext();
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      // The handler returns the id the insert generated.
+      id: expect.stringMatching(/^c[a-z0-9]{24}$/),
+      chainId: 99801,
+      to: RECIPIENT,
+      amountWei: "1000000000000000",
+      nonce: 0,
+      gasLimit: "25201",
+      maxFeePerGas: "3000000000",
+      maxPriorityFeePerGas: "1000000000",
+      maxTotalFeeWei: "75603000000000",
+      canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      expiresAt: "2026-11-15T12:15:00.000Z",
+      walletName: "burner",
+      chainName: "Elysium Testnet",
+      nativeSymbol: "HYPE",
+    });
+    expect(created).toHaveLength(1);
+    // Nothing that could sign is ever in the result.
+    const seen = JSON.stringify(result);
+    for (const forbidden of ["private", "passwordWrap", "keyCiphertext", "secretCipher"]) {
+      expect(seen).not.toContain(forbidden);
+    }
+  });
+
+  it("refuses a run the owner did not start, before any chain read", async () => {
+    const { ctx, created } = proposeContext({ ownerStartedRun: false });
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("run the owner started");
+    expect(created).toHaveLength(0);
+  });
+
+  it("refuses a legacy wallet with the reason the model can act on", async () => {
+    const { ctx, created } = proposeContext({ migrationStatus: "legacy_server_only" });
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("not protected by the wallet password");
+    expect(created).toHaveLength(0);
+  });
+
+  it("refuses insufficient balance including the fee, and stores nothing", async () => {
+    const { ctx, created } = proposeContext({ balanceWei: "1000000000000000" });
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("enough for the amount plus the maximum fee");
+    expect(created).toHaveLength(0);
+  });
+
+  it("refuses a malformed proposal before the chain is touched", async () => {
+    const { ctx, created } = proposeContext();
+    for (const args of [
+      { ...PROPOSED, to: "nope" },
+      { ...PROPOSED, value: "0.5" },
+      { ...PROPOSED, chainId: 1 },
+    ]) {
+      const result = (await walletTools.wallet_propose!(
+        ctx as never,
+        {
+          args,
+        } as never,
+      )) as { error: string };
+      expect(result.error).toBeTruthy();
+      expect(created).toHaveLength(0);
+    }
+  });
+});
