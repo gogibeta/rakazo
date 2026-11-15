@@ -164,14 +164,26 @@ async function readJsonBody(
   // LEFT of the call's deadline, never from a fresh full timeout.
   const left = remaining();
   if (left <= 0) throw deadlineError();
+  // Whether the deadline cancelled the body. `reader.cancel()` resolves a pending
+  // read as done-with-no-bytes, and that happens before the abort signal itself
+  // flips, so "done" alone cannot distinguish a finished body from a cut-off one.
+  let expired = false;
   const cancelAtDeadline = setTimeout(() => {
+    expired = true;
     reader.cancel().catch(() => undefined);
   }, left);
   try {
     for (;;) {
       if (signal.aborted || Date.now() >= deadline.at) throw deadlineError();
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        // A cancelled read resolves as done with no bytes. If this function's own
+        // deadline did the cancelling, the body was cut short rather than finished,
+        // and an empty parse would be reported as a malformed answer instead of the
+        // timeout it is.
+        if (expired || signal.aborted || Date.now() >= deadline.at) throw deadlineError();
+        break;
+      }
       total += value.byteLength;
       if (total > MAX_RESPONSE_BYTES) {
         await reader.cancel().catch(() => undefined);
@@ -188,7 +200,7 @@ async function readJsonBody(
     clearTimeout(cancelAtDeadline);
   }
   // The body may have completed exactly at the deadline; the call is still over.
-  if (signal.aborted || Date.now() >= deadline.at) throw deadlineError();
+  if (expired || signal.aborted || Date.now() >= deadline.at) throw deadlineError();
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
