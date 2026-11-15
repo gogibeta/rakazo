@@ -128,6 +128,23 @@ describe("server image publish workflow", () => {
     expect(publish).toBeGreaterThan(depotScan);
   });
 
+  it("moves the edge tag only after the check suite, from a separate gated job", () => {
+    // `edge` is what a Compose install pulls by default, so it must not move on a red
+    // main. The build keeps starting with the run (its concurrency locks depend on push
+    // order), publishes `sha-<commit>` at build time, and withholds `edge`; a separate
+    // job retags the same digests once the suite and the Postgres journeys pass.
+    expect(ci.jobs["publish-server-image"]?.needs).toBeUndefined();
+    const edge = ci.jobs["publish-edge-tag"];
+    expect(edge?.needs).toEqual(["checks", "test-integration", "publish-server-image"]);
+    expect(edge?.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
+    // The build-time publication must not be able to move the tag itself.
+    const publishJob = workflow.jobs.publish as { steps?: Array<Record<string, unknown>> };
+    const action = (publishJob.steps ?? []).find((step) => step.uses === publicationAction) as
+      | { with?: Record<string, string> }
+      | undefined;
+    expect(action?.with?.edge).toBe("false");
+  });
+
   it("publishes main from ci.yml so the production deploy waits for its image", () => {
     expect(workflow.on.push?.branches).toBeUndefined();
     expect(workflow.on).toHaveProperty("workflow_call");
