@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { observationToolResult } from "./computer-tools.js";
+import type { ToolCallWindowEntry } from "./tool-loop.js";
 import {
   advanceOverLimitActionCalls,
   advanceToolCallLoopGuard,
+  advanceToolCallWindow,
   isLoopGuardStopText,
   loopGuardStopText,
   MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS,
+  MAX_WINDOWED_REPEATED_TOOL_CALLS,
   overLimitStopText,
+  settleToolCallWindow,
   toolCallStreakLength,
+  toolCallWindowKeys,
   toolResultFingerprint,
+  windowedLoopGuardStopText,
 } from "./tool-loop.js";
 
 const answer = (text: string) => toolResultFingerprint({ content: [{ type: "text", text }] });
@@ -330,6 +336,187 @@ describe("advanceToolCallLoopGuard", () => {
     expect(toolResultFingerprint(first)).not.toBe(
       toolResultFingerprint(screen("frame-b", "2026-01-01T00:00:05.000Z", 2)),
     );
+  });
+});
+
+describe("advanceToolCallWindow", () => {
+  /**
+   * Feeds calls the way production does: answers registered when a call is recorded are
+   * settled into the window when the next call arrives.
+   */
+  function stepper() {
+    let window: ToolCallWindowEntry[] = [];
+    const results = new Map<string, string>();
+    let seq = 0;
+    return {
+      call(
+        name: string,
+        args: unknown,
+        landedAnswer?: string,
+        options: { readOnly?: boolean; response?: number } = {},
+      ) {
+        settleToolCallWindow(window, results);
+        seq += 1;
+        const executionId = `exec-${seq}`;
+        const result = advanceToolCallWindow(window, name, args, {
+          executionId,
+          response: options.response,
+          readOnly: options.readOnly ?? true,
+        });
+        window = result.window;
+        if (landedAnswer !== undefined) results.set(executionId, landedAnswer);
+        return result;
+      },
+    };
+  }
+
+  it("stops an A-B-A-B pattern at the eighth interleaved repeat", () => {
+    const s = stepper();
+    const a = { command: "cat a.log" };
+    const b = { command: "cat b.log" };
+    for (let i = 0; i < 7; i += 1) {
+      expect(s.call("shell", a, failure("denied")).stuck).toBe(false);
+      expect(s.call("shell", b, failure("denied")).stuck).toBe(false);
+    }
+    // Seven of the eighth's repetitions have settled failed; the eighth has not landed.
+    expect(s.call("shell", a, failure("denied"))).toMatchObject({
+      stuck: true,
+      count: MAX_WINDOWED_REPEATED_TOOL_CALLS,
+      failures: 7,
+    });
+  });
+
+  it("stops an interleaved poll of an unchanged answer, with no failures", () => {
+    const s = stepper();
+    for (let i = 0; i < 7; i += 1) {
+      expect(s.call("read_file", { path: "status" }, answer("pending")).stuck).toBe(false);
+      expect(s.call("read_file", { path: "other" }, answer("ok")).stuck).toBe(false);
+    }
+    expect(s.call("read_file", { path: "status" }, answer("pending"))).toMatchObject({
+      stuck: true,
+      count: 8,
+      failures: 0,
+    });
+  });
+
+  it("does not stop seven interleaved repeats", () => {
+    const s = stepper();
+    for (let i = 0; i < 7; i += 1) {
+      expect(s.call("shell", { command: "cat a.log" }, failure("denied")).stuck).toBe(false);
+      expect(s.call("shell", { command: `check ${i}` }, failure("denied")).stuck).toBe(false);
+    }
+  });
+
+  it("leaves consecutive repeats to the streak guard", () => {
+    const s = stepper();
+    for (let i = 0; i < 20; i += 1) {
+      expect(s.call("shell", { command: "cat a.log" }, failure("denied"))).toMatchObject({
+        stuck: false,
+        count: 1,
+      });
+    }
+  });
+
+  it("restarts the count after a successful call that changed state", () => {
+    const s = stepper();
+    const a = { command: "cat a.log" };
+    const b = { command: "cat b.log" };
+    for (let i = 0; i < 7; i += 1) {
+      s.call("shell", a, failure("denied"));
+      s.call("shell", b, failure("denied"));
+    }
+    s.call("write_file", { path: "fix.txt" }, answer("written"), { readOnly: false });
+    for (let i = 0; i < 7; i += 1) {
+      expect(s.call("shell", a, failure("denied")).stuck).toBe(false);
+      expect(s.call("shell", b, failure("denied")).stuck).toBe(false);
+    }
+    expect(s.call("shell", a, failure("denied"))).toMatchObject({ stuck: true, count: 8 });
+  });
+
+  it("does not restart the count for a successful read-only call", () => {
+    const s = stepper();
+    const a = { command: "cat a.log" };
+    for (let i = 0; i < 7; i += 1) {
+      s.call("shell", a, failure("denied"));
+      s.call("read_file", { path: "notes" }, answer("same notes"));
+    }
+    expect(s.call("shell", a, failure("denied"))).toMatchObject({ stuck: true, count: 8 });
+  });
+
+  it("restarts a call's count when its own answer starts changing", () => {
+    const s = stepper();
+    for (let i = 0; i < 12; i += 1) {
+      expect(s.call("read_file", { path: "feed" }, answer(`version ${i}`)).stuck).toBe(false);
+      // The interleaved calls are all distinct, so only the feed call can repeat.
+      expect(s.call("read_file", { path: `other-${i}` }, answer("ok")).stuck).toBe(false);
+    }
+  });
+
+  it("does not stop a successful state-changing call repeated interleaved", () => {
+    const s = stepper();
+    for (let i = 0; i < 10; i += 1) {
+      expect(
+        s.call("write_file", { path: "log.txt" }, answer("written"), { readOnly: false }).stuck,
+      ).toBe(false);
+      expect(s.call("read_file", { path: "other" }, answer("ok")).stuck).toBe(false);
+    }
+  });
+
+  it("forgets repeats that fell out of the window", () => {
+    const s = stepper();
+    const a = { command: "cat a.log" };
+    const b = { command: "cat b.log" };
+    for (let i = 0; i < 7; i += 1) {
+      s.call("shell", a, failure("denied"));
+      s.call("shell", b, failure("denied"));
+    }
+    for (let i = 0; i < 32; i += 1) {
+      s.call("read_file", { path: `file-${i}` }, answer("ok"));
+    }
+    for (let i = 0; i < 7; i += 1) {
+      expect(s.call("shell", a, failure("denied")).stuck).toBe(false);
+      expect(s.call("shell", b, failure("denied")).stuck).toBe(false);
+    }
+    expect(s.call("shell", a, failure("denied"))).toMatchObject({ stuck: true, count: 8 });
+  });
+
+  it("counts a call repeated inside one response once", () => {
+    const s = stepper();
+    const a = { command: "cat a.log" };
+    const b = { command: "cat b.log" };
+    for (let response = 1; response <= 7; response += 1) {
+      expect(s.call("shell", a, failure("denied"), { response }).stuck).toBe(false);
+      // The same response repeating the call is one step, not two.
+      expect(s.call("shell", a, failure("denied"), { response }).stuck).toBe(false);
+      expect(s.call("shell", b, failure("denied"), { response }).stuck).toBe(false);
+    }
+    expect(s.call("shell", a, failure("denied"), { response: 8 })).toMatchObject({
+      stuck: true,
+      count: 8,
+    });
+  });
+
+  it("keys a call by its canonical args, not their spelling", () => {
+    const first = toolCallWindowKeys("shell", { command: "run", cwd: "/w" });
+    const reordered = toolCallWindowKeys("shell", { cwd: "/w", command: "run" });
+    expect(reordered.key).toBe(first.key);
+    expect(first.argsHash).toMatch(/^[0-9a-f]{64}$/);
+    const page1 = toolCallWindowKeys("shell", { command: "run", cwd: "/w1" });
+    const page2 = toolCallWindowKeys("shell", { command: "run", cwd: "/w2" });
+    expect(page2.key).not.toBe(page1.key);
+    // Digits blank to the same shape where a digit stood, as in the streak guard.
+    expect(page2.shapeKey).toBe(page1.shapeKey);
+    expect(page1.shapeKey).not.toBe(first.shapeKey);
+    expect(toolCallWindowKeys("other_tool", { command: "run", cwd: "/w" }).key).not.toBe(first.key);
+  });
+
+  it("matches the windowed stop text like the other stop texts", () => {
+    const text = windowedLoopGuardStopText("List files", 8);
+    expect(text).toBe(
+      "I got stuck calling List files with the same input 8 times without making progress, " +
+        "so I stopped early. Try rephrasing this, or ask me to try a different approach.",
+    );
+    expect(isLoopGuardStopText(text)).toBe(true);
   });
 });
 

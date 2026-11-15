@@ -80,6 +80,7 @@ import {
   TOOL_STEPS_WITHOUT_RESPONSE,
 } from "./run-replies.js";
 import { scheduleRoutineRetry } from "./run-routines.js";
+import { BUILTIN_AGENT_TOOL_NAMES, READ_ONLY_AGENT_TOOLS } from "./run-tool-selection.js";
 import { applyTool } from "./run-tools.js";
 import { withRuntimeCleanup } from "./runtime-stream.js";
 import {
@@ -94,17 +95,21 @@ import { takeoverCheckpointOf } from "./takeover-resume.js";
 import {
   appendToolCompletionAudit,
   logLoopGuardStop,
+  recordLoopGuardStopAudit,
   toolCompletionFromResult,
   toolCompletionOutcome,
 } from "./tool-completion-audit.js";
 import {
   advanceOverLimitActionCalls,
   advanceToolCallLoopGuard,
+  advanceToolCallWindow,
   loopGuardStop,
   loopGuardStopText,
   MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS,
   overLimitStopText,
+  settleToolCallWindow,
   toolResultFingerprint,
+  windowedLoopGuardStopText,
 } from "./tool-loop.js";
 import type { ToolRefusal } from "./tool-refusal.js";
 import {
@@ -510,6 +515,17 @@ async function pauseForTakeover(ctx: RunContext, event: RuntimeEvent<"takeover">
   });
 }
 
+/**
+ * The gate's read-only classification of a call, for the windowed loop guard's
+ * changed-state check: a declared read-only builtin, or a connector tool its provider
+ * declared read-only. Undeclared connector tools are not read-only, as in the gate.
+ */
+function toolCallIsReadOnly(ctx: RunContext, name: string): boolean {
+  if (READ_ONLY_AGENT_TOOLS.has(name)) return true;
+  if (BUILTIN_AGENT_TOOL_NAMES.has(name)) return false;
+  return ctx.tools.connector.get(name)?.readOnly === true;
+}
+
 /** Show the tool step, stop a repeating loop, and run the tool for scripted runtimes. */
 async function onToolCalled(ctx: RunContext, event: RuntimeEvent<"tool">): Promise<boolean> {
   const { deps, run, runId, bot, thread } = ctx;
@@ -550,6 +566,8 @@ async function onToolCalled(ctx: RunContext, event: RuntimeEvent<"tool">): Promi
   // A call can finish before or after its own event is handled, so its result is read here.
   const { toolCallStreak: streak, toolResults } = ctx.state;
   const previousResult = streak.executionId ? toolResults.get(streak.executionId) : undefined;
+  // Window entries settle with the answers that have landed since their calls started.
+  settleToolCallWindow(ctx.state.toolCallWindow, toolResults);
   const loopGuard = advanceToolCallLoopGuard(
     streak,
     event.name,
@@ -574,12 +592,29 @@ async function onToolCalled(ctx: RunContext, event: RuntimeEvent<"tool">): Promi
     event.name,
     event.args,
   );
+  // The streak guard misses repeats interleaved with other calls; the window catches those.
+  const windowed = advanceToolCallWindow(ctx.state.toolCallWindow, event.name, event.args, {
+    executionId: event.executionId,
+    response: event.response,
+    readOnly: toolCallIsReadOnly(ctx, event.name),
+  });
+  ctx.state.toolCallWindow = windowed.window;
   if (
     loopGuard.stuck ||
+    windowed.stuck ||
     ctx.state.overLimitActionCalls >= MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS
   ) {
     // An action-limit stop is not about the previous call, which may be another tool's.
-    await stopStuckToolLoop(ctx, event.name, loopGuard.stuck ? previousRefusal : undefined);
+    // The streak guard keeps its own description when both repeat guards fire together.
+    await stopStuckToolLoop(
+      ctx,
+      event.name,
+      loopGuard.stuck ? previousRefusal : undefined,
+      windowed.stuck && !loopGuard.stuck
+        ? { count: windowed.count, failures: windowed.failures }
+        : undefined,
+      windowed.argsHash,
+    );
     return true;
   }
   if (!ctx.scripted) return false;
@@ -614,7 +649,13 @@ async function onToolCalled(ctx: RunContext, event: RuntimeEvent<"tool">): Promi
 }
 
 /** The model keeps repeating the same call: finish the run with what it has and say why. */
-async function stopStuckToolLoop(ctx: RunContext, toolName: string, refusal?: ToolRefusal) {
+async function stopStuckToolLoop(
+  ctx: RunContext,
+  toolName: string,
+  refusal?: ToolRefusal,
+  windowedStop?: { count: number; failures: number },
+  argsHash?: string,
+) {
   const { deps, run, runId, bot, thread, workerId, fence } = ctx;
   const { reply } = ctx.state;
   // Otherwise the model keeps calling tools while the stop is saved. The run's own signal stays
@@ -632,9 +673,24 @@ async function stopStuckToolLoop(ctx: RunContext, toolName: string, refusal?: To
   ctx.state.terminalCheckpointComplete = true;
   const overLimit = ctx.state.overLimitActionCalls;
   const humanName = humanizeToolName(toolName);
-  const stuckText =
-    overLimit >= MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS
-      ? overLimitStopText(humanName, overLimit)
+  // An action-limit stop keeps its own text and reason when both guards fire together.
+  const stoppedForOverLimit = overLimit >= MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS;
+  const windowed = stoppedForOverLimit ? undefined : windowedStop;
+  const reason = stoppedForOverLimit
+    ? ("over_limit_actions" as const)
+    : windowed
+      ? ("repeated_calls_windowed" as const)
+      : ("repeated_calls" as const);
+  const count = stoppedForOverLimit
+    ? overLimit
+    : windowed
+      ? windowed.count
+      : loopGuardStop(ctx.state.toolCallStreak).count;
+  const failures = windowed ? windowed.failures : (ctx.state.toolCallStreak.failures ?? 0);
+  const stuckText = stoppedForOverLimit
+    ? overLimitStopText(humanName, overLimit)
+    : windowed
+      ? windowedLoopGuardStopText(humanName, windowed.count)
       : loopGuardStopText(humanName, ctx.state.toolCallStreak);
   await ctx.settleRunningHelpers();
   const stopped = await deps.events.finalizeRun({
@@ -648,25 +704,30 @@ async function stopStuckToolLoop(ctx: RunContext, toolName: string, refusal?: To
     leaseFence: fence,
     outcome: "completed",
     blocks: isBackgroundRunTrigger(run.trigger) ? [] : [{ kind: "text", text: stuckText }],
+    loopGuardStop: { tool: toolName, reason, count, failures },
   });
   if (!stopped) return;
-  const stoppedForOverLimit = overLimit >= MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS;
+  const logTarget = {
+    spaceId: run.spaceId,
+    threadId: thread.id,
+    botId: bot.id,
+    runId,
+    trigger: run.trigger,
+  };
   logLoopGuardStop(
-    {
-      spaceId: run.spaceId,
-      threadId: thread.id,
-      botId: bot.id,
-      runId,
-      trigger: run.trigger,
-    },
+    logTarget,
     {
       tool: toolName,
-      reason: stoppedForOverLimit ? "over_limit_actions" : "repeated_calls",
-      count: stoppedForOverLimit ? overLimit : loopGuardStop(ctx.state.toolCallStreak).count,
-      failures: ctx.state.toolCallStreak.failures ?? 0,
+      reason,
+      count,
+      failures,
       ...(refusal ? { refusal } : {}),
     },
     ctx.secrets,
+  );
+  await recordLoopGuardStopAudit(
+    { ...logTarget, botLabel: bot.name },
+    { tool: toolName, reason, count, failures, ...(argsHash ? { argsHash } : {}) },
   );
   ctx.stopHeartbeatAfterCompletion();
   if (run.trigger === "routine" && run.routineId) {

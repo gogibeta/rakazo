@@ -563,6 +563,7 @@ describe("held-back narration on peer requests", () => {
           routine: { findMany: vi.fn(async () => []) },
           computer: { findMany: vi.fn(async () => []) },
           messagingOutbound: { findFirst: vi.fn(async () => null) },
+          event: { findFirst: vi.fn(async () => null) },
           message: {
             findMany: vi.fn(async () => [
               { blocks: finalizeRun.mock.calls[0]![0].blocks, clientNonce: null },

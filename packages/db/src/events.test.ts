@@ -247,6 +247,78 @@ describe("finalizeRun", () => {
     );
   });
 
+  it("records the loop-guard stop flag on the finalize event only when given one", async () => {
+    const completedTx = () => ({
+      $executeRaw: vi.fn(async () => 0),
+      externalEffect: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      $queryRaw: vi.fn(async () => []),
+      run: {
+        findUnique: vi.fn(async () => ({ status: "running", startedAt: new Date() })),
+        findUniqueOrThrow: vi.fn(async () => ({ sourceMessage: null })),
+        findFirst: vi.fn(async () => null),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+      },
+      attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      task: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 1, nextMessageSeq: 5 })) },
+      secret: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      event: {
+        create: vi.fn(async ({ data }: { data: { type: string; payload: unknown } }) => ({
+          ...data,
+          threadId: "thread-1",
+          seq: 0,
+          createdAt: new Date(),
+        })),
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
+      },
+      steeringMessage: {
+        deleteMany: vi.fn(async () => ({ count: 0 })),
+        findMany: vi.fn(async () => []),
+        updateMany: vi.fn(async () => ({ count: 0 })),
+      },
+      message: {
+        findFirst: vi.fn(async () => null),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          ...data,
+          id: "message-final",
+        })),
+      },
+      bot: { update: vi.fn(async () => ({})) },
+    });
+    const finalizeCompleted = async (loopGuardStop?: {
+      tool: string;
+      reason: string;
+      count: number;
+      failures: number;
+    }) => {
+      const tx = completedTx();
+      const prisma = {
+        $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+      } as unknown as PrismaClient;
+      await finalizeRun(prisma, {
+        spaceId: "space-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        runId: "run-1",
+        taskId: "task-1",
+        attemptId: "attempt-1",
+        leaseOwner: "worker-1",
+        leaseFence: 1,
+        outcome: "completed",
+        blocks: [{ kind: "text", text: "Stopped." }],
+        ...(loopGuardStop ? { loopGuardStop } : {}),
+      });
+      return tx.event.create.mock.calls
+        .map(([{ data }]) => data)
+        .find((data) => data.type === "run.completed");
+    };
+
+    const flag = { tool: "list_files", reason: "repeated_calls_windowed", count: 8, failures: 7 };
+    expect((await finalizeCompleted(flag))?.payload).toEqual({ loopGuardStop: flag });
+    expect((await finalizeCompleted())?.payload).toEqual({});
+  });
+
   it("saves no message for a failure without a partial reply", async () => {
     const create = vi.fn();
     const tx = {

@@ -1,6 +1,11 @@
+import { installAuditEventStore } from "@rakazo/db";
 import { createLogger, createTestSink, installLogger } from "@rakazo/logging";
-import { afterEach, describe, expect, it } from "vitest";
-import { logLoopGuardStop, logToolRefusal } from "./tool-completion-audit.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  logLoopGuardStop,
+  logToolRefusal,
+  recordLoopGuardStopAudit,
+} from "./tool-completion-audit.js";
 import { refusal } from "./tool-refusal.js";
 
 const target = {
@@ -67,6 +72,12 @@ describe("loop guard stop log", () => {
       count: 4,
       failures: 0,
     });
+    logLoopGuardStop(target, {
+      tool: "list_files",
+      reason: "repeated_calls_windowed",
+      count: 8,
+      failures: 7,
+    });
     expect(sink.events).toEqual([
       expect.objectContaining({
         message: "run.loop_guard_stopped",
@@ -79,6 +90,61 @@ describe("loop guard stop log", () => {
         "tool.refusal": "run_not_owner_started",
       }),
       expect.not.objectContaining({ "tool.refusal": expect.anything() }),
+      expect.objectContaining({
+        tool: "list_files",
+        "loop.reason": "repeated_calls_windowed",
+        "loop.count": 8,
+        "loop.failures": 7,
+      }),
     ]);
+  });
+});
+
+describe("loop guard stop audit", () => {
+  it("writes one audit row naming the guard, the tool and the counts, never the args", async () => {
+    const auditRows: Array<Record<string, unknown>> = [];
+    installAuditEventStore({
+      space: { findUnique: vi.fn(async () => ({ organizationId: "org-1", name: "Space" })) },
+      auditEvent: {
+        createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
+          auditRows.push(...data);
+          return { count: data.length };
+        }),
+      },
+    } as unknown as Parameters<typeof installAuditEventStore>[0]);
+    try {
+      await recordLoopGuardStopAudit(
+        { ...target, botLabel: "Assistant" },
+        {
+          tool: "list_files",
+          reason: "repeated_calls_windowed",
+          count: 8,
+          failures: 7,
+          argsHash: "a".repeat(64),
+        },
+      );
+      expect(auditRows).toEqual([
+        expect.objectContaining({
+          action: "run.loop_guard_stop",
+          actorType: "bot",
+          actorId: "bot-1",
+          actorLabel: "Assistant",
+          runId: "run-1",
+          threadId: "thread-1",
+          targetType: "tool",
+          targetId: "list_files",
+          metadata: {
+            tool: "list_files",
+            reason: "repeated_calls_windowed",
+            count: 8,
+            failures: 7,
+            argsHash: "a".repeat(64),
+          },
+        }),
+      ]);
+      expect(JSON.stringify(auditRows)).not.toContain("downloads");
+    } finally {
+      installAuditEventStore(undefined);
+    }
   });
 });

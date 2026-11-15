@@ -1,7 +1,7 @@
 import type { AgentToolCompletion } from "@rakazo/adapter-kit";
-import { redactSecrets } from "@rakazo/core";
+import { humanizeToolName, redactSecrets } from "@rakazo/core";
 import type { ThreadEvents } from "@rakazo/db";
-import { RunHistoryWriteError } from "@rakazo/db";
+import { RunHistoryWriteError, recordAuditEvent } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { isToolPauseResult } from "./approval-effect.js";
 import { sanitizeConnectorError } from "./connector-safety.js";
@@ -182,14 +182,19 @@ export function logToolRefusal(
   return logged;
 }
 
+export type LoopGuardStopReason =
+  | "repeated_calls"
+  | "over_limit_actions"
+  | "repeated_calls_windowed";
+
 /** Logs a run stopped for repeating a call, with the code of the refusal it kept getting, if any. */
 export function logLoopGuardStop(
   target: RunLogTarget,
   stop: {
     tool: string;
-    reason: "repeated_calls" | "over_limit_actions";
+    reason: LoopGuardStopReason;
     count: number;
-    /** How many of the repeated calls in a row came back failed. */
+    /** How many of the repeated calls came back failed. */
     failures: number;
     refusal?: ToolRefusal;
   },
@@ -203,5 +208,38 @@ export function logLoopGuardStop(
     "loop.failures": stop.failures,
     ...(stop.refusal?.target ? { "tool.target": stop.refusal.target } : {}),
     ...(stop.refusal ? { "tool.refusal": stop.refusal.code } : {}),
+  });
+}
+
+/**
+ * The durable audit record of a loop-guard stop, written beside its log line. Only the
+ * call's hash is recorded, never its arguments. Kept apart from the sync logger because
+ * the audit write is async and names the bot, which the log target does not carry.
+ */
+export async function recordLoopGuardStopAudit(
+  target: RunLogTarget & { botLabel: string },
+  stop: {
+    tool: string;
+    reason: LoopGuardStopReason;
+    count: number;
+    failures: number;
+    /** sha256 hex of the repeated call's canonical args, when the caller computed it. */
+    argsHash?: string;
+  },
+): Promise<void> {
+  await recordAuditEvent({
+    action: "run.loop_guard_stop",
+    actor: { type: "bot", id: target.botId, label: target.botLabel },
+    spaceId: target.spaceId,
+    target: { type: "tool", id: stop.tool, label: humanizeToolName(stop.tool) },
+    runId: target.runId,
+    threadId: target.threadId,
+    metadata: {
+      tool: stop.tool,
+      reason: stop.reason,
+      count: stop.count,
+      failures: stop.failures,
+      ...(stop.argsHash ? { argsHash: stop.argsHash } : {}),
+    },
   });
 }

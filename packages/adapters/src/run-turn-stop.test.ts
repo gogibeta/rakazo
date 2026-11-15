@@ -56,6 +56,7 @@ async function context(row: { status: string }) {
       lease: { valid: true, lastCheckAt: 0 },
       computerUse: {},
       toolCallStreak: {},
+      toolCallWindow: [],
       toolResults: new Map(),
       overLimitActionCalls: 0,
     },
