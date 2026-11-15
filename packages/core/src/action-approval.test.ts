@@ -1002,13 +1002,15 @@ describe("connectorReadRequiresApproval", () => {
 
 describe("toolResultTaintsRun", () => {
   it("treats outside content as taint, including connector tools and new tools", () => {
+    // Web content, channel messages and shell output are where an attacker's words
+    // enter a run. That is the audit's attack case and it is unchanged.
     for (const tool of [
       "web_fetch",
       "web_search",
       "browser_snapshot",
+      "browser_act",
       "computer_observe",
       "shell",
-      "read_file",
       "run_subagent",
       "gmail_list_messages",
       "some_future_tool",
@@ -1017,8 +1019,22 @@ describe("toolResultTaintsRun", () => {
     }
   });
 
-  it("does not taint on the bot's own writes and saved state", () => {
-    for (const tool of ["ask_user", "remember", "recall_memory", "skill_read", "write_file"]) {
+  it("does not taint on the bot's own writes, saved state or its own workspace", () => {
+    // `read_file` and `list_files` read the bot's own workspace — the files it wrote,
+    // its owner's uploads and its own memory documents. Reading them is half of
+    // "open your memory and edit it", which an owner asks for constantly; treating it
+    // as contamination refused that workflow in Never-ask mode while adding nothing,
+    // since content only reaches that workspace through this bot.
+    for (const tool of [
+      "ask_user",
+      "remember",
+      "recall_memory",
+      "skill_read",
+      "write_file",
+      "read_file",
+      "list_files",
+      "read_history",
+    ]) {
       expect(toolResultTaintsRun(tool)).toBe(false);
     }
   });

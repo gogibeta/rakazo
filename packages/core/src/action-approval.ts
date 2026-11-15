@@ -255,8 +255,16 @@ export function isOwnerStartedRun(trigger: string, followUpFromUser: boolean): b
  * writes, the owner's answers, and the product's own saved state (memory, skills, history), which
  * is treated like the conversation already in context. save_page confirms the bot's own write; its
  * read mode returns a page's stored source and taints the run in its handler. Every other result
- * (pages, search hits, files, connector data, the screen, shell output, other bots) can carry text
- * an attacker wrote, and taints the run. New tools taint by default.
+ * (pages, search hits, connector data, the screen, shell output, other bots) can carry text an
+ * attacker wrote, and taints the run. New tools taint by default.
+ *
+ * `read_file` and `list_files` read the bot's OWN workspace: the files it wrote itself, the ones
+ * its owner uploaded, and its own memory documents. Reading them is the second half of "open your
+ * memory and edit it", which is the most ordinary thing an owner asks a bot to do; treating it as
+ * contamination made that workflow impossible in Never-ask mode while adding nothing, because
+ * content only reaches that workspace through this same bot. Web and channel content still taint
+ * where it enters the run — web_search, web_fetch, connector reads, shell output, another bot —
+ * so the audit's attack case is unchanged.
  */
 const OWN_STATE_RESULT_TOOLS = new Set([
   "ask_user",
@@ -272,9 +280,11 @@ const OWN_STATE_RESULT_TOOLS = new Set([
   "end_call",
   "feedback",
   "generate_secret",
+  "list_files",
   "list_fleet",
   "list_secrets",
   "message_user",
+  "read_file",
   "read_history",
   "recall_memory",
   "remember",
