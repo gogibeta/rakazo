@@ -1,6 +1,7 @@
 import type { AdapterContext, MemoryStore } from "@rakazo/adapter-kit";
 import type { MemoryPromptBudget, MemoryPromptDocumentUse } from "@rakazo/contracts";
 import { BOT_MEMORY_MAX_BYTES, MEMORY_INDEX_PATH } from "@rakazo/contracts";
+import { escapePromptData } from "@rakazo/core";
 import { byteLength, truncateUtf8 } from "./utf8.js";
 
 /** How much durable memory a prompt carries before the rest is left out. */
@@ -73,8 +74,12 @@ export function buildAgentMemoryPrompt(
     sections.push(heading);
     remainingBytes -= headingBytes;
 
+    // Memory is data, and it is framed inside system instructions. Escaping it is
+    // what keeps a document containing the closing tag from ending the block and
+    // continuing as text outside the framing — the same treatment the sibling
+    // prompt builders give every other untrusted string.
     const content = truncateUtf8(
-      document.content,
+      escapePromptData(document.content),
       remainingBytes,
       document.scope === "bot" ? "end" : "start",
     );
