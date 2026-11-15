@@ -82,6 +82,58 @@ function outsideRoot() {
   return new ORPCError("FORBIDDEN", { message: "That path is outside the system files root" });
 }
 
+/**
+ * Whether one path segment names a secret this surface never serves: env
+ * files and private keys hold the deployment's credentials, and the file
+ * editor is not a secrets manager. Matching is case-insensitive on a single
+ * segment: ".env" and its ".env." variants and backups, any name ending in
+ * ".env", key material (".pem"/".key" files, "id_rsa*"/"id_ed25519*"), the
+ * credential files ".npmrc"/".netrc", and the credential folders ".ssh",
+ * ".aws" and ".gnupg". Ordinary names that merely contain these letters
+ * ("env.ts", "environment.md", "monkey.env.txt") do not match.
+ */
+function isSecretSegment(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower.startsWith(".env.") ||
+    lower.endsWith(".env") ||
+    lower.endsWith(".pem") ||
+    lower.endsWith(".key") ||
+    lower.startsWith("id_rsa") ||
+    lower.startsWith("id_ed25519") ||
+    lower === ".npmrc" ||
+    lower === ".netrc" ||
+    lower === ".ssh" ||
+    lower === ".aws" ||
+    lower === ".gnupg"
+  );
+}
+
+function secretPath() {
+  return new ORPCError("FORBIDDEN", { message: "That file is not available in system files" });
+}
+
+/** Refuses a client-supplied relative path that names a secret at any segment. */
+function assertNoSecretSegments(input: string): void {
+  for (const segment of input.split(/[\\/]+/)) {
+    if (segment && isSecretSegment(segment)) throw secretPath();
+  }
+}
+
+/** True when any root-relative segment of a resolved path names a secret. */
+function resolvedIsSecret(rootReal: string, resolved: string): boolean {
+  const relative = path.relative(rootReal, resolved);
+  return relative !== "" && relative.split(path.sep).some(isSecretSegment);
+}
+
+/**
+ * Refuses a resolved path that lands on a secret under an innocent name —
+ * a symlink inside the root pointing at the root's own ".env", say.
+ */
+function assertResolvedNotSecret(rootReal: string, resolved: string): void {
+  if (resolvedIsSecret(rootReal, resolved)) throw secretPath();
+}
+
 /** The root as a real directory; a configured-but-missing root reads as not found. */
 async function realRoot(root: string): Promise<string> {
   let resolved: string;
@@ -187,7 +239,9 @@ export async function listSystemFiles(
   const root = configuredRoot(deps);
   if (!root) return { enabled: false, path: input.path, entries: [], truncated: false };
   const rootReal = await realRoot(root);
+  assertNoSecretSegments(input.path);
   const dir = await resolveExisting(rootReal, input.path);
+  assertResolvedNotSecret(rootReal, dir);
   const dirInfo = await stat(dir).catch(() => null);
   if (!dirInfo?.isDirectory()) {
     throw new ORPCError("BAD_REQUEST", { message: "Not a folder" });
@@ -195,12 +249,15 @@ export async function listSystemFiles(
   const dirents = await readdir(dir, { withFileTypes: true });
   const entries: SystemFileEntry[] = [];
   for (const dirent of dirents) {
+    // Secrets are not listed at all, under their own name or a link's.
+    if (isSecretSegment(dirent.name)) continue;
     const childPath = input.path ? `${input.path}/${dirent.name}` : dirent.name;
     const full = path.join(dir, dirent.name);
     if (dirent.isSymbolicLink()) {
       // Links that lead out of the root are not listed at all.
       const resolved = await realpath(full).catch(() => null);
       if (!resolved || !isInsideRoot(rootReal, resolved)) continue;
+      if (resolvedIsSecret(rootReal, resolved)) continue;
       const info = await stat(resolved).catch(() => null);
       if (info?.isDirectory()) {
         entries.push({ name: dirent.name, path: childPath, type: "directory", size: null });
@@ -247,7 +304,9 @@ export async function readSystemFile(
     };
   }
   const rootReal = await realRoot(root);
+  assertNoSecretSegments(input.path);
   const file = await resolveExisting(rootReal, input.path);
+  assertResolvedNotSecret(rootReal, file);
   const info = await stat(file).catch(() => null);
   if (!info?.isFile()) throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
   if (info.size > SYSTEM_FILES_MAX_BYTES) {
@@ -293,6 +352,7 @@ export async function writeSystemFile(
       message: "System files are not enabled on this deployment",
     });
   }
+  assertNoSecretSegments(input.path);
   const bytes = Buffer.from(input.content, "utf8");
   if (bytes.byteLength > SYSTEM_FILES_MAX_BYTES) {
     throw new ORPCError("BAD_REQUEST", {
@@ -304,6 +364,7 @@ export async function writeSystemFile(
   }
   const rootReal = await realRoot(root);
   const target = await resolveForWrite(rootReal, input.path);
+  assertResolvedNotSecret(rootReal, target);
   const existing = await stat(target).catch(() => null);
   if (existing) {
     // Never overwrite a binary or oversized file sight unseen from the editor.

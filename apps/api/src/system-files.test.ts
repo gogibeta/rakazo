@@ -148,6 +148,112 @@ describe("system files", () => {
     );
   });
 
+  it("never lists, reads, or writes secret files, at any depth", async () => {
+    const deps = makeDeps();
+    await writeFile(path.join(root, ".env"), "ENCRYPTION_KEY=fake");
+    await writeFile(path.join(root, ".env.bak-1"), "ENCRYPTION_KEY=fake");
+    await writeFile(path.join(root, "prod.env"), "TOKEN=fake");
+    await writeFile(path.join(root, "UPPER.ENV"), "TOKEN=fake");
+    await writeFile(path.join(root, "cert.pem"), "-----BEGIN CERTIFICATE-----");
+    await writeFile(path.join(root, "tls.key"), "-----BEGIN PRIVATE KEY-----");
+    await writeFile(path.join(root, "id_rsa"), "private");
+    await writeFile(path.join(root, ".npmrc"), "//registry/:_authToken=fake");
+    await writeFile(path.join(root, ".netrc"), "machine example login fake");
+    await mkdir(path.join(root, ".ssh"));
+    await writeFile(path.join(root, ".ssh", "id_ed25519"), "private");
+    await mkdir(path.join(root, ".aws"));
+    await writeFile(path.join(root, ".aws", "credentials"), "fake");
+    await writeFile(path.join(root, "notes", ".env"), "TOKEN=fake");
+    await writeFile(path.join(root, "notes", "deploy.key"), "private");
+
+    // Listings hide them, at the root and inside subfolders.
+    const listed = await listSystemFiles(deps, actor, { path: "" });
+    expect(listed.entries.map((entry) => entry.name)).toEqual(["notes", "hello.txt"]);
+    const nested = await listSystemFiles(deps, actor, { path: "notes" });
+    expect(nested.entries.map((entry) => entry.name)).toEqual(["todo.md"]);
+    await expect(listSystemFiles(deps, actor, { path: ".ssh" })).rejects.toThrow(
+      "not available in system files",
+    );
+
+    // Reads are refused with a clean error, not served.
+    for (const secret of [
+      ".env",
+      ".env.bak-1",
+      "prod.env",
+      "UPPER.ENV",
+      "cert.pem",
+      "tls.key",
+      "id_rsa",
+      ".npmrc",
+      ".netrc",
+      ".ssh",
+      ".ssh/id_ed25519",
+      ".aws/credentials",
+      "notes/.env",
+      "notes/deploy.key",
+    ]) {
+      await expect(readSystemFile(deps, actor, { path: secret })).rejects.toThrow(
+        "not available in system files",
+      );
+    }
+
+    // Writes are refused, and nothing on disk changes.
+    await expect(
+      writeSystemFile(deps, actor, { path: ".env", content: "pwned=1" }),
+    ).rejects.toThrow("not available in system files");
+    await expect(
+      writeSystemFile(deps, actor, { path: "notes/.env", content: "pwned=1" }),
+    ).rejects.toThrow("not available in system files");
+    await expect(
+      writeSystemFile(deps, actor, { path: "new.key", content: "private" }),
+    ).rejects.toThrow("not available in system files");
+    await expect(readFile(path.join(root, ".env"), "utf8")).resolves.toBe("ENCRYPTION_KEY=fake");
+    await expect(stat(path.join(root, "new.key"))).rejects.toThrow();
+  });
+
+  it("refuses symlinks that reach a secret file inside the root", async () => {
+    const deps = makeDeps();
+    await writeFile(path.join(root, ".env"), "ENCRYPTION_KEY=fake");
+    // An innocent name that resolves to the secret, and a secret name that
+    // resolves to an ordinary file: both are refused.
+    await symlink(path.join(root, ".env"), path.join(root, "innocent.txt"));
+    await symlink(path.join(root, "hello.txt"), path.join(root, "prod.env"));
+    await expect(readSystemFile(deps, actor, { path: "innocent.txt" })).rejects.toThrow(
+      "not available in system files",
+    );
+    await expect(
+      writeSystemFile(deps, actor, { path: "innocent.txt", content: "pwned" }),
+    ).rejects.toThrow("not available in system files");
+    await expect(readSystemFile(deps, actor, { path: "prod.env" })).rejects.toThrow(
+      "not available in system files",
+    );
+    const listed = await listSystemFiles(deps, actor, { path: "" });
+    const names = listed.entries.map((entry) => entry.name);
+    expect(names).not.toContain("innocent.txt");
+    expect(names).not.toContain("prod.env");
+    // The secret on disk is untouched.
+    await expect(readFile(path.join(root, ".env"), "utf8")).resolves.toBe("ENCRYPTION_KEY=fake");
+  });
+
+  it("still serves ordinary files whose names merely resemble secrets", async () => {
+    const deps = makeDeps();
+    await writeFile(path.join(root, "env.ts"), "export {};");
+    await writeFile(path.join(root, "environment.md"), "# Env\n");
+    await writeFile(path.join(root, "monkey.env.txt"), "notes");
+    const listed = await listSystemFiles(deps, actor, { path: "" });
+    const names = listed.entries.map((entry) => entry.name);
+    expect(names).toContain("env.ts");
+    expect(names).toContain("environment.md");
+    expect(names).toContain("monkey.env.txt");
+    await expect(readSystemFile(deps, actor, { path: "env.ts" })).resolves.toMatchObject({
+      content: "export {};",
+      editable: true,
+    });
+    await expect(
+      writeSystemFile(deps, actor, { path: "monkey.env.txt", content: "edited" }),
+    ).resolves.toEqual({ ok: true, size: 6 });
+  });
+
   it("marks binary files read-only by extension and by content", async () => {
     const deps = makeDeps();
     await writeFile(path.join(root, "logo.png"), "not really a png");
