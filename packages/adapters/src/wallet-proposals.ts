@@ -73,7 +73,10 @@ export type WalletProposalErrorCode =
 const ERROR_MESSAGES: Record<WalletProposalErrorCode, string> = {
   invalid_request: "The transaction could not be read. Check the address, amount and data.",
   chain_not_allowed: "That chain is not available for proposals.",
-  wallet_not_found: "Wallet not found.",
+  // A bot that passes the wallet's name or address instead of its id gets this,
+  // so the correction is in the message rather than left to guesswork.
+  wallet_not_found:
+    "Wallet not found. Pass the id that list_wallets returns, not its name or address.",
   wallet_not_migrated:
     "This wallet is not protected by the wallet password yet, so it cannot be proposed for signing.",
   rpc_unavailable: "The chain could not be reached, so nothing was proposed.",
