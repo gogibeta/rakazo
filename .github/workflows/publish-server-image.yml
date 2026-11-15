@@ -326,7 +326,23 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: ./.github/actions/publish-image
+      - id: publish
+        uses: ./.github/actions/publish-image
         with:
           image: ghcr.io/${{ github.repository }}/${{ matrix.name }}
           digests-directory: /tmp/digests
+          # `edge` moves only from the gated job in ci.yml, after the suite passes.
+          edge: "false"
+      - name: Record the published digest for the gated edge tag
+        if: github.ref == 'refs/heads/main'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          IMAGE: ${{ matrix.name }}
+        run: echo "${DIGEST}" > "digest-${IMAGE}.txt"
+      - name: Upload the published digest
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: published-digest-${{ matrix.name }}
+          path: digest-*.txt
+          retention-days: 1

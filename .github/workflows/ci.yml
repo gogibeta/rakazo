@@ -376,6 +376,46 @@ jobs:
       id-token: write
       attestations: write
 
+  publish-edge-tag:
+    name: Move the edge tag after the suite
+    # `edge` is what a Compose install pulls by default, so it moves only on a green
+    # main. The build above publishes `sha-<commit>` immediately — that tag is what a
+    # deploy pins — and this job retags the same digests as `edge` once the check
+    # suite and the Postgres journeys have passed. Splitting it this way keeps the
+    # build startable in push order (its concurrency locks depend on that) while the
+    # moving tag still waits behind the tests.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [checks, test-integration, publish-server-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: app
+          - name: updater
+          - name: computer
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: published-digest-${{ matrix.name }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point edge at the digest this run published
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          digest="$(cat "digest-${{ matrix.name }}.txt")"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "No published digest." >&2; exit 1; }
+          docker buildx imagetools create -t "${IMAGE}:edge" "${IMAGE}@${digest}"
+
   publish-mobile-update:
     name: Publish compatible mobile update
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
