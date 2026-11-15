@@ -480,6 +480,22 @@ it.each(["Allow in this space", "Allow for this chat"])(
   },
 );
 
+it("shows an approval that expired unanswered as expired", async () => {
+  await render({
+    kind: "ask",
+    approvalEffectId: "effect-1",
+    text: "Run on your computer?",
+    status: "answered",
+    answer: "expired",
+    actions: [
+      { id: "allow", label: "Allow once" },
+      { id: "deny", label: "Deny" },
+    ],
+  });
+  expect(container.textContent).toContain("This approval expired");
+  expect(container.textContent).not.toContain("Allowed once");
+});
+
 it("shows a question's detail as plain text above its options", async () => {
   await render({
     kind: "ask",

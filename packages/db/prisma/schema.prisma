@@ -1680,6 +1680,10 @@ model ExternalEffect {
   reviewDecision String?
   reviewReason   String?
   reviewModel    String?
+  /// When a still-unanswered ask backed by this effect stops being answerable. Set at
+  /// record time from APPROVAL_TTL; only `intended` effects whose run waits on the
+  /// owner are ever resolved by it (see the approval expiry sweep).
+  expiresAt      DateTime?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -1687,6 +1691,7 @@ model ExternalEffect {
   @@index([runId, status])
   @@index([spaceId, kind, status])
   @@index([kind, status, updatedAt])
+  @@index([status, expiresAt])
   @@map("external_effects")
 }
 

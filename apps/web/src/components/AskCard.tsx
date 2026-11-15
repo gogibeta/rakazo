@@ -82,6 +82,7 @@ function formatAnsweredState(
   actions?: AskBlock["actions"],
 ): string {
   if (!answer) return t`Answered`;
+  if (answer === "expired") return t`This approval expired`;
   if (!approval) return answer === "approved" ? t`Sent` : selectedAskActionLabel(answer, actions);
   if (outcome === "created") return t`Created`;
   if (outcome === "cancelled") return t`Cancelled`;
@@ -306,11 +307,12 @@ function PromptAskCard({ block, canAnswer, onAnswer, rpc = selectedSpaceRpc }: A
       ) : answered ? (
         <div className="mt-3.5 flex items-center gap-1.5 text-body font-medium text-muted-foreground">
           {displayedAnswer === "deny" ||
+          displayedAnswer === "expired" ||
           approvalActions?.find((action) => action.id === displayedAnswer)?.outcome ===
             "cancelled" ? null : (
             <Check aria-hidden className="size-4" />
           )}
-          {block.instructionUpdate
+          {block.instructionUpdate && displayedAnswer !== "expired"
             ? displayedAnswer === "deny"
               ? t`Dismissed`
               : t`Allowed once`

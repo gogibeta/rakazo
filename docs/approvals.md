@@ -29,6 +29,11 @@ When a bot needs a yes, it posts a card in the chat showing exactly what it want
 Cards never block the chat. Keep talking to the bot, and answer the card whenever you're ready. You
 get a notification when a bot is waiting on you, if notifications are on in the bot's settings.
 
+A card waits 24 hours. If it isn't answered in that time it expires and counts as a **Deny**: the
+bot carries on without doing the action, and the card shows that it expired. Answering after that
+isn't possible — ask the bot to try again if you still want it done. Self-hosters can change the
+wait with the `APPROVAL_TTL` environment variable (milliseconds).
+
 ## Allow and Block lists
 
 Every **Always allow** choice is saved in **Settings → Approvals**. Switch any entry between

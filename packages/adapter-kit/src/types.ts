@@ -266,7 +266,7 @@ export interface ConnectorTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  /** Declared effect. `false` forces approval; `true` never relaxes the name-based gate. */
+  /** Declared effect. `false` forces approval; `true` never relaxes the name-based gate; an absent declaration is gated like a write. */
   readOnly?: boolean;
   /** Set when the tool runs other actions named in its arguments; see ToolBatch. */
   batch?: ToolBatch;

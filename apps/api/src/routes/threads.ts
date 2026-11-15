@@ -13,6 +13,7 @@ import {
 } from "@rakazo/core";
 import type { Prisma } from "@rakazo/db";
 import {
+  AnswerExpiredError,
   AnswerTooLongError,
   appendEventInTransaction,
   archiveSession as archiveDbSession,
@@ -701,6 +702,9 @@ export function threadsRoutes(ctx: RouterContext) {
           .catch((error: unknown) => {
             if (error instanceof AnswerTooLongError)
               throw new ORPCError("BAD_REQUEST", { message: error.message });
+            // The ask expired while the answer was in flight; it resolved as a denial.
+            if (error instanceof AnswerExpiredError)
+              throw new ORPCError("CONFLICT", { message: error.message });
             // A typed credential its destination cannot carry (e.g. a header with a line break).
             throw mapBotSecretInputError(error);
           });

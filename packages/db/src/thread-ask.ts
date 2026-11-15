@@ -35,6 +35,7 @@ import { notifyCommittedEvent, notifyRealtime } from "./event-stream.js";
 import type { FinalizeRunResult } from "./events.js";
 import { appendEventInTransaction, transientRunEventsWhere } from "./events.js";
 import { createThreadMessageInTransaction, loadMessageAuthor } from "./messages.js";
+import { runAsSystem } from "./row-security.js";
 import { deleteRunSecretsInTransaction } from "./run-secrets.js";
 import { RUN_TURN_CHECKPOINT_KIND } from "./run-turn-checkpoint.js";
 import { recordSecurityEvent } from "./security-events.js";
@@ -48,6 +49,18 @@ export class AnswerTooLongError extends Error {
   constructor() {
     super("This answer is too long.");
     this.name = "AnswerTooLongError";
+  }
+}
+
+/**
+ * The ask sat unanswered past its expiry, so the late answer was refused and the
+ * run was resumed with the expiry instead. The expiry itself is committed; this
+ * only tells the caller why the answer did not land.
+ */
+export class AnswerExpiredError extends Error {
+  constructor() {
+    super("This request expired before it was answered.");
+    this.name = "AnswerExpiredError";
   }
 }
 
@@ -136,6 +149,20 @@ export interface AnswerRunInput {
 const DISMISSED_SECRET_RESULT = { ok: false, dismissed: true } as const;
 const DISMISSED_SECRET_PROMPT = "The user dismissed this request.";
 
+/** The answer an expired ask is recorded with; cards render it as the expiry state. */
+export const EXPIRED_ASK_ANSWER = "expired";
+/** What request_secret returns to the bot once its card expired unanswered. */
+const EXPIRED_SECRET_RESULT = { ok: false, expired: true } as const;
+const EXPIRED_SECRET_PROMPT = "The request expired before it was answered.";
+
+/** An ask resolution by expiry: the effect it denied, and the lifetime it waited out. */
+export interface ExpiredApproval {
+  effectId: string;
+  effectKind: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
 export interface RunSecretWriter {
   withPrepared?<T>(
     prisma: PrismaClient,
@@ -182,6 +209,252 @@ async function findPendingAsk(
   return null;
 }
 
+/**
+ * Resolve a located ask by expiry, inside the caller's transaction: the run goes
+ * back to queued, an approval's effect is denied (so the resumed run gets the
+ * refusal result the answer path produces for a denial), a secret request settles
+ * like a dismissal with an expired result, and the card is recorded answered with
+ * the expiry so every surface renders it as expired. Returns null when the run
+ * was no longer waiting — another resolution won the race.
+ */
+async function expireLocatedAsk(
+  tx: Prisma.TransactionClient,
+  located: {
+    spaceId: string;
+    threadId: string;
+    runId: string;
+    run: { botId: string; trigger: string; task?: { prompt: string } | null };
+    message: { id: string };
+    blocks: MessageBlock[];
+    pendingAsk: Extract<MessageBlock, { kind: "ask" }>;
+    effect: { id: string; kind: string; createdAt: Date; expiresAt: Date | null };
+  },
+): Promise<{ threadId: string; seq: number; expired: ExpiredApproval } | null> {
+  const { spaceId, threadId, runId, run, message, blocks, pendingAsk, effect } = located;
+  const queued = await tx.run.updateMany({
+    where: { id: runId, spaceId, threadId, status: "waiting_input" },
+    data: { status: "queued" },
+  });
+  if (queued.count !== 1) return null;
+  if (isApprovalAskBlock(pendingAsk)) {
+    await tx.externalEffect.update({ where: { id: effect.id }, data: { status: "denied" } });
+  } else {
+    await tx.externalEffect.update({
+      where: { id: effect.id },
+      data: { status: "completed", result: EXPIRED_SECRET_RESULT },
+    });
+    const task = await tx.task.updateMany({
+      where: { runs: { some: { id: runId } } },
+      data: { prompt: resumePrompt(run, pendingAsk.text, EXPIRED_SECRET_PROMPT) },
+    });
+    if (task.count !== 1) throw new Error("Run task was not available to expire");
+  }
+  const answeredBlocks = blocks.map((block) =>
+    block === pendingAsk
+      ? { ...block, status: "answered" as const, answer: EXPIRED_ASK_ANSWER }
+      : block,
+  );
+  await tx.message.update({ where: { id: message.id }, data: { blocks: answeredBlocks } });
+  const updated = await appendEventInTransaction(tx, {
+    spaceId,
+    threadId,
+    botId: run.botId,
+    type: "thread.message.updated",
+    runId,
+    payload: { messageId: message.id, role: "bot", blocks: answeredBlocks },
+  });
+  return {
+    threadId: updated.threadId,
+    seq: updated.seq,
+    expired: {
+      effectId: effect.id,
+      effectKind: effect.kind,
+      createdAt: effect.createdAt,
+      expiresAt: effect.expiresAt!,
+    },
+  };
+}
+
+/**
+ * Locate a waiting run's pending approval or secret ask and resolve it by expiry
+ * when its effect is past `expiresAt`. Anything else — a plain question (which has
+ * no effect and so no expiry), an ask whose effect has no expiry or has not
+ * reached it, a run that is not waiting — returns null untouched.
+ */
+async function commitExpireWaitingApproval(
+  tx: Prisma.TransactionClient,
+  input: { spaceId: string; threadId: string; runId: string },
+  now: Date,
+): Promise<{ threadId: string; seq: number; expired: ExpiredApproval } | null> {
+  // Thread row first, then run rows — the same order as the answer path, so a
+  // concurrent answer or clear cannot deadlock against this transaction.
+  await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
+  const run = await tx.run.findFirst({
+    where: {
+      id: input.runId,
+      spaceId: input.spaceId,
+      threadId: input.threadId,
+      status: "waiting_input",
+    },
+    select: {
+      botId: true,
+      trigger: true,
+      task: { select: { prompt: true } },
+    },
+  });
+  if (!run) return null;
+  const messages = await tx.message.findMany({
+    where: { threadId: input.threadId, runId: input.runId, role: "bot" },
+    orderBy: { seq: "desc" },
+    take: 50,
+    select: { id: true, blocks: true },
+  });
+  for (const message of messages) {
+    const parsed = MessageBlockSchema.array().safeParse(message.blocks);
+    if (!parsed.success) continue;
+    const pendingAsk = parsed.data.find(
+      (block) => block.kind === "ask" && block.status !== "answered",
+    );
+    if (pendingAsk?.kind !== "ask") continue;
+    const approvalAsk = isApprovalAskBlock(pendingAsk);
+    const secretAsk = isSecretAskBlock(pendingAsk);
+    if (!approvalAsk && !secretAsk) return null;
+    const effect = approvalAsk
+      ? await tx.externalEffect.findFirst({
+          where: {
+            id: pendingAsk.approvalEffectId,
+            spaceId: input.spaceId,
+            runId: input.runId,
+            status: "intended",
+          },
+          select: { id: true, kind: true, createdAt: true, expiresAt: true },
+        })
+      : await tx.externalEffect.findFirst({
+          where: {
+            runId: input.runId,
+            spaceId: input.spaceId,
+            kind: "request_secret",
+            status: "intended",
+          },
+          select: { id: true, kind: true, createdAt: true, expiresAt: true },
+        });
+    if (!effect?.expiresAt || effect.expiresAt > now) return null;
+    return expireLocatedAsk(tx, {
+      spaceId: input.spaceId,
+      threadId: input.threadId,
+      runId: input.runId,
+      run,
+      message,
+      blocks: parsed.data,
+      pendingAsk,
+      effect,
+    });
+  }
+  return null;
+}
+
+/** The expiry's row in the audit log: the system denied the effect by expiry. */
+async function recordApprovalExpiry(input: {
+  spaceId: string;
+  runId: string;
+  threadId: string;
+  expired: ExpiredApproval;
+  via: "sweep" | "answer";
+  now: Date;
+}): Promise<void> {
+  await recordAuditEvent({
+    action: "tool.approval_decision",
+    actor: { type: "system" },
+    spaceId: input.spaceId,
+    target: { type: "effect", id: input.expired.effectId, label: input.expired.effectKind },
+    outcome: "denied",
+    runId: input.runId,
+    threadId: input.threadId,
+    metadata: {
+      tool: input.expired.effectKind,
+      decision: "expired",
+      via: input.via,
+      ageMs: input.now.getTime() - input.expired.createdAt.getTime(),
+    },
+  });
+}
+
+/**
+ * Resolve one waiting run's ask by expiry when it is past due, writing the
+ * decision to the audit log. Returns the expiry, or null when nothing was due.
+ */
+export async function expireWaitingApproval(
+  prisma: PrismaClient,
+  input: { spaceId: string; threadId: string; runId: string },
+  realtime?: RealtimeFanout,
+  options: { now?: Date; via?: "sweep" | "answer" } = {},
+): Promise<ExpiredApproval | null> {
+  const now = options.now ?? new Date();
+  const committed = await prisma.$transaction(
+    async (tx: Prisma.TransactionClient) => commitExpireWaitingApproval(tx, input, now),
+    THREAD_LOCK_TRANSACTION_OPTIONS,
+  );
+  if (!committed) return null;
+  await recordApprovalExpiry({
+    spaceId: input.spaceId,
+    runId: input.runId,
+    threadId: input.threadId,
+    expired: committed.expired,
+    via: options.via ?? "sweep",
+    now,
+  });
+  await notifyRealtime(realtime, committed.threadId, committed.seq);
+  return committed.expired;
+}
+
+/**
+ * One sweep pass: every effect still intended past its expiry whose run waits on
+ * the owner, oldest expiry first. The per-run transaction re-checks everything,
+ * so a stale candidate (answered, cleared, resumed) is skipped, never forced.
+ */
+export async function expireWaitingApprovals(
+  prisma: PrismaClient,
+  options: { now?: Date; limit?: number } = {},
+  realtime?: RealtimeFanout,
+): Promise<number> {
+  const now = options.now ?? new Date();
+  const limit = options.limit ?? 50;
+  return runAsSystem("expire waiting approvals", async () => {
+    const candidates = await prisma.externalEffect.findMany({
+      where: { status: "intended", expiresAt: { lte: now } },
+      orderBy: { expiresAt: "asc" },
+      take: limit,
+      select: { runId: true, spaceId: true },
+    });
+    let expired = 0;
+    for (const candidate of candidates) {
+      const run = await prisma.run.findFirst({
+        where: { id: candidate.runId, spaceId: candidate.spaceId, status: "waiting_input" },
+        select: { threadId: true },
+      });
+      if (!run) continue;
+      const result = await expireWaitingApproval(
+        prisma,
+        { spaceId: candidate.spaceId, threadId: run.threadId, runId: candidate.runId },
+        realtime,
+        { now, via: "sweep" },
+      );
+      if (result) expired += 1;
+    }
+    return expired;
+  });
+}
+
+/** The job reconciler's approval-expiry pass, in the pruners' shape. */
+export function createApprovalExpirySweeper(
+  db: PrismaClient,
+  options: { now?: () => Date; limit?: number } = {},
+): () => Promise<void> {
+  return async () => {
+    await expireWaitingApprovals(db, { now: options.now?.(), limit: options.limit });
+  };
+}
+
 async function commitAnswerRunInput(
   tx: Prisma.TransactionClient,
   input: AnswerRunInput,
@@ -190,6 +463,7 @@ async function commitAnswerRunInput(
   threadId: string;
   seq: number;
   approval?: { decision: string; effectKind: string; effectId: string };
+  expired?: ExpiredApproval;
 } | null> {
   // Thread row first, then run rows — the same order as clearThread and finalizeRun, so a
   // concurrent clear cannot deadlock against this transaction.
@@ -264,6 +538,8 @@ async function commitAnswerRunInput(
     kind: string;
     request: Prisma.JsonValue;
     batchActions: Prisma.JsonValue;
+    createdAt: Date;
+    expiresAt: Date | null;
   } | null = null;
   let editedInstructions: string | undefined;
   let approvalAnswer = input.answer;
@@ -308,6 +584,35 @@ async function commitAnswerRunInput(
       if (run.userId !== input.answeredByUserId) return null;
       approvalUserId = input.answeredByUserId;
     }
+  }
+
+  // An ask that sat past its expiry is no longer the owner's to answer: resolve
+  // it by expiry here under the thread lock, so a late answer is refused even
+  // when the reconciler's sweep has not reached the run yet.
+  const expiryEffect = approvalAsk
+    ? approvalEffect
+    : secretAsk && !dismissed
+      ? await tx.externalEffect.findFirst({
+          where: {
+            runId: input.runId,
+            spaceId: input.spaceId,
+            kind: "request_secret",
+            status: "intended",
+          },
+          select: { id: true, kind: true, createdAt: true, expiresAt: true },
+        })
+      : null;
+  if (expiryEffect?.expiresAt && expiryEffect.expiresAt <= new Date()) {
+    return expireLocatedAsk(tx, {
+      spaceId: input.spaceId,
+      threadId: input.threadId,
+      runId: input.runId,
+      run,
+      message,
+      blocks: parsed.data,
+      pendingAsk,
+      effect: expiryEffect,
+    });
   }
 
   // Answering the creation intro's or a daily check-in's question resumes as the user's
@@ -515,6 +820,21 @@ export async function answerRunInput(
       : await commit();
 
   if (!committed) return false;
+  if (committed.expired) {
+    // The commit already resolved the ask by expiry and resumed the run; this
+    // throw only tells the caller the late answer itself was refused. It lands
+    // before any secret from the answer is stored.
+    await recordApprovalExpiry({
+      spaceId: input.spaceId,
+      runId: input.runId,
+      threadId: input.threadId,
+      expired: committed.expired,
+      via: "answer",
+      now: new Date(),
+    });
+    await notifyRealtime(realtime, committed.threadId, committed.seq);
+    throw new AnswerExpiredError();
+  }
   if (committed.approval) {
     await recordSecurityEvent({
       type: "approval.decided",

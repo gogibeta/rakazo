@@ -105,8 +105,10 @@ export function AskBlock({
     }
   }
 
-  const answeredLabel =
-    dismissed || ask.dismissed
+  const expired = ask.status === "answered" && ask.answer === "expired";
+  const answeredLabel = expired
+    ? t`Expired`
+    : dismissed || ask.dismissed
       ? t`Dismissed`
       : sentOnce || ask.remembered === false || ask.oneTimeCode
         ? t`Sent`
@@ -272,8 +274,8 @@ export function AskBlock({
       {answered ? (
         <Text
           style={{
-            // Dismissed reads like a declined approval, not a success.
-            color: dismissed || ask.dismissed ? tokens.mutedForeground : tokens.success,
+            // Dismissed and expired read like a declined approval, not a success.
+            color: dismissed || ask.dismissed || expired ? tokens.mutedForeground : tokens.success,
             ...typeScale.secondary,
             fontWeight: fontWeight.medium,
             ...(secretInput ? { marginTop: 12 } : null),
