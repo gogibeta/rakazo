@@ -551,6 +551,10 @@ export const appContract = {
     migrate: oc.input(WalletMigrateInput).output(WalletSummarySchema),
     uses: oc.input(WalletUsesInput).output(z.object({ uses: z.array(WalletUseSummarySchema) })),
     vaultStatus: oc.output(WalletVaultStatusSchema),
+    /** Unlock the wallet vault for six hours; the password is never stored or read back. */
+    vaultUnlock: oc.input(WalletVaultPasswordSetupInput).output(WalletVaultStatusSchema),
+    /** Lock the wallet vault now; the grant ends immediately. */
+    vaultLock: oc.output(WalletVaultStatusSchema),
     setVaultPassword: oc.input(WalletVaultPasswordSetupInput).output(WalletVaultStatusSchema),
     changeVaultPassword: oc.input(WalletVaultPasswordChangeInput).output(WalletVaultStatusSchema),
   },

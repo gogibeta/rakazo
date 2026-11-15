@@ -243,6 +243,28 @@ export function walletVaultPasswordRejectedEvent(
   };
 }
 
+/**
+ * A wallet-vault unlock the vault rejected. The attempt count and lockout
+ * live on the vault row, never here — this row only says the attempt
+ * happened, so a failed unlock is visible to the owner without ever
+ * carrying the password.
+ */
+export function walletVaultUnlockRejectedEvent(actor: {
+  userId: string;
+  spaceId: string;
+}): SecurityEventInput {
+  return {
+    type: "credential.changed",
+    userId: actor.userId,
+    spaceId: actor.spaceId,
+    metadata: {
+      procedure: "wallets.vaultUnlock",
+      kind: "wallet_vault",
+      outcome: "rejected",
+    },
+  };
+}
+
 async function errorCode(response: Response): Promise<string | null> {
   try {
     const body: unknown = await response.clone().json();
