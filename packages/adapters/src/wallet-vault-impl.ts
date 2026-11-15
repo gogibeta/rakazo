@@ -60,43 +60,113 @@ export class WalletVaultNotConfiguredError extends Error {
 }
 
 /**
- * Count one failed password attempt against a vault row, starting the
- * lockout once the count reaches the limit. Password change and unlock
- * verification share this, so both draw on the one throttle the row carries.
+ * The outcome of reserving one password attempt, taken BEFORE any scrypt work.
  *
- * The count moves with Prisma's atomic increment, never a read-modify-write:
- * concurrent failures each land, none overwrites another, and the failure
- * that reaches the limit is the one that sets the lockout — conditionally,
- * so it never extends a lockout another failure already set.
+ * `locked` means the reservation was refused: the row is locked out, or the
+ * attempt would exceed the limit, so no derivation runs at all.
  */
-async function recordFailedPasswordAttempt(
+type AttemptReservation =
+  | {
+      locked: false;
+      /** The counter value this reservation claimed. */
+      attempted: number;
+      /** True when this reservation is the one that set the lockout. */
+      setLockout: boolean;
+      lockedUntil: Date | null;
+    }
+  | { locked: true; failedAttempts: number; lockedUntil: Date | null };
+
+/**
+ * Reserve one password attempt atomically, BEFORE any password is verified.
+ *
+ * This is the whole throttle. Reading `lockedUntil`, spending ~300ms in scrypt,
+ * and only then recording the failure let N concurrent wrong guesses all pass
+ * the stale check before any of them counted: the lockout was enforced after
+ * the expensive part, which is exactly the window an attacker parallelises.
+ *
+ * The reservation is ONE conditional statement: increment the counter only
+ * while the row is not locked out and the counter is still under the limit.
+ * Postgres serialises the row, so of N concurrent callers exactly the allowed
+ * number match, and the rest see zero rows and are refused before any scrypt
+ * runs. The statement that brings the count to the limit also sets the
+ * lockout, in the same statement, so the window does not exist at all.
+ *
+ * Because an attempt is reserved before it is verified, a SUCCESSFUL
+ * verification must give its reservation back (see the counters reset in
+ * `verifyWalletVaultPassword` / `changeWalletVaultPassword`). A request that
+ * dies mid-verification leaves its reservation spent, which fails closed: at
+ * worst a legitimate attempt costs one slot in a five-attempt budget.
+ */
+async function reservePasswordAttempt(
   prisma: PrismaClient,
   userId: string,
   now: Date,
-): Promise<{ failedAttempts: number; lockedUntil: Date | null }> {
-  const updated = (await prisma.walletVault.update({
-    where: { userId },
-    data: { failedAttempts: { increment: 1 } },
-  })) as VaultRow;
-  let lockedUntil = updated.lockedUntil;
-  const lockoutDue =
-    updated.failedAttempts >= WALLET_VAULT_MAX_FAILED_ATTEMPTS &&
-    (lockedUntil === null || lockedUntil <= now);
-  if (lockoutDue) {
-    const candidate = new Date(now.getTime() + WALLET_VAULT_LOCKOUT_MS);
-    const set = await prisma.walletVault.updateMany({
-      where: { userId, OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }] },
-      data: { lockedUntil: candidate },
-    });
-    if (set.count > 0) {
-      lockedUntil = candidate;
-    } else {
-      // Another failure set the lockout first; report the one that stands.
-      const row = (await prisma.walletVault.findUnique({ where: { userId } })) as VaultRow | null;
-      lockedUntil = row?.lockedUntil ?? lockedUntil;
-    }
+): Promise<AttemptReservation> {
+  const lockoutAt = new Date(now.getTime() + WALLET_VAULT_LOCKOUT_MS);
+  // One statement covering both windows:
+  //
+  // - No lockout, counter under the limit: claim the next slot, and set the
+  //   lockout in the same write when this claim reaches the limit.
+  // - A lockout that has run its course: this attempt opens a fresh window, so
+  //   the counter restarts at 1 rather than staying pinned at the limit. Treating
+  //   an expired lockout as "still over the limit" would lock the account forever.
+  //
+  // Every column reference in SET is the OLD row, as PostgreSQL defines it for the
+  // target table, so each CASE compares and increments the pre-statement value.
+  const claimed = await prisma.$queryRaw<
+    Array<{ failedAttempts: number; lockedUntil: Date | null }>
+  >`
+    UPDATE "wallet_vaults"
+    SET "failedAttempts" =
+          CASE WHEN "lockedUntil" <= ${now} THEN 1 ELSE "failedAttempts" + 1 END,
+        "lockedUntil" =
+          CASE
+            WHEN "lockedUntil" <= ${now} THEN NULL
+            WHEN "failedAttempts" + 1 >= ${WALLET_VAULT_MAX_FAILED_ATTEMPTS}
+              THEN ${lockoutAt}::timestamptz
+            ELSE "lockedUntil"
+          END
+    WHERE "userId" = ${userId}
+      AND ("lockedUntil" IS NULL OR "lockedUntil" <= ${now})
+      AND ("lockedUntil" IS NOT NULL OR "failedAttempts" < ${WALLET_VAULT_MAX_FAILED_ATTEMPTS})
+    RETURNING "failedAttempts", "lockedUntil"`;
+
+  const row = claimed[0];
+  if (!row) {
+    // Refused. Read the counters so the caller's audit hears the real state
+    // rather than a guess; this is the rare path, not the hot one.
+    const current = (await prisma.walletVault.findUnique({ where: { userId } })) as VaultRow | null;
+    return {
+      locked: true,
+      failedAttempts: current?.failedAttempts ?? WALLET_VAULT_MAX_FAILED_ATTEMPTS,
+      lockedUntil: current?.lockedUntil ?? null,
+    };
   }
-  return { failedAttempts: updated.failedAttempts, lockedUntil };
+  const setLockout =
+    row.lockedUntil !== null && Math.abs(row.lockedUntil.getTime() - lockoutAt.getTime()) < 1;
+  return {
+    locked: false,
+    // The counter AFTER this claim: what the row holds right now, and what the
+    // conditional give-back and reset must match to know nobody else moved it.
+    attempted: row.failedAttempts,
+    setLockout,
+    lockedUntil: row.lockedUntil,
+  };
+}
+
+/**
+ * Count one failed password attempt that was already reserved. The counter moved
+ * when the attempt was reserved, so this reports what that reservation recorded
+ * rather than a second read that other attempts may have moved on.
+ */
+function failedAttemptOutcome(reservation: AttemptReservation): {
+  failedAttempts: number;
+  lockedUntil: Date | null;
+} {
+  if (reservation.locked) {
+    return { failedAttempts: reservation.failedAttempts, lockedUntil: reservation.lockedUntil };
+  }
+  return { failedAttempts: reservation.attempted, lockedUntil: reservation.lockedUntil };
 }
 
 /** Vault password state safe to show the owner: never the verifier. */
@@ -182,15 +252,16 @@ export async function changeWalletVaultPassword(
   const vault = row as VaultRow;
   const now = hooks?.now ?? new Date();
 
+  // Reserve the attempt BEFORE the expensive verification. A caller who is
+  // locked out, or whose attempt would exceed the limit, is refused here with no
+  // scrypt work and no slot taken — and N concurrent callers can only ever claim
+  // the slots the limit allows.
+  const reservation = await reservePasswordAttempt(prisma, userId, now);
   const reject = async (): Promise<never> => {
-    const outcome = await recordFailedPasswordAttempt(prisma, userId, now);
-    await hooks?.onRejected?.(outcome);
+    await hooks?.onRejected?.(failedAttemptOutcome(reservation));
     throw new WalletVaultPasswordError();
   };
-
-  // While locked out, even the right password is refused, and the attempt
-  // is not counted again — the lockout simply runs its course.
-  if (vault.lockedUntil && vault.lockedUntil > now) throw new WalletVaultPasswordError();
+  if (reservation.locked) throw new WalletVaultPasswordError();
   if (!(await verifyPassword(vault.verifier, input.currentPassword))) return reject();
 
   const verifier = await createPasswordVerifier(input.newPassword);
@@ -201,11 +272,11 @@ export async function changeWalletVaultPassword(
       where: { userId },
       data: { passwordEpoch: { increment: 1 } },
     });
-    // Swap the verifier and reset the throttle — conditionally, on the
-    // counters this change read. A failure recorded concurrently moved
-    // them; then the swap still lands but the reset must not erase it.
+    // Swap the verifier, give the reserved attempt back and clear any lockout —
+    // conditionally, on the counters this change reserved. A failure recorded
+    // concurrently moved them; the swap still lands but the reset must not erase it.
     const swapped = await tx.walletVault.updateMany({
-      where: { userId, failedAttempts: vault.failedAttempts, lockedUntil: vault.lockedUntil },
+      where: { userId, failedAttempts: reservation.attempted },
       data: { verifier, changedAt: now, failedAttempts: 0, lockedUntil: null },
     });
     if (swapped.count === 0) {
@@ -243,22 +314,34 @@ export async function verifyWalletVaultPassword(
   const vault = row as VaultRow;
   const now = hooks?.now ?? new Date();
 
-  // While locked out, even the right password is refused, and the attempt
-  // is not counted again — the lockout simply runs its course.
-  if (vault.lockedUntil && vault.lockedUntil > now) throw new WalletVaultPasswordError();
+  // Reserve the attempt BEFORE scrypt. Reading `lockedUntil`, spending the
+  // derivation, and recording afterwards was the race: N parallel guesses all
+  // passed the stale check before any of them counted. The reservation is one
+  // conditional statement, so only the slots the limit allows are ever claimed,
+  // and a caller who is locked out does no work at all.
+  const reservation = await reservePasswordAttempt(prisma, userId, now);
+  if (reservation.locked) throw new WalletVaultPasswordError();
   if (!(await verifyPassword(vault.verifier, password))) {
-    const outcome = await recordFailedPasswordAttempt(prisma, userId, now);
-    await hooks?.onRejected?.(outcome);
+    await hooks?.onRejected?.(failedAttemptOutcome(reservation));
     throw new WalletVaultPasswordError();
   }
 
-  // Reset the throttle — conditionally, on the counters this verification
-  // read. If a failure landed concurrently the counts moved, this matches
-  // nothing, and a success never erases a failure that raced it.
-  if (vault.failedAttempts !== 0 || vault.lockedUntil !== null) {
+  // One conditional statement that both gives this attempt's slot back and clears
+  // the throttle, written so a racing failure survives.
+  //
+  // `attempted` is the counter this attempt claimed. If the row still holds it,
+  // nothing else moved the counter while this password was verifying, so the whole
+  // throttle is cleared — the common case, and what "knowing the password clears
+  // it" means. If the row has moved on, a failure landed meanwhile: only this
+  // attempt's own slot is given back, and the other failure's count stands.
+  const cleared = await prisma.walletVault.updateMany({
+    where: { userId, failedAttempts: reservation.attempted },
+    data: { failedAttempts: 0, lockedUntil: null },
+  });
+  if (cleared.count === 0) {
     await prisma.walletVault.updateMany({
-      where: { userId, failedAttempts: vault.failedAttempts, lockedUntil: vault.lockedUntil },
-      data: { failedAttempts: 0, lockedUntil: null },
+      where: { userId, failedAttempts: { gt: 0 } },
+      data: { failedAttempts: { decrement: 1 } },
     });
   }
   return { passwordEpoch: vault.passwordEpoch };

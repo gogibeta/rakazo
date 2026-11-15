@@ -37,6 +37,9 @@ function vaultStore() {
     for (const [key, value] of Object.entries(data)) {
       if (value && typeof value === "object" && "increment" in value) {
         record[key] = (record[key] as number) + (value as { increment: number }).increment;
+      } else if (value && typeof value === "object" && "decrement" in value) {
+        // A success gives back exactly the slot it reserved.
+        record[key] = (record[key] as number) - (value as { decrement: number }).decrement;
       } else {
         record[key] = value;
       }
@@ -54,8 +57,10 @@ function vaultStore() {
         return value instanceof Date && value.getTime() === condition.getTime();
       }
       if (condition && typeof condition === "object") {
-        const ops = condition as { lte?: Date };
+        const ops = condition as { lte?: Date; gt?: number; gte?: number };
         if (ops.lte !== undefined) return value instanceof Date && value <= ops.lte;
+        if (ops.gt !== undefined) return typeof value === "number" && value > ops.gt;
+        if (ops.gte !== undefined) return typeof value === "number" && value >= ops.gte;
         return false;
       }
       return value === condition;
@@ -96,6 +101,27 @@ function vaultStore() {
         },
       ),
     },
+    /**
+     * The throttle's reservation, as the real conditional UPDATE behaves: one
+     * statement that claims a slot only while the row is unlocked and under the
+     * limit, and sets the lockout in the same write when the claim reaches it.
+     * Modelling it faithfully is what lets a concurrency test mean anything —
+     * a read-then-write fake would reproduce the very race under test.
+     */
+    $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      // The binds, in the statement's order: now, now, limit, lockoutAt, userId, now, limit.
+      const [now, , limit, lockoutAt, userId] = values as [Date, Date, number, Date, string];
+      const row = rows.get(userId);
+      if (!row) return [];
+      const lockedOut = row.lockedUntil !== null && row.lockedUntil > now;
+      const overLimit = row.lockedUntil === null && row.failedAttempts >= limit;
+      if (lockedOut || overLimit) return [];
+      // An expired lockout opens a fresh window: the counter restarts at 1.
+      row.failedAttempts = row.lockedUntil !== null ? 1 : row.failedAttempts + 1;
+      if (row.lockedUntil !== null) row.lockedUntil = null;
+      else if (row.failedAttempts >= limit) row.lockedUntil = lockoutAt;
+      return [{ failedAttempts: row.failedAttempts, lockedUntil: row.lockedUntil }];
+    }),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
   return { prisma: client as unknown as PrismaClient, rows };
@@ -312,5 +338,96 @@ describe("wallet vault unlock verification", () => {
       passwordEpoch: 1,
     });
     expect(store.rows.get("u1")!.failedAttempts).toBe(0);
+  }, 30_000);
+
+  it("cannot exceed the attempt limit under N concurrent guesses", async () => {
+    // The bug this replaces: the lockout was checked before ~300ms of scrypt and
+    // recorded only afterwards, so N parallel guesses all passed the stale check
+    // and all ran a derivation. Reserving the slot in one conditional statement
+    // BEFORE the work is what closes that window — so this test starts its
+    // attempts together and counts how many ever reached a verification.
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    const start = new Date("2026-09-01T00:00:00.000Z");
+
+    // A derivation counter on the real verifier path would be ideal, but the
+    // service calls the envelope helper directly; what matters is what the row
+    // records and how many callers were let through. Every caller that gets past
+    // the reservation pays for a derivation, so the row's counter is the number
+    // of derivations the throttle allowed.
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, () =>
+        verifyWalletVaultPassword(store.prisma, "u1", WRONG, { now: start }),
+      ),
+    );
+
+    // Every call refused: the password is wrong, and past the limit the throttle
+    // refuses before verifying.
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    for (const result of results) {
+      expect((result as PromiseRejectedResult).reason).toBeInstanceOf(WalletVaultPasswordError);
+    }
+    // And the counter never passes the limit, however many arrived at once.
+    const row = store.rows.get("u1")!;
+    expect(row.failedAttempts).toBe(WALLET_VAULT_MAX_FAILED_ATTEMPTS);
+    expect(row.failedAttempts).toBeLessThanOrEqual(WALLET_VAULT_MAX_FAILED_ATTEMPTS);
+    // The lockout is set, so a later attempt is refused without any work.
+    expect(row.lockedUntil).toEqual(new Date(start.getTime() + WALLET_VAULT_LOCKOUT_MS));
+  }, 60_000);
+
+  it("counts no more than the limit across concurrent password changes too", async () => {
+    // The same throttle guards password change, so the same reservation must hold
+    // there: N concurrent changes with the wrong current password claim at most
+    // the allowed slots.
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    const start = new Date("2026-09-01T00:00:00.000Z");
+    const results = await Promise.allSettled(
+      Array.from({ length: 12 }, () =>
+        changeWalletVaultPassword(
+          store.prisma,
+          "u1",
+          { currentPassword: WRONG, newPassword: NEW_PASSWORD },
+          { now: start },
+        ),
+      ),
+    );
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    const row = store.rows.get("u1")!;
+    expect(row.failedAttempts).toBe(WALLET_VAULT_MAX_FAILED_ATTEMPTS);
+    // The verifier was never swapped by a refused change.
+    expect(row.passwordEpoch).toBe(1);
+  }, 60_000);
+
+  it("opens a fresh attempt window after the lockout expires, rather than staying locked", async () => {
+    // An expired lockout must not read as "still over the limit": that would make
+    // the lockout permanent, which is worse than the race it replaced.
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    const start = new Date("2026-09-01T00:00:00.000Z");
+    for (let attempt = 1; attempt <= WALLET_VAULT_MAX_FAILED_ATTEMPTS; attempt++) {
+      await expect(
+        verifyWalletVaultPassword(store.prisma, "u1", WRONG, { now: start }),
+      ).rejects.toThrow(WalletVaultPasswordError);
+    }
+    expect(store.rows.get("u1")!.lockedUntil).not.toBeNull();
+
+    // The right password after the lockout expires verifies, and costs one slot
+    // before its success gives it back.
+    const after = new Date(start.getTime() + WALLET_VAULT_LOCKOUT_MS + 1_000);
+    await expect(
+      verifyWalletVaultPassword(store.prisma, "u1", PASSWORD, { now: after }),
+    ).resolves.toEqual({ passwordEpoch: 1 });
+    expect(store.rows.get("u1")!.failedAttempts).toBe(0);
+    expect(store.rows.get("u1")!.lockedUntil).toBeNull();
+
+    // And a fresh window means a fresh budget: one wrong attempt now counts 1,
+    // not 6.
+    await expect(
+      verifyWalletVaultPassword(store.prisma, "u1", WRONG, {
+        now: new Date(after.getTime() + 1_000),
+      }),
+    ).rejects.toThrow(WalletVaultPasswordError);
+    expect(store.rows.get("u1")!.failedAttempts).toBe(1);
   }, 30_000);
 });

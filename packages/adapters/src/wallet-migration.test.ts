@@ -61,6 +61,8 @@ function store() {
     for (const [key, value] of Object.entries(data)) {
       if (value && typeof value === "object" && "increment" in value) {
         row[key] = (row[key] as number) + (value as { increment: number }).increment;
+      } else if (value && typeof value === "object" && "decrement" in value) {
+        row[key] = (row[key] as number) - (value as { decrement: number }).decrement;
       } else {
         row[key] = value;
       }
@@ -84,8 +86,10 @@ function store() {
         return value instanceof Date && value.getTime() === condition.getTime();
       }
       if (condition && typeof condition === "object") {
-        const ops = condition as { lte?: Date };
+        const ops = condition as { lte?: Date; gt?: number; gte?: number };
         if (ops.lte !== undefined) return value instanceof Date && value <= ops.lte;
+        if (ops.gt !== undefined) return typeof value === "number" && value > ops.gt;
+        if (ops.gte !== undefined) return typeof value === "number" && value >= ops.gte;
         return false;
       }
       return value === condition;
@@ -148,6 +152,20 @@ function store() {
         },
       ),
     },
+    /** The throttle's reservation: one conditional claim, exactly as the SQL does. */
+    $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      // Binds in the statement's order: now, now, limit, lockoutAt, userId, now, limit.
+      const [now, , limit, lockoutAt, userId] = values as [Date, Date, number, Date, string];
+      const row = vaultRows.get(userId);
+      if (!row) return [];
+      const lockedOut = row.lockedUntil !== null && row.lockedUntil > now;
+      const overLimit = row.lockedUntil === null && row.failedAttempts >= limit;
+      if (lockedOut || overLimit) return [];
+      row.failedAttempts = row.lockedUntil !== null ? 1 : row.failedAttempts + 1;
+      if (row.lockedUntil !== null) row.lockedUntil = null;
+      else if (row.failedAttempts >= limit) row.lockedUntil = lockoutAt;
+      return [{ failedAttempts: row.failedAttempts, lockedUntil: row.lockedUntil }];
+    }),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
   return { prisma: client as unknown as PrismaClient, wallets, vaultRows };
