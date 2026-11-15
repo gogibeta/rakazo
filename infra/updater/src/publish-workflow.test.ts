@@ -139,9 +139,9 @@ describe("server image publish workflow", () => {
     expect(edge?.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/main'");
     // The build-time publication must not be able to move the tag itself.
     const publishJob = workflow.jobs.publish as { steps?: Array<Record<string, unknown>> };
-    const action = (publishJob.steps ?? []).find(
-      (step) => step.uses === publicationAction,
-    ) as { with?: Record<string, string> } | undefined;
+    const action = (publishJob.steps ?? []).find((step) => step.uses === publicationAction) as
+      | { with?: Record<string, string> }
+      | undefined;
     expect(action?.with?.edge).toBe("false");
   });
 
