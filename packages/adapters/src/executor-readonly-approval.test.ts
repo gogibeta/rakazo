@@ -109,11 +109,14 @@ function fixture({
   batch,
   browser,
   spendingLimit = null,
+  hostRestart = false,
 }: {
   /** A page browser on a graphical computer, so browser_act and computer_act are offered. */
   browser?: BrowserProvider;
   /** The user's spending limit for payments. */
   spendingLimit?: SpendingLimit | null;
+  /** A host restarter is configured, so restart_host can actually run. */
+  hostRestart?: boolean;
 
   /** The tool runs the actions its arguments name; see ConnectorTool.batch. */
   batch?: ConnectorTool["batch"];
@@ -498,6 +501,7 @@ function fixture({
     run.status = "waiting_input";
     return { continuationRunId: null as string | null };
   });
+  const restartHost = vi.fn(async () => undefined);
   const finalizeRun = vi.fn(async () => ({ continuationRunId: null }));
   const execute = vi.fn(async function* (call: ConnectorCall) {
     yield { type: "result" as const, data: { item: call.args.id } };
@@ -632,10 +636,12 @@ function fixture({
     shutdownSignal,
     web,
     userDevices,
+    hostRestart: hostRestart ? { restart: restartHost } : undefined,
   } as unknown as Parameters<typeof createRunExecutor>[0]);
   return {
     prisma: transactionalPrisma,
     effects,
+    restartHost,
     spending: spending.state,
     web,
     fetchedUrls,
@@ -1500,6 +1506,97 @@ describe("create_space", () => {
     expect(f.pauseRunForInput).not.toHaveBeenCalled();
     expect(f.effects).toHaveLength(1);
     expect(f.effects[0]?.status).not.toBe("intended");
+  });
+});
+
+describe("restart_host", () => {
+  const neverAskRefusal = {
+    error:
+      "restart_host needs the owner's approval because it could have been asked for by someone else, and this space never asks. Don't retry; tell the user.",
+  };
+
+  it.each(["messaging", "bot_message", "tickets", "spawn", "cloud_agent"])(
+    "refuses a %s run in Never ask instead of restarting unapproved",
+    async (trigger) => {
+      const f = fixture({
+        name: "restart_host",
+        builtin: true,
+        trigger,
+        skipApprovals: true,
+        hostRestart: true,
+      });
+      f.setCalls([{ args: {}, executionId: "call-1" }]);
+      await f.run();
+      expect(f.pauseRunForInput).not.toHaveBeenCalled();
+      expect(f.restartHost).not.toHaveBeenCalled();
+      expect(f.results).toEqual([neverAskRefusal]);
+    },
+  );
+
+  it("refuses the owner's own run in Never ask once outside content steers it", async () => {
+    const f = fixture({
+      name: "restart_host",
+      builtin: true,
+      skipApprovals: true,
+      hostRestart: true,
+    });
+    f.claimedOutsideSteering(true);
+    f.setCalls([{ args: {}, executionId: "call-1" }]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.restartHost).not.toHaveBeenCalled();
+    expect(f.results).toEqual([neverAskRefusal]);
+  });
+
+  it("restarts in Never ask for the owner's own unsteered run", async () => {
+    const f = fixture({
+      name: "restart_host",
+      builtin: true,
+      skipApprovals: true,
+      hostRestart: true,
+    });
+    f.setCalls([{ args: {}, executionId: "call-1" }]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.restartHost).toHaveBeenCalledOnce();
+    expect(f.results).toEqual([
+      {
+        restarted: true,
+        note: "The restart is initiated. This deployment's host is going down and will be unreachable until it boots again.",
+      },
+    ]);
+  });
+
+  it("asks in the default mode, whatever started the run", async () => {
+    const f = fixture({
+      name: "restart_host",
+      builtin: true,
+      trigger: "messaging",
+      hostRestart: true,
+    });
+    f.setCalls([{ args: {}, executionId: "call-1" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(f.restartHost).not.toHaveBeenCalled();
+  });
+
+  it("refuses a webhook run outright instead of asking", async () => {
+    const f = fixture({
+      name: "restart_host",
+      builtin: true,
+      trigger: "webhook",
+      hostRestart: true,
+    });
+    f.setCalls([{ args: {}, executionId: "call-1" }]);
+    await f.run();
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(f.restartHost).not.toHaveBeenCalled();
+    expect(f.results).toEqual([
+      {
+        error:
+          "This would restart the host machine, which needs the user's approval, and a webhook run cannot ask. Don't retry; tell the user.",
+      },
+    ]);
   });
 });
 
