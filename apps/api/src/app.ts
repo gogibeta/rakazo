@@ -528,6 +528,9 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
         onAccountChange: (change) => directoryChanges.getStore()?.push(change),
       })
     : undefined;
+  // Declared before the auth callbacks so a revoked or replaced session can end an
+  // admin shell; assigned once the terminal server exists, a few lines below.
+  let terminalServer: ReturnType<typeof createTerminalServer> | undefined;
   const auth = createAuth(prisma, {
     directoryProvisioning: Boolean(directory),
     analytics,
@@ -589,6 +592,9 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     },
     // The session change already happened, so a registration cleanup failure must not fail sign-out.
     afterDeleteSession: async (session) => {
+      // A shell was authorized by THIS session at upgrade time, so revoking the
+      // session must end it; otherwise an admin shell outlives sign-out.
+      terminalServer?.endUser(session.userId);
       await pushTokens
         .endSession(session.userId, session.id)
         .catch((error) => getLogger().error("push token removal failed", error));
@@ -600,6 +606,8 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       );
     },
     afterReplaceSession: async (previous, session) => {
+      // Same rule when a session is replaced (sign-in from another device).
+      terminalServer?.endUser(previous.userId);
       await pushTokens
         .endSession(session.userId, previous.id, session.id)
         .catch((error) => getLogger().error("push token session update failed", error));
@@ -613,7 +621,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
   });
   // The admin terminal: a shell in this process's own environment, gated on
   // the session cookie plus the deployment admin list at upgrade time.
-  const terminal = createTerminalServer({
+  terminalServer = createTerminalServer({
     sessionUserId: async (request) => {
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
@@ -1170,7 +1178,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     awaitIdle: inMemoryJobs ? () => inMemoryJobs.awaitIdle() : undefined,
     backgroundFailures: inMemoryJobs ? () => inMemoryJobs.failureCounts() : undefined,
     handleUpgrade: (request, socket, head) => {
-      if (terminal.handleUpgrade(request, socket, head)) return;
+      if (terminalServer?.handleUpgrade(request, socket, head)) return;
       if (userDeviceHub) return userDeviceHub.handleUpgrade(request, socket, head);
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
     },
@@ -1183,7 +1191,7 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       shutdown.abort();
       // Aborted runs hand themselves back while realtime is still open to announce them.
       const runsStopped = runs?.stop();
-      terminal.close();
+      terminalServer?.close();
       await userDeviceHub?.close();
       oauthLogins.abortAll();
       await messagingRuntime?.stop();

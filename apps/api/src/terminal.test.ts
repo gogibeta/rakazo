@@ -69,6 +69,29 @@ describe("terminal upgrade", () => {
     ws.close();
   });
 
+  it("ends the shell when the session that opened it is revoked", async () => {
+    // The shell is authorized by the session at upgrade time. Revoking that session
+    // (sign-out, a password change, an admin revocation) must end it, or an admin
+    // shell outlives the credential that justified it.
+    const { terminal, url } = await serve("admin-1", true);
+    const ws = new WebSocket(url);
+    await once(ws, "open");
+    const closed = once(ws, "close");
+    terminal.endUser("admin-1");
+    await expect(closed).resolves.toBeDefined();
+  });
+
+  it("leaves another person's shell alone", async () => {
+    const { terminal, url } = await serve("admin-1", true);
+    const ws = new WebSocket(url);
+    await once(ws, "open");
+    terminal.endUser("someone-else");
+    // Still open: ending one person's shell must not end everyone's.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+
   it("leaves other upgrade paths to the next handler", async () => {
     const terminal = createTerminalServer({
       sessionUserId: async () => "admin-1",
