@@ -1,6 +1,5 @@
 import type { WalletProposalSummary } from "@rakazo/contracts";
 import { WalletProposeInput } from "@rakazo/contracts";
-import { recordSecurityEvent } from "@rakazo/db";
 import type { RunContext } from "./run-context.js";
 import type { ToolHandlers } from "./run-tool-gate.js";
 import { auditToolCall } from "./run-tool-gate.js";
@@ -10,7 +9,6 @@ import {
   createWalletProposal,
   WalletProposalError,
   walletProposalMaxTotalFeeWei,
-  walletProposalSecurityEvent,
 } from "./wallet-proposals.js";
 import { createWalletRpcClient } from "./wallet-rpc.js";
 
@@ -34,6 +32,7 @@ const PROPOSAL_REFUSAL_CODES: Record<string, string> = {
   rpc_unavailable: "wallet_proposal_rpc_unavailable",
   chain_mismatch: "wallet_proposal_chain_mismatch",
   insufficient_balance: "wallet_proposal_insufficient_balance",
+  nonce_out_of_range: "wallet_proposal_nonce_out_of_range",
   gas_limit_too_high: "wallet_proposal_gas_too_high",
   fee_cap_exceeded: "wallet_proposal_fee_too_high",
 };
@@ -68,6 +67,7 @@ async function proposeTransaction(ctx: RunContext, args: Record<string, unknown>
     created = await createWalletProposal({
       prisma: deps.prisma,
       userId: run.userId,
+      spaceId: run.spaceId,
       runId: run.id,
       proposed: parsed.data,
       rpcFor,
@@ -90,14 +90,6 @@ async function proposeTransaction(ctx: RunContext, args: Record<string, unknown>
     chainId: row.chainId,
     canonicalHash: row.canonicalHash,
   });
-  // The security log records the creation too, so a proposal is traceable even
-  // when the organization's audit log is not what an operator reads.
-  await recordSecurityEvent(
-    walletProposalSecurityEvent(
-      { userId: run.userId, spaceId: run.spaceId },
-      { proposalId: row.id, outcome: "created" },
-    ),
-  );
   const summary: WalletProposalSummary = {
     id: row.id,
     walletName: wallet.name,

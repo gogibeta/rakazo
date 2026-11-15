@@ -213,13 +213,43 @@ describe("wallet_propose", () => {
     };
     const prisma = {
       userWallet: { findFirst: vi.fn(async () => wallet), findMany: vi.fn(async () => [wallet]) },
-      walletProposal: {
-        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          const stored = { id: "p1", createdAt: new Date("2026-11-15T12:00:00.000Z"), ...data };
-          created.push(stored);
-          return stored;
-        }),
-      },
+
+      securityEvent: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+      // The service's parameterized INSERT ... RETURNING: one row appears for
+      // each insert the handler performs, with the database clock's timestamps.
+      $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        // Prisma issues a few of its own statements through this path; only the
+        // proposal INSERT binds an id in the cuid shape as its first value.
+        const id = String(values[0] ?? "");
+        if (!/^c[a-z0-9]{24}$/.test(id)) return [];
+        // A retry of the same insert is the same row, not a second one.
+        const existing = created.find((row) => row.id === id);
+        if (existing) {
+          return [{ id, createdAt: existing.createdAt, expiresAt: existing.expiresAt }];
+        }
+        const createdAt = new Date("2026-11-15T12:00:00.000Z");
+        const stored = {
+          id,
+          walletId: values[2],
+          fromAddress: values[3],
+          chainId: values[4],
+          to: values[5],
+          asset: values[6],
+          amountWei: values[7],
+          data: values[8],
+          nonce: values[9],
+          gasLimit: values[10],
+          maxFeePerGas: values[11],
+          maxPriorityFeePerGas: values[12],
+          rpcProfile: values[13],
+          canonicalHash: values[15],
+          createdAt,
+          expiresAt: new Date(createdAt.getTime() + 15 * 60 * 1_000),
+        };
+        created.push(stored);
+        return [{ id, createdAt, expiresAt: stored.expiresAt }];
+      }),
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
       externalEffect: {
         findUnique: vi.fn(async () => null),
         findMany: vi.fn(async () => []),
@@ -261,7 +291,8 @@ describe("wallet_propose", () => {
       } as never,
     )) as Record<string, unknown>;
     expect(result).toMatchObject({
-      id: "p1",
+      // The handler returns the id the insert generated.
+      id: expect.stringMatching(/^c[a-z0-9]{24}$/),
       chainId: 99801,
       to: RECIPIENT,
       amountWei: "1000000000000000",
@@ -271,7 +302,7 @@ describe("wallet_propose", () => {
       maxPriorityFeePerGas: "1000000000",
       maxTotalFeeWei: "75603000000000",
       canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/),
-      expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      expiresAt: "2026-11-15T12:15:00.000Z",
       walletName: "burner",
       chainName: "Elysium Testnet",
       nativeSymbol: "HYPE",

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { WalletChainId, WalletProposal, WalletProposalStatus } from "@rakazo/contracts";
 import {
   WALLET_PROPOSAL_TTL_MS,
@@ -8,7 +8,8 @@ import {
   WalletWeiSchema,
 } from "@rakazo/contracts";
 import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
-import type { PrismaClient, SecurityEventInput } from "@rakazo/db";
+import type { Prisma, PrismaClient, SecurityEventInput } from "@rakazo/db";
+import { runAsSystemInTransaction } from "@rakazo/db";
 import type { WalletChainDefinition } from "./wallet-chains.js";
 import { walletChain } from "./wallet-chains.js";
 import type { WalletRpcClient } from "./wallet-rpc.js";
@@ -22,12 +23,18 @@ import { WalletRpcError } from "./wallet-rpc.js";
  * which covers a native send, an ERC-20 transfer, a mint, a contract deploy
  * (`to` null plus bytecode), and an arbitrary contract call. The server is
  * what turns that into a signable transaction: it picks the RPC profile from
- * the allowlisted chain registry, reads the nonce, suggests EIP-1559 fees
- * under fixed ceilings, estimates gas under a fixed cap, and checks the
- * balance covers value plus the maximum fee. Only then is a proposal row
- * written, and the row is immutable in every field that defines the
- * transaction, so what the owner is later asked to confirm is exactly what
- * was validated here.
+ * the allowlisted chain registry, reads the nonce, suggests fees under fixed
+ * ceilings, estimates gas under a fixed cap, and checks the balance covers
+ * value plus the maximum fee. Only then is a proposal row written.
+ *
+ * Immutability has two halves. The row's canonical payload, its sender, its
+ * owner, its wallet binding and its lifetime are written once; the database
+ * enforces that with a trigger, so neither a bug here nor a stray statement
+ * from the application's own login can rewrite a transaction the owner may
+ * later be asked to sign (see migration 20261222130000). The only change this
+ * module ever makes to an existing row is the status transition
+ * `proposed -> cancelled | expired`, through a conditional update that names
+ * the expected current status, so exactly one writer wins a transition.
  *
  * Validation order is deliberate:
  *
@@ -37,7 +44,8 @@ import { WalletRpcError } from "./wallet-rpc.js";
  *    only the password envelope can be signed by the vault later.
  * 3. The chain answers for itself (`eth_chainId`) before any value is read.
  * 4. Nonce, fees and gas come from the node; the caller's ceilings are
- *    applied after, and a suggestion above them refuses rather than clamps.
+ *    applied to the value that is stored, not to a pre-padding estimate, and
+ *    a suggestion above them refuses rather than clamps.
  * 5. The balance must cover value + gasLimit * maxFeePerGas.
  *
  * Nothing here can sign or broadcast: the RPC client has no such method, and
@@ -56,9 +64,11 @@ export type WalletProposalErrorCode =
   | "insufficient_balance"
   | "gas_limit_too_high"
   | "fee_cap_exceeded"
+  | "nonce_out_of_range"
   | "proposal_not_found"
   | "proposal_not_cancellable"
-  | "proposal_expired";
+  | "proposal_expired"
+  | "proposal_not_writable";
 
 const ERROR_MESSAGES: Record<WalletProposalErrorCode, string> = {
   invalid_request: "The transaction could not be read. Check the address, amount and data.",
@@ -71,9 +81,11 @@ const ERROR_MESSAGES: Record<WalletProposalErrorCode, string> = {
   insufficient_balance: "The wallet does not have enough for the amount plus the maximum fee.",
   gas_limit_too_high: "The transaction needs more gas than a proposal may use.",
   fee_cap_exceeded: "The chain's fee suggestion is above the cap for a proposal.",
+  nonce_out_of_range: "The chain's transaction count for this wallet is out of range.",
   proposal_not_found: "Proposal not found.",
   proposal_not_cancellable: "Only a proposed transaction can be cancelled.",
   proposal_expired: "This proposal has expired.",
+  proposal_not_writable: "The proposal could not be stored.",
 };
 
 export class WalletProposalError extends Error {
@@ -91,9 +103,25 @@ export class WalletProposalError extends Error {
  * proposing a transaction that could burn an unbounded fee. Fees are capped
  * per gas in wei at 500 gwei, several orders of magnitude above what the
  * testnets this ships with ask for.
+ *
+ * The gas cap applies to the value that is stored — the padded limit — so an
+ * estimate cannot pass the check and then be padded past it.
  */
 export const WALLET_PROPOSAL_GAS_LIMIT_MAX = 1_500_000n;
 export const WALLET_PROPOSAL_MAX_FEE_PER_GAS_MAX = 500_000_000_000n;
+/** Postgres INTEGER and JavaScript's safe integer both hold a nonce below this. */
+export const WALLET_PROPOSAL_NONCE_MAX = 2_147_483_647;
+/** The longest life a proposal may have; the migration's CHECK says the same. */
+export const WALLET_PROPOSAL_MAX_TTL_MS = 60 * 60 * 1_000;
+
+/**
+ * The gas limit stored for a node's estimate: a 20% headroom for state drift
+ * between estimate and send, rounded up. Exported so the cap is applied to
+ * this number, not to the raw estimate.
+ */
+export function walletProposalGasLimit(estimate: bigint): bigint {
+  return (estimate * 12n) / 10n + 1n;
+}
 
 /** The canonical fields a proposal's hash covers, in one fixed order. */
 export type WalletProposalCanonicalFields = {
@@ -148,24 +176,70 @@ export function walletProposalMaxTotalFeeWei(fields: {
  * — the transaction's own fields live on the proposal row it names, and no
  * key material or signature exists at this stage. Built here so the worker
  * (which creates proposals) and the API (which expires and cancels them)
- * record the same event.
+ * record the same event, and callers pass it to the same transaction that
+ * performed the transition.
  */
-export function walletProposalSecurityEvent(
-  actor: { userId: string; spaceId: string },
-  info: { proposalId: string; outcome: "created" | "expired" | "cancelled"; count?: number },
-): SecurityEventInput {
+export function walletProposalSecurityEvent(input: {
+  userId: string;
+  spaceId: string | null;
+  proposalId: string;
+  outcome: "created" | "expired" | "cancelled";
+}): SecurityEventInput {
   return {
     type: "credential.changed",
-    userId: actor.userId,
-    spaceId: actor.spaceId,
+    userId: input.userId,
+    spaceId: input.spaceId,
     metadata: {
       procedure: "wallets.proposals",
       kind: "wallet_proposal",
-      proposalId: info.proposalId,
-      outcome: info.outcome,
-      ...(info.count === undefined ? {} : { count: info.count }),
+      proposalId: input.proposalId,
+      outcome: input.outcome,
     },
   };
+}
+
+/**
+ * The security-event row for a transition, as a statement the caller runs in
+ * the same transaction as the transition. `recordSecurityEvent` is
+ * best-effort by design (it never throws, so a lost log line cannot undo an
+ * action); a state change that must not outlive its own audit record needs
+ * the opposite, so this builds the insert and the caller commits them
+ * together. The metadata is normalized by the same rules as any event.
+ */
+export function securityEventInsert(input: SecurityEventInput): {
+  type: string;
+  userId: string | null;
+  spaceId: string | null;
+  metadata: Record<string, string | number | boolean | null>;
+} {
+  const metadata: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(input.metadata ?? {})) {
+    if (value === undefined) continue;
+    if (typeof value === "string") metadata[key] = value.slice(0, 200);
+    else if (typeof value === "number" && !Number.isFinite(value)) continue;
+    else if (typeof value === "number" || typeof value === "boolean" || value === null) {
+      metadata[key] = value;
+    }
+  }
+  return {
+    type: input.type,
+    userId: input.userId ?? null,
+    spaceId: input.spaceId ?? null,
+    metadata,
+  };
+}
+
+/**
+ * A proposal id in the same shape Prisma's `cuid()` produces: "c" followed by 24
+ * lowercase base-36 characters. Generated here because the row's id is needed
+ * before an insert whose timestamps come from the database.
+ */
+function newWalletProposalId(): string {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  const bytes = randomBytes(24);
+  let id = "c";
+  for (const byte of bytes) id += alphabet[byte % alphabet.length];
+  return id;
 }
 
 /** A stored row, as the read paths select it. */
@@ -173,6 +247,7 @@ export type WalletProposalRow = {
   id: string;
   userId: string;
   walletId: string;
+  fromAddress: string;
   chainId: number;
   to: string | null;
   asset: string;
@@ -191,20 +266,21 @@ export type WalletProposalRow = {
 
 /**
  * The wire shape of a proposal. Display-only fields (chain and wallet names)
- * come from the caller, which already loaded the wallet; everything else is
- * the stored row, so a read never recomputes what was validated.
+ * come from the caller, which already loaded the wallet; the sender is the
+ * stored `fromAddress`, never the wallet's current address, so a wallet change
+ * cannot alter what an existing proposal appears to be. Everything else is the
+ * stored row, so a read never recomputes what was validated.
  */
 export function walletProposalView(input: {
   row: WalletProposalRow;
   walletName: string;
-  walletAddress: string;
   chain: WalletChainDefinition;
 }): WalletProposal {
   return {
     id: input.row.id,
     walletId: input.row.walletId,
     walletName: input.walletName,
-    walletAddress: input.walletAddress,
+    walletAddress: input.row.fromAddress,
     chainId: input.row.chainId as WalletChainId,
     chainName: input.chain.name,
     nativeSymbol: input.chain.nativeSymbol,
@@ -232,11 +308,32 @@ type WalletRowForProposal = {
   migrationStatus: string;
 };
 
+/** The columns a read path selects, so a view never depends on a wider row shape. */
+const WALLET_PROPOSAL_COLUMNS = {
+  id: true,
+  userId: true,
+  walletId: true,
+  fromAddress: true,
+  chainId: true,
+  to: true,
+  asset: true,
+  amountWei: true,
+  data: true,
+  nonce: true,
+  gasLimit: true,
+  maxFeePerGas: true,
+  maxPriorityFeePerGas: true,
+  rpcProfile: true,
+  status: true,
+  canonicalHash: true,
+  createdAt: true,
+  expiresAt: true,
+} as const;
+
 /**
- * Validate one proposal and store it. The RPC client is built by the caller
- * from the allowlisted chain, so this module cannot reach an endpoint a bot
- * named. `now` and `ttlMs` are injectable so expiry is testable without
- * waiting; production calls pass neither.
+ * Validate one proposal and store it, with its creation event in the same
+ * transaction. The RPC client is built by the caller from the allowlisted
+ * chain, so this module cannot reach an endpoint a bot named.
  *
  * The insert is a plain create: a proposal's identity is its content, so two
  * identical proposals are two rows the owner can cancel independently, and
@@ -245,23 +342,23 @@ type WalletRowForProposal = {
 export async function createWalletProposal(input: {
   prisma: PrismaClient;
   userId: string;
+  spaceId: string | null;
   runId?: string;
   proposed: unknown;
   rpcFor: (chain: WalletChainDefinition) => WalletRpcClient;
-  now?: () => Date;
   ttlMs?: number;
 }): Promise<{
   row: WalletProposalRow;
   wallet: WalletRowForProposal;
   chain: WalletChainDefinition;
 }> {
-  const parsed = WalletProposeInput.safeParse(input.proposed);
   // The chain allowlist is checked before the rest of the shape, so a caller naming
   // an unsupported chain learns that rather than a generic shape error.
   const rawChainId = (input.proposed as { chainId?: unknown } | null)?.chainId;
   if (typeof rawChainId !== "number" || !walletChain(rawChainId)) {
     throw new WalletProposalError("chain_not_allowed");
   }
+  const parsed = WalletProposeInput.safeParse(input.proposed);
   if (!parsed.success) throw new WalletProposalError("invalid_request");
   const proposal = parsed.data;
   const chain = walletChain(proposal.chainId);
@@ -277,16 +374,14 @@ export async function createWalletProposal(input: {
   if (proposal.data !== null && !WalletHexDataSchema.safeParse(proposal.data).success) {
     throw new WalletProposalError("invalid_request");
   }
+  const ttlMs = input.ttlMs ?? WALLET_PROPOSAL_TTL_MS;
+  if (!Number.isInteger(ttlMs) || ttlMs <= 0 || ttlMs > WALLET_PROPOSAL_MAX_TTL_MS) {
+    throw new WalletProposalError("invalid_request");
+  }
 
   const wallet = await input.prisma.userWallet.findFirst({
     where: { id: proposal.walletId, userId: input.userId },
-    select: {
-      id: true,
-      userId: true,
-      name: true,
-      address: true,
-      migrationStatus: true,
-    },
+    select: { id: true, userId: true, name: true, address: true, migrationStatus: true },
   });
   if (!wallet) throw new WalletProposalError("wallet_not_found");
   // Signing opens the password envelope inside the vault; a legacy wallet has
@@ -322,7 +417,18 @@ export async function createWalletProposal(input: {
     throw error;
   }
 
-  if (BigInt(gasEstimate) > WALLET_PROPOSAL_GAS_LIMIT_MAX) {
+  // A nonce that cannot be stored exactly is refused here rather than failing
+  // later as an untyped database error.
+  if (!Number.isSafeInteger(nonce) || nonce < 0 || nonce > WALLET_PROPOSAL_NONCE_MAX) {
+    throw new WalletProposalError("nonce_out_of_range");
+  }
+  // The cap is applied to the value that is stored: padding happens first, and
+  // the padded limit is what must fit. Never clamp — a limit that does not fit
+  // is a refusal, not a smaller transaction.
+  const gasEstimateWei = BigInt(gasEstimate);
+  if (gasEstimateWei <= 0n) throw new WalletProposalError("gas_limit_too_high");
+  const gasLimitWei = walletProposalGasLimit(gasEstimateWei);
+  if (gasLimitWei > WALLET_PROPOSAL_GAS_LIMIT_MAX) {
     throw new WalletProposalError("gas_limit_too_high");
   }
   if (
@@ -334,16 +440,14 @@ export async function createWalletProposal(input: {
   if (BigInt(fees.maxPriorityFeePerGas) > BigInt(fees.maxFeePerGas)) {
     throw new WalletProposalError("fee_cap_exceeded");
   }
-
-  // A small headroom on the node's estimate covers state drift between estimate
-  // and send; it stays inside the same cap above.
-  const gasLimit = ((BigInt(gasEstimate) * 12n) / 10n + 1n).toString(10);
-  const maxTotal = BigInt(proposal.value) + BigInt(gasLimit) * BigInt(fees.maxFeePerGas);
+  const gasLimit = gasLimitWei.toString(10);
+  const maxTotal = BigInt(proposal.value) + gasLimitWei * BigInt(fees.maxFeePerGas);
   if (BigInt(balance) < maxTotal) throw new WalletProposalError("insufficient_balance");
 
+  const fromAddress = wallet.address.toLowerCase();
   const canonicalHash = walletProposalCanonicalHash({
     chainId: proposal.chainId,
-    from: wallet.address,
+    from: fromAddress,
     to: proposal.to,
     value: proposal.value,
     data: proposal.data,
@@ -352,13 +456,45 @@ export async function createWalletProposal(input: {
     maxFeePerGas: fees.maxFeePerGas,
     maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
   });
-  const now = (input.now ?? (() => new Date()))();
-  const expiresAt = new Date(now.getTime() + (input.ttlMs ?? WALLET_PROPOSAL_TTL_MS));
+  // The database's clock creates the row and sets its lifetime: `createdAt` and
+  // `expiresAt` are both written by the same `now()`, so the lifetime check the
+  // migration enforces compares two values from one clock, and an application
+  // host whose clock or time zone differs cannot mint a row that outlives the
+  // rule. The id is generated here so the row's identity is known before the
+  // insert, and the insert is parameterized throughout.
+  const proposalId = newWalletProposalId();
+  const created = await input.prisma.$transaction(async (tx) => {
+    const inserted = await tx.$queryRaw<
+      Array<{ id: string; createdAt: Date; expiresAt: Date }>
+    >`INSERT INTO "wallet_proposals" (
+        "id", "userId", "walletId", "fromAddress", "chainId", "to", "asset", "amountWei",
+        "data", "nonce", "gasLimit", "maxFeePerGas", "maxPriorityFeePerGas", "rpcProfile",
+        "status", "canonicalHash", "expiresAt", "runId"
+      ) VALUES (
+        ${proposalId}, ${input.userId}, ${wallet.id}, ${fromAddress}, ${proposal.chainId},
+        ${proposal.to}, ${chain.nativeSymbol}, ${proposal.value}, ${proposal.data}, ${nonce},
+        ${gasLimit}, ${fees.maxFeePerGas}, ${fees.maxPriorityFeePerGas}, ${chain.rpcProfile},
+        'proposed', ${canonicalHash}, now() + ${`${ttlMs} milliseconds`}::interval,
+        ${input.runId ?? null}
+      )
+      RETURNING "id", "createdAt", "expiresAt"`;
+    const row = inserted[0];
+    if (!row) throw new WalletProposalError("proposal_not_writable");
+    await writeProposalEvent(tx, {
+      userId: input.userId,
+      spaceId: input.spaceId,
+      proposalId: row.id,
+      outcome: "created",
+    });
+    return row;
+  });
 
-  const row = await input.prisma.walletProposal.create({
-    data: {
+  return {
+    row: {
+      id: created.id,
       userId: input.userId,
       walletId: wallet.id,
+      fromAddress,
       chainId: proposal.chainId,
       to: proposal.to,
       asset: chain.nativeSymbol,
@@ -371,160 +507,217 @@ export async function createWalletProposal(input: {
       rpcProfile: chain.rpcProfile,
       status: "proposed",
       canonicalHash,
-      expiresAt,
-      runId: input.runId ?? null,
+      createdAt: created.createdAt,
+      expiresAt: created.expiresAt,
     },
-    select: {
-      id: true,
-      userId: true,
-      walletId: true,
-      chainId: true,
-      to: true,
-      asset: true,
-      amountWei: true,
-      data: true,
-      nonce: true,
-      gasLimit: true,
-      maxFeePerGas: true,
-      maxPriorityFeePerGas: true,
-      rpcProfile: true,
-      status: true,
-      canonicalHash: true,
-      createdAt: true,
-      expiresAt: true,
-    },
-  });
-  return { row, wallet, chain };
-}
-
-/** A proposal owned by this user, with the wallet fields its view needs. */
-export async function findWalletProposal(input: {
-  prisma: PrismaClient;
-  userId: string;
-  proposalId: string;
-}): Promise<{
-  row: WalletProposalRow;
-  walletName: string;
-  walletAddress: string;
-  chain: WalletChainDefinition;
-} | null> {
-  const row = await input.prisma.walletProposal.findFirst({
-    where: { id: input.proposalId, userId: input.userId },
-    include: { wallet: { select: { name: true, address: true } } },
-  });
-  if (!row) return null;
-  const chain = walletChain(row.chainId);
-  if (!chain) return null;
-  return {
-    row,
-    walletName: row.wallet.name,
-    walletAddress: row.wallet.address,
+    wallet,
     chain,
   };
 }
 
-/** The owner's proposals, newest first. */
+/** A proposal owned by this user, with the wallet name its view needs. */
+export async function findWalletProposal(input: {
+  prisma: PrismaClient;
+  userId: string;
+  proposalId: string;
+}): Promise<{ row: WalletProposalRow; walletName: string; chain: WalletChainDefinition } | null> {
+  const row = await input.prisma.walletProposal.findFirst({
+    where: { id: input.proposalId, userId: input.userId },
+    select: { ...WALLET_PROPOSAL_COLUMNS, wallet: { select: { name: true } } },
+  });
+  if (!row) return null;
+  const chain = walletChain(row.chainId);
+  if (!chain) return null;
+  return { row, walletName: row.wallet.name, chain };
+}
+
+/**
+ * The owner's proposals, newest first, after applying expiry so no row reads
+ * as live past its deadline. The sweep and the read run in one transaction, so
+ * the list is a snapshot of a defined read time rather than two statements
+ * that can disagree.
+ */
 export async function listWalletProposals(input: {
   prisma: PrismaClient;
   userId: string;
+  spaceId: string | null;
 }): Promise<WalletProposal[]> {
-  const rows = await input.prisma.walletProposal.findMany({
-    where: { userId: input.userId },
-    include: { wallet: { select: { name: true, address: true } } },
-    orderBy: { createdAt: "desc" },
+  const rows = await input.prisma.$transaction(async (tx) => {
+    await expireOverdueInTransaction(tx, input.userId, input.spaceId);
+    return tx.walletProposal.findMany({
+      where: { userId: input.userId },
+      select: { ...WALLET_PROPOSAL_COLUMNS, wallet: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+    });
   });
   return rows.flatMap((row) => {
     const chain = walletChain(row.chainId);
     if (!chain) return [];
-    return [
-      walletProposalView({
-        row,
-        walletName: row.wallet.name,
-        walletAddress: row.wallet.address,
-        chain,
-      }),
-    ];
+    return [walletProposalView({ row, walletName: row.wallet.name, chain })];
   });
 }
 
 /**
- * Cancel one proposal. Only a proposal still `proposed` and not yet expired
- * can be cancelled; expiry is applied first, so a stale row cannot be
- * resurrected into "cancelled" and read as a deliberate decision.
- * The conditional update is what makes this safe against a concurrent sweep.
+ * One proposal event, committed with the row it describes. `security_events` is
+ * readable and writable only by a system context, and the surrounding
+ * transaction holds whatever settings it was checked out with, so the event
+ * turns that context on for this statement and restores it afterwards — the
+ * same step `runAsSystem` performs for a non-transactional write.
+ */
+function writeProposalEvent(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    spaceId: string | null;
+    proposalId: string;
+    outcome: "created" | "expired" | "cancelled";
+  },
+): Promise<unknown> {
+  return runAsSystemInTransaction(tx, "record a wallet proposal transition", () =>
+    tx.securityEvent.create({
+      data: securityEventInsert(walletProposalSecurityEvent(input)),
+    }),
+  );
+}
+
+/**
+ * Transition and audit in one transaction. The UPDATE names the expected
+ * current status and compares the deadline against the database's own clock,
+ * so exactly one writer wins and a stale client clock cannot cancel a
+ * proposal that has already expired. The security event is written only when
+ * the update reported a row, so an event never describes a transition that
+ * did not happen.
+ */
+async function transitionInTransaction(
+  prisma: PrismaClient,
+  input: {
+    userId: string;
+    spaceId: string | null;
+    proposalId: string;
+    from: "proposed";
+    to: "cancelled" | "expired";
+    /** Cancelling also requires the proposal to still be live, by the database's clock. */
+    requireLive?: boolean;
+  },
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      UPDATE "wallet_proposals"
+      SET "status" = ${input.to}
+      WHERE "id" = ${input.proposalId}
+        AND "userId" = ${input.userId}
+        AND "status" = ${input.from}
+        AND (${!input.requireLive} OR "expiresAt" > now())
+      RETURNING "id"`;
+    const row = rows[0];
+    if (!row) return false;
+    await writeProposalEvent(tx, {
+      userId: input.userId,
+      spaceId: input.spaceId,
+      proposalId: row.id,
+      outcome: input.to,
+    });
+    return true;
+  });
+}
+
+/** One owner's overdue proposals, expired and audited, each with its own event. */
+async function expireOverdueInTransaction(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  spaceId: string | null,
+): Promise<string[]> {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    UPDATE "wallet_proposals"
+    SET "status" = 'expired'
+    WHERE "userId" = ${userId}
+      AND "status" = 'proposed'
+      AND "expiresAt" <= now()
+    RETURNING "id"`;
+  // One event per row: the identities are what an operator needs to follow a
+  // proposal's life, and a bulk count would lose them.
+  for (const row of rows) {
+    await writeProposalEvent(tx, {
+      userId,
+      spaceId,
+      proposalId: row.id,
+      outcome: "expired",
+    });
+  }
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Cancel one proposal. Only a proposal still `proposed` and live by the
+ * database's clock can be cancelled; an expired one is first persisted as
+ * expired (with that event), so expiry is never rewritten into a decision the
+ * owner did not make. The conditional update is what makes this safe against
+ * the sweep and against a second cancel.
  */
 export async function cancelWalletProposal(input: {
   prisma: PrismaClient;
   userId: string;
+  spaceId: string | null;
   proposalId: string;
-  now?: () => Date;
 }): Promise<{ status: "cancelled" }> {
-  const now = (input.now ?? (() => new Date()))();
   const existing = await input.prisma.walletProposal.findFirst({
     where: { id: input.proposalId, userId: input.userId },
-    select: { id: true, status: true, expiresAt: true },
+    select: { id: true, status: true },
   });
   if (!existing) throw new WalletProposalError("proposal_not_found");
   if (existing.status !== "proposed") throw new WalletProposalError("proposal_not_cancellable");
-  if (existing.expiresAt.getTime() <= now.getTime()) {
-    await expireWalletProposal({
-      prisma: input.prisma,
-      userId: input.userId,
-      proposalId: existing.id,
-      now: () => now,
-    });
-    throw new WalletProposalError("proposal_expired");
-  }
-  const updated = await input.prisma.walletProposal.updateMany({
-    where: {
-      id: input.proposalId,
-      userId: input.userId,
-      status: "proposed",
-      expiresAt: { gt: now },
-    },
-    data: { status: "cancelled" },
+  const cancelled = await transitionInTransaction(input.prisma, {
+    userId: input.userId,
+    spaceId: input.spaceId,
+    proposalId: existing.id,
+    from: "proposed",
+    to: "cancelled",
+    requireLive: true,
   });
-  if (updated.count !== 1) throw new WalletProposalError("proposal_not_cancellable");
-  return { status: "cancelled" };
+  if (cancelled) return { status: "cancelled" };
+  // Either the deadline passed between the read and the update, or another writer won.
+  const expired = await expireWalletProposal({
+    prisma: input.prisma,
+    userId: input.userId,
+    spaceId: input.spaceId,
+    proposalId: existing.id,
+  });
+  if (expired) throw new WalletProposalError("proposal_expired");
+  throw new WalletProposalError("proposal_not_cancellable");
 }
 
 /**
- * Move one overdue proposal to `expired`. Conditional on the row still being
- * `proposed`, so a cancel that landed first is never overwritten.
+ * Move one overdue proposal to `expired`, at the database's clock, with its
+ * event. Returns whether this call performed the transition; a caller that
+ * sees false knows an earlier writer already moved the row and must not
+ * record anything itself.
  */
 export async function expireWalletProposal(input: {
   prisma: PrismaClient;
   userId: string;
+  spaceId: string | null;
   proposalId: string;
-  now?: () => Date;
 }): Promise<boolean> {
-  const now = (input.now ?? (() => new Date()))();
-  const updated = await input.prisma.walletProposal.updateMany({
-    where: {
-      id: input.proposalId,
-      userId: input.userId,
-      status: "proposed",
-      expiresAt: { lte: now },
-    },
-    data: { status: "expired" },
+  return transitionInTransaction(input.prisma, {
+    userId: input.userId,
+    spaceId: input.spaceId,
+    proposalId: input.proposalId,
+    from: "proposed",
+    to: "expired",
   });
-  return updated.count === 1;
 }
 
 /**
- * Expire every overdue proposal the owner has. Called on reads so a list
- * never shows a stale `proposed`, and by the worker sweep; both are cheap and
- * conditional, so running both is harmless.
+ * Expire every overdue proposal the owner has, persisting each transition and
+ * its own event. Called inside the list read so the list reflects a defined
+ * read time.
  */
 export async function expireOverdueWalletProposals(input: {
   prisma: PrismaClient;
   userId: string;
-  now?: () => Date;
-}): Promise<number> {
-  const now = (input.now ?? (() => new Date()))();
-  const updated = await input.prisma.walletProposal.updateMany({
-    where: { userId: input.userId, status: "proposed", expiresAt: { lte: now } },
-    data: { status: "expired" },
-  });
-  return updated.count;
+  spaceId: string | null;
+}): Promise<string[]> {
+  return input.prisma.$transaction((tx) =>
+    expireOverdueInTransaction(tx, input.userId, input.spaceId),
+  );
 }

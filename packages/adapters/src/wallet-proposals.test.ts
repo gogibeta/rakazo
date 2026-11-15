@@ -1,3 +1,4 @@
+import { stableJsonValue } from "@rakazo/core/node/approval-effect-key";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { WALLET_CHAINS, walletChain } from "./wallet-chains.js";
@@ -10,6 +11,7 @@ import {
   WalletProposalError,
   walletProposalCanonicalHash,
   walletProposalCanonicalJson,
+  walletProposalGasLimit,
   walletProposalMaxTotalFeeWei,
 } from "./wallet-proposals.js";
 import { createWalletRpcClient, WalletRpcError } from "./wallet-rpc.js";
@@ -19,11 +21,14 @@ const ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const RECIPIENT = "0x000000000000000000000000000000000000dEaD";
 const GWEI = 1_000_000_000n;
 
-function jsonRpcAnswer(result: unknown) {
-  return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { status: 200 });
+function jsonRpcAnswer(result: unknown, id = 1) {
+  return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { status: 200 });
 }
 
-/** A node that answers for one chain with fixed values, and records what was asked. */
+/**
+ * A node that answers for one chain with fixed values and records what was
+ * asked. It answers with the id the request carried, as a real node does.
+ */
 function fakeNode(options: {
   chainId?: number;
   balanceWei?: string;
@@ -35,37 +40,59 @@ function fakeNode(options: {
 }) {
   const calls: Array<{ method: string; params: unknown[] }> = [];
   const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as { method: string; params: unknown[] };
+    const body = JSON.parse(String(init?.body ?? "{}")) as {
+      method: string;
+      params: unknown[];
+      id: number;
+    };
     calls.push({ method: body.method, params: body.params });
+    const answer = (result: unknown) => jsonRpcAnswer(result, body.id);
     switch (body.method) {
       case "eth_chainId":
-        return jsonRpcAnswer(`0x${(options.chainId ?? 99801).toString(16)}`);
+        return answer(`0x${(options.chainId ?? 99801).toString(16)}`);
       case "eth_getBalance":
-        return jsonRpcAnswer(`0x${BigInt(options.balanceWei ?? "0").toString(16)}`);
+        return answer(`0x${BigInt(options.balanceWei ?? "0").toString(16)}`);
       case "eth_getTransactionCount":
-        return jsonRpcAnswer(`0x${(options.nonce ?? 0).toString(16)}`);
+        return answer(`0x${(options.nonce ?? 0).toString(16)}`);
       case "eth_estimateGas":
-        return jsonRpcAnswer(`0x${BigInt(options.gas ?? "21000").toString(16)}`);
+        return answer(`0x${BigInt(options.gas ?? "21000").toString(16)}`);
       case "eth_getBlockByNumber":
-        return jsonRpcAnswer({
+        return answer({
           number: "0x1",
           baseFeePerGas:
             options.baseFee === undefined ? undefined : `0x${BigInt(options.baseFee).toString(16)}`,
         });
       case "eth_maxPriorityFeePerGas":
-        return jsonRpcAnswer(`0x${BigInt(options.priority ?? GWEI.toString()).toString(16)}`);
+        return answer(`0x${BigInt(options.priority ?? GWEI.toString()).toString(16)}`);
       case "eth_gasPrice":
-        return jsonRpcAnswer(`0x${BigInt(options.gasPrice ?? GWEI.toString()).toString(16)}`);
+        return answer(`0x${BigInt(options.gasPrice ?? GWEI.toString()).toString(16)}`);
       default:
-        return new Response(JSON.stringify({ error: { code: -32601, message: "no" } }), {
-          status: 200,
-        });
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "no" } }),
+          { status: 200 },
+        );
     }
   });
   return { fetch: fetch as unknown as typeof fetch, calls };
 }
 
-/** The proposal store a validation writes to, with the queries the service makes. */
+/** One proposal row the fake store keeps, with its event log. */
+type StoredRow = Record<string, unknown> & {
+  id: string;
+  userId: string;
+  status: string;
+  expiresAt: Date;
+};
+
+/**
+ * The store a proposal write touches: the wallet read, the parameterized
+ * INSERT ... RETURNING the service issues, the read paths, and the security
+ * event log. Rows and events let a test see exactly what one write did.
+ *
+ * The insert is answered from the values the service passes, in the order the
+ * statement binds them — the same order the SQL uses — so a change to the
+ * service's insert shows up as a changed row here rather than passing silently.
+ */
 function proposalStore(wallet: {
   id: string;
   userId: string;
@@ -73,7 +100,8 @@ function proposalStore(wallet: {
   address: string;
   migrationStatus: string;
 }) {
-  const rows: Array<Record<string, unknown>> = [];
+  const rows: StoredRow[] = [];
+  const events: Array<Record<string, unknown>> = [];
   const prisma = {
     userWallet: {
       findFirst: vi.fn(async ({ where }: { where: { id: string; userId: string } }) =>
@@ -81,18 +109,100 @@ function proposalStore(wallet: {
       ),
     },
     walletProposal: {
+      findFirst: vi.fn(
+        async ({ where }: { where: { id: string; userId: string } }) =>
+          rows.find((row) => row.id === where.id && row.userId === where.userId) ?? null,
+      ),
+      findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
+        rows.filter((row) => row.userId === where.userId),
+      ),
+      updateMany: vi.fn(async () => ({ count: 0 })),
+    },
+    securityEvent: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        const row = {
-          id: `proposal-${rows.length + 1}`,
-          createdAt: new Date("2026-11-15T12:00:00.000Z"),
-          ...data,
-        };
-        rows.push(row);
-        return row;
+        events.push(data);
+        return data;
       }),
     },
+    // The service's INSERT ... RETURNING, rebuilt from the bound values in the
+    // statement's own order. One stubbed call answers once; the guard keeps a
+    // duplicate mock registration from doubling the row.
+    $queryRaw: vi.fn(async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (rows.length > 0)
+        return rows.map((row) => ({
+          id: row.id,
+          createdAt: row.createdAt,
+          expiresAt: row.expiresAt,
+        }));
+      const [
+        id,
+        userId,
+        walletId,
+        fromAddress,
+        chainId,
+        to,
+        asset,
+        amountWei,
+        data,
+        nonce,
+        gasLimit,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+        rpcProfile,
+        ,
+        canonicalHash,
+        interval,
+        runId,
+      ] = values as [
+        string,
+        string,
+        string,
+        string,
+        number,
+        string | null,
+        string,
+        string,
+        string | null,
+        number,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string | null,
+      ];
+      const createdAt = new Date("2026-11-15T12:00:00.000Z");
+      // The bind is "<milliseconds> milliseconds", as the statement builds it.
+      const ttl = Number(/^(\d+) milliseconds$/.exec(interval)?.[1] ?? 15 * 60 * 1_000);
+      const stored = {
+        id,
+        userId,
+        walletId,
+        fromAddress,
+        chainId,
+        to,
+        asset,
+        amountWei,
+        data,
+        nonce,
+        gasLimit,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+        rpcProfile,
+        status: "proposed",
+        canonicalHash,
+        createdAt,
+        expiresAt: new Date(createdAt.getTime() + ttl),
+        runId,
+      } as unknown as StoredRow;
+      rows.push(stored);
+      return [{ id, createdAt, expiresAt: stored.expiresAt }];
+    }),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
   };
-  return { prisma: prisma as unknown as PrismaClient, rows, mock: prisma };
+  return { prisma: prisma as unknown as PrismaClient, rows, events, mock: prisma };
 }
 
 const WALLET = {
@@ -107,7 +217,7 @@ function create(overrides: {
   proposed?: Record<string, unknown>;
   wallet?: typeof WALLET;
   node?: Parameters<typeof fakeNode>[0];
-  now?: Date;
+  ttlMs?: number;
 }) {
   const store = proposalStore(overrides.wallet ?? WALLET);
   const proposed = overrides.proposed ?? {
@@ -127,6 +237,7 @@ function create(overrides: {
   const promise = createWalletProposal({
     prisma: store.prisma,
     userId: overrides.wallet?.userId ?? WALLET.userId,
+    spaceId: "space-1",
     runId: "run-1",
     proposed,
     rpcFor: (chain) =>
@@ -135,7 +246,7 @@ function create(overrides: {
         rpcUrl: "https://rpc.test",
         fetch: node.fetch,
       }),
-    now: () => overrides.now ?? new Date("2026-11-15T12:00:00.000Z"),
+    ttlMs: overrides.ttlMs,
   });
   return { promise, store, node };
 }
@@ -161,7 +272,6 @@ describe("the proposal RPC client", () => {
       fetch: node.fetch,
     });
     await expect(rpc.balanceWei(ADDRESS)).rejects.toMatchObject({ code: "chain_mismatch" });
-    // Only the chain check ran; no balance was read from the wrong chain.
     expect(node.calls.map((call) => call.method)).toEqual(["eth_chainId"]);
   });
 
@@ -209,6 +319,92 @@ describe("the proposal RPC client", () => {
       "nonce",
     ]);
   });
+
+  it("keeps the deadline active while the body is read, not just the headers", async () => {
+    // Headers arrive at once; the body never finishes. The call must refuse with a
+    // typed timeout rather than hang, which a `response.json()` after clearTimeout
+    // would have done.
+    const fetch: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0","id":1,'));
+          init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof fetch;
+    const rpc = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch,
+      timeoutMs: 60,
+    });
+    await expect(rpc.chainId()).rejects.toMatchObject({ code: "rpc_unavailable" });
+  });
+
+  it("refuses a body larger than any real JSON-RPC answer before parsing it", async () => {
+    const huge = `{"jsonrpc":"2.0","id":1,"result":"0x1"}${" ".repeat(1_100_000)}`;
+    const fetch = (async () =>
+      new Response(huge, { status: 200 })) as unknown as typeof globalThis.fetch;
+    const rpc = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch,
+      timeoutMs: 2_000,
+    });
+    await expect(rpc.chainId()).rejects.toMatchObject({ code: "rpc_error" });
+  });
+
+  it("accepts only a matching JSON-RPC 2.0 envelope with one of result or error", async () => {
+    const envelope = (body: unknown) =>
+      (async () =>
+        new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof globalThis.fetch;
+    const cases: Array<[unknown, string]> = [
+      [{ jsonrpc: "2.0", id: 99, result: "0x1" }, "different request"],
+      [{ id: 1, result: "0x1" }, "unreadable"],
+      [{ jsonrpc: "1.0", id: 1, result: "0x1" }, "unreadable"],
+      [{ jsonrpc: "2.0", id: 1 }, "unreadable"],
+      [{ jsonrpc: "2.0", id: 1, result: "0x1", error: { code: 1 } }, "unreadable"],
+      [{ jsonrpc: "2.0", id: 1, error: { code: -32000 } }, "refused"],
+    ];
+    for (const [body, message] of cases) {
+      const rpc = createWalletRpcClient({
+        chainId: 99801,
+        rpcUrl: "https://rpc.test",
+        fetch: envelope(body),
+      });
+      await expect(rpc.chainId(), message).rejects.toMatchObject({ code: "rpc_error" });
+    }
+  });
+
+  it("refuses a quantity too long to be a uint256, without converting it", async () => {
+    const fetch: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
+      // 99801 in hex is 0x185d9; the balance answer is deliberately absurd in length.
+      const result = body.method === "eth_chainId" ? "0x185d9" : `0x${"f".repeat(400)}`;
+      return jsonRpcAnswer(result, body.id);
+    }) as unknown as typeof fetch;
+    const rpc = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch,
+    });
+    await expect(rpc.balanceWei(ADDRESS)).rejects.toMatchObject({ code: "rpc_error" });
+  });
+
+  it("refuses a nonce outside the storable range", async () => {
+    const fetch: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
+      const result = body.method === "eth_chainId" ? "0x185d9" : `0x${(2n ** 40n).toString(16)}`;
+      return jsonRpcAnswer(result, body.id);
+    }) as unknown as typeof fetch;
+    const rpc = createWalletRpcClient({
+      chainId: 99801,
+      rpcUrl: "https://rpc.test",
+      fetch,
+    });
+    await expect(rpc.nonce(ADDRESS)).rejects.toMatchObject({ code: "rpc_error" });
+  });
 });
 
 describe("creating a proposal", () => {
@@ -221,6 +417,7 @@ describe("creating a proposal", () => {
     expect(chain.chainId).toBe(99801);
     expect(row).toMatchObject({
       walletId: WALLET.id,
+      fromAddress: ADDRESS.toLowerCase(),
       chainId: 99801,
       to: RECIPIENT,
       amountWei: "1000000000000000",
@@ -236,6 +433,21 @@ describe("creating a proposal", () => {
     expect(row.maxPriorityFeePerGas).toBe("1000000000");
     expect(row.expiresAt.toISOString()).toBe("2026-11-15T12:15:00.000Z");
     expect(store.rows).toHaveLength(1);
+    // Creation and its security event commit together.
+    expect(store.events).toEqual([
+      expect.objectContaining({
+        type: "credential.changed",
+        userId: WALLET.userId,
+        spaceId: "space-1",
+        metadata: expect.objectContaining({
+          procedure: "wallets.proposals",
+          kind: "wallet_proposal",
+          // The event names the row that was written, by its generated id.
+          proposalId: expect.stringMatching(/^c[a-z0-9]{24}$/),
+          outcome: "created",
+        }),
+      }),
+    ]);
   });
 
   it("stores a data-carrying call: to and data together, value optional", async () => {
@@ -290,25 +502,24 @@ describe("creating a proposal", () => {
     });
     await expect(promise).rejects.toMatchObject({ code: "wallet_not_migrated" });
     expect(store.rows).toHaveLength(0);
+    expect(store.events).toHaveLength(0);
   });
 
   it("refuses another person's wallet", async () => {
-    const { promise } = create({});
     await expect(
       createWalletProposal({
         prisma: proposalStore(WALLET).prisma,
         userId: "someone-else",
+        spaceId: "space-1",
         proposed: { walletId: WALLET.id, chainId: 99801, to: RECIPIENT, value: "0", data: null },
         rpcFor: () => {
           throw new Error("must not reach the chain");
         },
       }),
     ).rejects.toMatchObject({ code: "wallet_not_found" });
-    await expect(promise).resolves.toBeDefined();
   });
 
   it("refuses when the balance cannot cover the value plus the maximum fee", async () => {
-    // 0.001 ETH is enough for the value alone, but not value + gas * maxFee.
     const { promise, store } = create({
       proposed: {
         walletId: WALLET.id,
@@ -361,14 +572,28 @@ describe("creating a proposal", () => {
     await expect(withValue.promise).rejects.toMatchObject({ code: "invalid_request" });
   });
 
-  it("refuses gas above the cap rather than clamping it", async () => {
-    const { promise } = create({
-      node: {
-        balanceWei: (10n ** 24n).toString(),
-        gas: (WALLET_PROPOSAL_GAS_LIMIT_MAX + 1n).toString(),
-      },
+  it("applies the gas cap to the stored limit, after padding, and never clamps", async () => {
+    // An estimate that passes the raw check but whose padded limit would not.
+    // 1,500,000 * 1.2 + 1 = 1,800,001, above the cap, so this must refuse.
+    const { promise, store } = create({
+      node: { balanceWei: (10n ** 24n).toString(), gas: WALLET_PROPOSAL_GAS_LIMIT_MAX.toString() },
     });
     await expect(promise).rejects.toMatchObject({ code: "gas_limit_too_high" });
+    expect(store.rows).toHaveLength(0);
+
+    // An estimate whose padded limit fits is accepted, stored as padded.
+    const accepted = create({
+      node: { balanceWei: (10n ** 24n).toString(), gas: "1200000" },
+    });
+    const { row } = await accepted.promise;
+    expect(row.gasLimit).toBe("1440001");
+    expect(BigInt(row.gasLimit)).toBeLessThanOrEqual(WALLET_PROPOSAL_GAS_LIMIT_MAX);
+  });
+
+  it("pads the estimate by 20% and rounds up", () => {
+    expect(walletProposalGasLimit(21_000n)).toBe(25_201n);
+    expect(walletProposalGasLimit(1n)).toBe(2n);
+    expect(walletProposalGasLimit(50_000n)).toBe(60_001n);
   });
 
   it("refuses a fee suggestion above the cap", async () => {
@@ -381,6 +606,12 @@ describe("creating a proposal", () => {
   it("refuses when the chain answers for another network", async () => {
     const { promise, store } = create({ node: { chainId: 11155111, balanceWei: "1" } });
     await expect(promise).rejects.toMatchObject({ code: "chain_mismatch" });
+    expect(store.rows).toHaveLength(0);
+  });
+
+  it("refuses a lifetime longer than the maximum before anything is stored", async () => {
+    const { promise, store } = create({ ttlMs: 61 * 60 * 1_000 });
+    await expect(promise).rejects.toMatchObject({ code: "invalid_request" });
     expect(store.rows).toHaveLength(0);
   });
 });
@@ -415,6 +646,15 @@ describe("the canonical hash", () => {
     expect(walletProposalCanonicalHash(fields)).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("rests on a key-sorting serializer, proven independently of this module", () => {
+    // stableJsonValue is the whole reason two equivalent inputs hash alike; pin that
+    // property here so a change to it fails in this suite too.
+    expect(stableJsonValue({ b: 1, a: [2, { d: 4, c: 3 }] })).toBe(
+      stableJsonValue({ a: [2, { c: 3, d: 4 }], b: 1 }),
+    );
+    expect(stableJsonValue({ a: 1 })).not.toBe(stableJsonValue({ a: 2 }));
+  });
+
   it("changes when any field that defines the transaction changes", () => {
     const base = walletProposalCanonicalHash(fields);
     for (const change of [
@@ -432,7 +672,7 @@ describe("the canonical hash", () => {
     }
   });
 
-  it("is what the stored proposal carries, so a changed field would be a new proposal", async () => {
+  it("is what the stored proposal carries, over the stored sender", async () => {
     const { promise } = create({
       node: { balanceWei: (10n ** 18n).toString(), nonce: 3, gas: "21000", baseFee: "1000000000" },
     });
@@ -440,7 +680,7 @@ describe("the canonical hash", () => {
     expect(row.canonicalHash).toBe(
       walletProposalCanonicalHash({
         chainId: 99801,
-        from: ADDRESS,
+        from: ADDRESS.toLowerCase(),
         to: RECIPIENT,
         value: "1000000000000000",
         data: null,
@@ -450,6 +690,8 @@ describe("the canonical hash", () => {
         maxPriorityFeePerGas: "1000000000",
       }),
     );
+    // The hash is reconstructible from the stored row alone, with no wallet read.
+    expect(row.fromAddress).toBe(ADDRESS.toLowerCase());
   });
 
   it("reports the maximum fee as gasLimit times maxFeePerGas", () => {
@@ -460,168 +702,193 @@ describe("the canonical hash", () => {
 });
 
 describe("status transitions", () => {
-  /** A store with one proposal and the conditional updates the service issues. */
-  function statusStore(row: { id: string; status: string; expiresAt: Date }) {
+  /**
+   * A store whose conditional UPDATE behaves like the real statement: it matches
+   * the expected current status, compares the deadline against the database's
+   * clock, and returns the id when it changed a row. Each call is one event.
+   */
+  function statusStore(row: { id: string; userId: string; status: string; expiresAt: Date }) {
     const rows = [row];
-    const matches = (candidate: (typeof rows)[number], where: Record<string, unknown>) =>
-      Object.entries(where).every(([key, condition]) => {
-        if (key === "id") return candidate.id === condition;
-        if (key === "userId") return true;
-        if (key === "status") return candidate.status === condition;
-        if (key === "expiresAt" && condition && typeof condition === "object") {
-          const ops = condition as { gt?: Date; lte?: Date };
-          if (ops.gt) return candidate.expiresAt.getTime() > ops.gt.getTime();
-          if (ops.lte) return candidate.expiresAt.getTime() <= ops.lte.getTime();
-        }
-        return false;
-      });
+    const events: Array<Record<string, unknown>> = [];
     const prisma = {
       walletProposal: {
-        findFirst: vi.fn(
-          async ({ where }: { where: { id: string } }) =>
-            rows.find((candidate) => matches(candidate, where)) ?? null,
-        ),
-        updateMany: vi.fn(
-          async ({ where, data }: { where: Record<string, unknown>; data: { status: string } }) => {
-            let count = 0;
-            for (const candidate of rows) {
-              if (!matches(candidate, where)) continue;
-              candidate.status = data.status;
-              count += 1;
-            }
-            return { count };
-          },
+        findFirst: vi.fn(async ({ where }: { where: { id: string; userId: string } }) =>
+          rows.find((r) => r.id === where.id && r.userId === where.userId)
+            ? { id: row.id, status: row.status }
+            : null,
         ),
       },
+      securityEvent: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          events.push(data);
+          return data;
+        }),
+      },
+      // Assigned below; the placeholder keeps the object's shape while the fake
+      // conditional UPDATE needs the same object to close over.
+      $queryRaw: vi.fn(async (): Promise<Array<{ id: string }>> => []),
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     };
-    return { prisma: prisma as unknown as PrismaClient, rows };
+    // The raw conditional UPDATE is issued through $queryRaw; the fake answers it
+    // the way Postgres would for the one row this store holds.
+    const queued: Array<{ to: string; requireLive: boolean }> = [];
+    prisma.$queryRaw = vi.fn(async () => {
+      // Each raw UPDATE consumes the next queued expectation, as the real service
+      // issues exactly one statement per transition attempt.
+      const pendingTransition = queued.shift();
+      if (!pendingTransition) return [];
+      const now = new Date("2026-11-15T12:00:00.000Z");
+      const live = row.expiresAt.getTime() > now.getTime();
+      if (row.status !== "proposed") return [];
+      if (pendingTransition.requireLive && !live) return [];
+      if (pendingTransition.to === "expired" && live) return [];
+      row.status = pendingTransition.to;
+      return [{ id: row.id }];
+    });
+    return {
+      prisma: prisma as unknown as PrismaClient,
+      rows,
+      events,
+      /** Queue the conditional updates the service will issue, in order. */
+      expectTransition: (to: string, requireLive = false) => {
+        queued.push({ to, requireLive });
+      },
+    };
   }
 
-  it("cancels a proposed transaction and records it", async () => {
-    const store = statusStore({
-      id: "p1",
-      status: "proposed",
-      expiresAt: new Date("2026-11-15T13:00:00.000Z"),
-    });
+  const base = {
+    id: "p1",
+    userId: "user-1",
+    status: "proposed",
+    expiresAt: new Date("2026-11-15T13:00:00.000Z"),
+  };
+
+  it("cancels a live proposal and records exactly one event", async () => {
+    const store = statusStore({ ...base });
+    store.expectTransition("cancelled", true);
     await expect(
       cancelWalletProposal({
         prisma: store.prisma,
         userId: "user-1",
+        spaceId: "space-1",
         proposalId: "p1",
-        now: () => new Date("2026-11-15T12:00:00.000Z"),
       }),
     ).resolves.toEqual({ status: "cancelled" });
     expect(store.rows[0]!.status).toBe("cancelled");
+    expect(store.events).toHaveLength(1);
+    expect(store.events[0]).toMatchObject({
+      metadata: expect.objectContaining({ proposalId: "p1", outcome: "cancelled" }),
+    });
   });
 
-  it("lets no expired proposal transition further", async () => {
+  it("persists expiry instead of cancelling, when the deadline passed first", async () => {
     const store = statusStore({
-      id: "p1",
-      status: "proposed",
+      ...base,
       expiresAt: new Date("2026-11-15T11:00:00.000Z"),
     });
-    const now = () => new Date("2026-11-15T12:00:00.000Z");
+    // The cancel's live-guarded update matches nothing; the service then issues the
+    // expiry, which is the transition that wins — and the only one recorded.
+    store.expectTransition("cancelled", true);
+    store.expectTransition("expired");
     await expect(
       cancelWalletProposal({
         prisma: store.prisma,
         userId: "user-1",
+        spaceId: "space-1",
         proposalId: "p1",
-        now,
       }),
     ).rejects.toMatchObject({ code: "proposal_expired" });
-    // The cancel marked it expired, not cancelled: expiry is not a decision.
     expect(store.rows[0]!.status).toBe("expired");
-    await expect(
-      cancelWalletProposal({
-        prisma: store.prisma,
-        userId: "user-1",
-        proposalId: "p1",
-        now,
-      }),
-    ).rejects.toMatchObject({ code: "proposal_not_cancellable" });
-    expect(store.rows[0]!.status).toBe("expired");
-  });
-
-  it("never re-cancels a cancelled proposal", async () => {
-    const store = statusStore({
-      id: "p1",
-      status: "cancelled",
-      expiresAt: new Date("2026-11-15T13:00:00.000Z"),
+    expect(store.events).toHaveLength(1);
+    expect(store.events[0]).toMatchObject({
+      metadata: expect.objectContaining({ proposalId: "p1", outcome: "expired" }),
     });
+  });
+
+  it("never re-cancels a cancelled proposal, and records nothing", async () => {
+    const store = statusStore({ ...base, status: "cancelled" });
     await expect(
       cancelWalletProposal({
         prisma: store.prisma,
         userId: "user-1",
+        spaceId: "space-1",
         proposalId: "p1",
-        now: () => new Date("2026-11-15T12:00:00.000Z"),
       }),
     ).rejects.toMatchObject({ code: "proposal_not_cancellable" });
+    expect(store.events).toHaveLength(0);
   });
 
-  it("expires only overdue proposals, and only proposed ones", async () => {
-    const overdue = statusStore({
-      id: "p1",
-      status: "proposed",
+  it("reports the winning transition only: a second expiry writes no second event", async () => {
+    const store = statusStore({
+      ...base,
       expiresAt: new Date("2026-11-15T11:00:00.000Z"),
     });
+    store.expectTransition("expired");
     await expect(
       expireWalletProposal({
-        prisma: overdue.prisma,
+        prisma: store.prisma,
         userId: "user-1",
+        spaceId: "space-1",
         proposalId: "p1",
-        now: () => new Date("2026-11-15T12:00:00.000Z"),
       }),
     ).resolves.toBe(true);
-    expect(overdue.rows[0]!.status).toBe("expired");
-
-    const live = statusStore({
-      id: "p2",
-      status: "proposed",
-      expiresAt: new Date("2026-11-15T13:00:00.000Z"),
-    });
+    expect(store.rows[0]!.status).toBe("expired");
+    expect(store.events).toHaveLength(1);
+    // The row is no longer proposed, so the statement matches nothing.
     await expect(
       expireWalletProposal({
-        prisma: live.prisma,
-        userId: "user-1",
-        proposalId: "p2",
-        now: () => new Date("2026-11-15T12:00:00.000Z"),
-      }),
-    ).resolves.toBe(false);
-    expect(live.rows[0]!.status).toBe("proposed");
-  });
-
-  it("sweeps every overdue proposal for the owner in one conditional write", async () => {
-    const store = statusStore({
-      id: "p1",
-      status: "proposed",
-      expiresAt: new Date("2026-11-15T11:00:00.000Z"),
-    });
-    await expect(
-      expireOverdueWalletProposals({
         prisma: store.prisma,
         userId: "user-1",
-        now: () => new Date("2026-11-15T12:00:00.000Z"),
+        spaceId: "space-1",
+        proposalId: "p1",
       }),
-    ).resolves.toBe(1);
-    expect(store.rows[0]!.status).toBe("expired");
+    ).resolves.toBe(false);
+    expect(store.events).toHaveLength(1);
+  });
+
+  it("refuses to expire a proposal that is still live", async () => {
+    const store = statusStore({ ...base });
+    store.expectTransition("expired");
+    await expect(
+      expireWalletProposal({
+        prisma: store.prisma,
+        userId: "user-1",
+        spaceId: "space-1",
+        proposalId: "p1",
+      }),
+    ).resolves.toBe(false);
+    expect(store.rows[0]!.status).toBe("proposed");
+    expect(store.events).toHaveLength(0);
+  });
+
+  it("expires every overdue proposal with one event per proposal", async () => {
+    const store = statusStore({
+      ...base,
+      expiresAt: new Date("2026-11-15T11:00:00.000Z"),
+    });
+    store.expectTransition("expired");
+    const expired = await expireOverdueWalletProposals({
+      prisma: store.prisma,
+      userId: "user-1",
+      spaceId: "space-1",
+    });
+    expect(expired).toEqual(["p1"]);
+    expect(store.events).toHaveLength(1);
+    expect(store.events[0]).toMatchObject({
+      metadata: expect.objectContaining({ proposalId: "p1", outcome: "expired" }),
+    });
   });
 
   it("refuses to cancel someone else's proposal", async () => {
-    const store = statusStore({
-      id: "p1",
-      status: "proposed",
-      expiresAt: new Date("2026-11-15T13:00:00.000Z"),
-    });
-    (store.prisma.walletProposal as unknown as { findFirst: unknown }).findFirst = vi.fn(
-      async () => null,
-    );
+    const store = statusStore({ ...base });
     await expect(
       cancelWalletProposal({
         prisma: store.prisma,
         userId: "user-2",
+        spaceId: "space-1",
         proposalId: "p1",
-        now: () => new Date("2026-11-15T12:00:00.000Z"),
       }),
     ).rejects.toBeInstanceOf(WalletProposalError);
+    expect(store.events).toHaveLength(0);
   });
 });

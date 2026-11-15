@@ -23,6 +23,7 @@ import {
   TICKET_PRIORITIES,
   TICKET_STATUSES,
   TICKET_TITLE_MAX_LENGTH,
+  WalletProposeInput,
 } from "@rakazo/contracts";
 import { z } from "zod";
 import { allowPrivateHttpSecretOrigins } from "./bot-secrets.js";
@@ -680,32 +681,11 @@ export const builtinAgentTools: ConnectorTool[] = [
     name: "wallet_propose",
     description:
       "Propose one transaction from a saved wallet for the user to sign: to, value in wei, and data. Covers a native send, a token transfer or mint, an arbitrary contract call, and a deploy (to null with bytecode in data). Pick chainId 99801 (Elysium Testnet), 998 (HyperEVM Testnet) or 11155111 (Sepolia). The server fills nonce, fees and gas from the chain and rejects a transaction the wallet cannot pay for. Nothing is signed or sent; the user sees the proposal and signs it in Settings. Only works in a run the user started, and only for a wallet protected by the wallet password.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        walletId: { type: "string", description: "The wallet id from list_wallets" },
-        chainId: {
-          type: "integer",
-          enum: [99801, 998, 11155111],
-          description: "99801 Elysium Testnet, 998 HyperEVM Testnet, 11155111 Sepolia",
-        },
-        to: {
-          type: ["string", "null"],
-          description: "Recipient or contract address; null only for a contract deploy",
-        },
-        value: {
-          type: "string",
-          pattern: "^(0|[1-9][0-9]*)$",
-          description: "Native amount in wei as a decimal string; never a float",
-        },
-        data: {
-          type: ["string", "null"],
-          description: "0x-prefixed calldata, or 0x bytecode to deploy when to is null",
-        },
-      },
-      required: ["walletId", "chainId"],
-      additionalProperties: false,
-    },
+    // Generated from the same contract the server validates with, so the tool the
+    // model reads and the input the handler accepts cannot drift. `to` is
+    // required in the contract (explicit null for a deploy), and the required
+    // list follows from that.
+    inputSchema: z.toJSONSchema(WalletProposeInput, { io: "input" }),
   },
   {
     name: "restart_host",

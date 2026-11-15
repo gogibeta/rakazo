@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as z from "zod";
 import {
   WALLET_CHAIN_IDS,
   WALLET_PROPOSAL_TTL_MS,
@@ -109,5 +110,35 @@ describe("wallet proposal contracts", () => {
     expect(Object.keys(view).sort()).not.toContain("privateKey");
     expect(WalletProposalStatusSchema.parse("proposed")).toBe("proposed");
     expect(WalletProposalStatusSchema.safeParse("signed").success).toBe(false);
+  });
+});
+
+describe("the tool schema the model reads", () => {
+  it("comes from the same contract the server validates, so `to` is required", () => {
+    // The adapters build the tool's inputSchema with z.toJSONSchema(WalletProposeInput);
+    // asserting the contract's own shape here is what keeps the two from drifting.
+    const schema = z.toJSONSchema(WalletProposeInput, { io: "input" }) as {
+      required?: string[];
+      properties?: Record<string, unknown>;
+      additionalProperties?: boolean;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(["walletId", "chainId", "to"]));
+    expect(schema.additionalProperties).toBe(false);
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+      "chainId",
+      "data",
+      "to",
+      "value",
+      "walletId",
+    ]);
+    // `to` is nullable, not optional: a deploy says so explicitly.
+    expect(
+      WalletProposeInput.safeParse({
+        walletId: "w1",
+        chainId: 99801,
+        value: "0",
+        data: "0x60",
+      }).success,
+    ).toBe(false);
   });
 });
