@@ -110,6 +110,8 @@ x-app-environment: &app-environment # Runtime
   ANTHROPIC_API_KEY:
   TYPESAFE_API_KEY:
   MAX_TOOL_CALLS_PER_TURN:
+  # Refuses to start without database-enforced tenant isolation; true accepts it.
+  RAKAZO_ALLOW_UNENFORCED_RLS:
   RUN_TOKEN_BUDGET_HARD:
   RUN_TOKEN_BUDGET_SOFT:
   RUN_COST_BUDGET_USD_HARD:

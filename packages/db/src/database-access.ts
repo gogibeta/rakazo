@@ -286,6 +286,33 @@ export async function describeRowSecurity(prisma: PrismaClient): Promise<RowSecu
   return { enforced: true, role: row.role, ...(system?.ok ? {} : { systemBlocked: true }) };
 }
 
+/**
+ * Whether a deployment has explicitly accepted running without row-level security.
+ *
+ * The default is refusal: a deployment where the policies do not bind the runtime
+ * login has no database-level tenant isolation, and every query relies on the
+ * application's own filters. That is a silent, permanent downgrade of a security
+ * property, so it must be a decision someone wrote down, not a misconfiguration
+ * nobody noticed.
+ */
+export function unenforcedRowSecurityAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.RAKAZO_ALLOW_UNENFORCED_RLS?.trim().toLowerCase();
+  return raw === "true" || raw === "1" || raw === "yes";
+}
+
+/**
+ * The message that stops a process when row-level security is not enforced.
+ * Returned rather than thrown so each entry point can fail in its own style.
+ */
+export function rowSecurityRefusal(status: RowSecurityStatus): string | undefined {
+  const warning = rowSecurityWarning(status);
+  if (!warning) return undefined;
+  // A mismatched bypass key still means the policies bind the login; background work
+  // is what breaks, not tenant isolation. That stays a warning, as it always was.
+  if (status.enforced) return undefined;
+  return `${warning} Refusing to start without tenant isolation. Set RAKAZO_ALLOW_UNENFORCED_RLS=true only if you accept that the database enforces no isolation between Spaces.`;
+}
+
 export function rowSecurityWarning(status: RowSecurityStatus): string | undefined {
   if (status.systemBlocked)
     return "Background work across Spaces is blocked: DATABASE_URL's password changed since `pnpm db:migrate` last ran. Run it again.";

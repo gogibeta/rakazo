@@ -113,8 +113,10 @@ import {
   parsePositiveInteger,
   pushSessionExpiresAt,
   requireMembership,
+  rowSecurityRefusal,
   rowSecurityWarning,
   runAsSystem,
+  unenforcedRowSecurityAllowed,
   verifyContentKeys,
 } from "@rakazo/db";
 import type { Logger } from "@rakazo/logging";
@@ -290,8 +292,16 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
     trustedProxies: env.trustedProxies.length > 0 ? env.trustedProxies : defaultTrustedProxies(),
     header: env.clientIpHeader,
   });
-  const rowSecurity = rowSecurityWarning(await describeRowSecurity(prisma));
+  const rowSecurityStatus = await describeRowSecurity(prisma);
+  const rowSecurity = rowSecurityWarning(rowSecurityStatus);
   if (rowSecurity) logger.warn(rowSecurity);
+  // Tenant isolation is enforced by the database, not by every query remembering to
+  // filter. A deployment whose runtime login bypasses the policies gets no isolation
+  // at all, so it must not serve traffic unless someone said so in writing.
+  if (!unenforcedRowSecurityAllowed()) {
+    const refusal = rowSecurityRefusal(rowSecurityStatus);
+    if (refusal) throw new Error(refusal);
+  }
   const weakEncryptionKey = encryptionKeyWarning(process.env);
   if (weakEncryptionKey) logger.warn(weakEncryptionKey);
   // Set once push delivery is configured below; thread changes before then have no cards.

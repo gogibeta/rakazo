@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   databaseUrls,
   provisionRuntimeRole,
+  rowSecurityRefusal,
   rowSecurityWarning,
   scramSha256Verifier,
+  unenforcedRowSecurityAllowed,
 } from "./database-access.js";
 
 const sent = vi.hoisted(() => [] as string[]);
@@ -69,6 +71,44 @@ describe("rowSecurityWarning", () => {
     expect(
       rowSecurityWarning({ enforced: false, role: "rakazo", reason: "is a superuser" }),
     ).toContain("connects as rakazo, which is a superuser");
+  });
+});
+
+describe("refusing to run without tenant isolation", () => {
+  it("refuses when the policies do not bind the login", () => {
+    const refusal = rowSecurityRefusal({
+      enforced: false,
+      role: "rakazo",
+      reason: "is a superuser",
+    });
+    expect(refusal).toContain("connects as rakazo, which is a superuser");
+    expect(refusal).toContain("RAKAZO_ALLOW_UNENFORCED_RLS=true");
+    expect(refusal).toContain("Refusing to start");
+  });
+
+  it("stays silent when the policies apply", () => {
+    expect(rowSecurityRefusal({ enforced: true, role: "rakazo_app" })).toBeUndefined();
+  });
+
+  it("treats a stale bypass key as a warning, not a refusal", () => {
+    // The policies still bind this login; what breaks is background work across
+    // Spaces, which the warning already explains. Starting is safe.
+    expect(
+      rowSecurityRefusal({ enforced: true, role: "rakazo_app", systemBlocked: true }),
+    ).toBeUndefined();
+  });
+
+  it("accepts only an explicit opt-in", () => {
+    for (const value of ["true", "1", "yes", " TRUE "]) {
+      expect(unenforcedRowSecurityAllowed({ RAKAZO_ALLOW_UNENFORCED_RLS: value })).toBe(true);
+    }
+    for (const value of [undefined, "", "false", "0", "no", "maybe"]) {
+      expect(
+        unenforcedRowSecurityAllowed(
+          value === undefined ? {} : { RAKAZO_ALLOW_UNENFORCED_RLS: value },
+        ),
+      ).toBe(false);
+    }
   });
 });
 
