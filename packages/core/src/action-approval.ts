@@ -84,6 +84,10 @@ const APPROVAL_REQUIRED_BUILTIN_TOOLS = new Set([
   "create_child_routine",
   "feedback",
   "send_email",
+  // Durable memory outlives the run that wrote it and is read back into every later run of
+  // every bot that shares it, so a write there is a standing instruction, not a message.
+  "save_shared_memory",
+  "save_memory",
 ]);
 const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set([
   // Permanent: the owner sees the exact address before it is theirs for good.
