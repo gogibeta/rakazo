@@ -517,7 +517,7 @@ services:
       context: ../..
       dockerfile: apps/vault/Dockerfile
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-rakazo}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
+      DATABASE_URL: postgres://rakazo_app:${POSTGRES_APP_PASSWORD:-?Set POSTGRES_APP_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-rakazo}
       VAULT_HOST: "0.0.0.0"
       VAULT_PORT: "7092"
       VAULT_SERVICE_TOKEN: ${VAULT_SERVICE_TOKEN:?Set VAULT_SERVICE_TOKEN in .env}
