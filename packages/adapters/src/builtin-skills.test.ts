@@ -32,6 +32,34 @@ describe("built-in skills", () => {
   });
 });
 
+describe("Wallet Operations skill", () => {
+  const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Wallet Operations")!;
+
+  it("never claims a send happened, and names no tool that could", () => {
+    // Signing and broadcast are not in this build, so the skill must not promise
+    // either, and must not name a tool a bot could try to call. These are the
+    // exact claims the shipped text made before this build supported them.
+    for (const claim of [
+      "use wallet_send",
+      "wallet_send:",
+      "signs inside its vault",
+      "the server then signs",
+      "you receive only the transaction hash",
+      "confirms it; the server",
+    ]) {
+      expect(skill.content, claim).not.toContain(claim);
+    }
+  });
+
+  it("says plainly that sending is unavailable, and stops at a preparation summary", () => {
+    expect(skill.content).toContain("Sending is not available in this build");
+    expect(skill.content).toContain("signing is not available yet");
+    expect(skill.content).toContain("preparation summary");
+    expect(skill.content).toContain("signing is unavailable in this build");
+    expect(skill.content).toContain("Preparing is not sending");
+  });
+});
+
 describe("Rakazo skill", () => {
   it("links only to published docs pages", () => {
     const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Rakazo")!;
