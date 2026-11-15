@@ -182,9 +182,11 @@ afterEach(() => {
 });
 
 describe("runBudgetLimits", () => {
-  it("treats unset, empty, and invalid values as unlimited with enforcement off", () => {
+  it("applies the shipped tool-call fuse while other bounds stay unlimited", () => {
+    // Every run now has a tool-call bound even with nothing configured; the token
+    // and cost bounds remain opt-in, and enforcement stays off unless asked for.
     expect(runBudgetLimits({})).toEqual({
-      toolCallLimit: 0,
+      toolCallLimit: 60,
       tokenLimit: 0,
       tokenSoftLimit: 0,
       costLimitUsd: 0,
@@ -193,7 +195,7 @@ describe("runBudgetLimits", () => {
     expect(
       runBudgetLimits({ RUN_TOKEN_BUDGET_HARD: "abc", RUN_COST_BUDGET_USD_HARD: "-2" }),
     ).toEqual({
-      toolCallLimit: 0,
+      toolCallLimit: 60,
       tokenLimit: 0,
       tokenSoftLimit: 0,
       costLimitUsd: 0,
@@ -341,11 +343,22 @@ describe("toolCallBudgetFor", () => {
     releaseToolCallBudget("run-tracked", false);
   });
 
-  it("does not keep a budget with no bound configured; metering still works on the object", () => {
-    const first = toolCallBudgetFor("run-unbounded");
+  it("keeps a budget now that one bound always applies, and meters it", () => {
+    // The tool-call fuse has a default, so every run has at least one bound to
+    // enforce; only an explicit MAX_TOOL_CALLS_PER_TURN=0 makes a run unbounded.
+    const first = toolCallBudgetFor("run-default-fused");
     recordRunUsage(first, { inputTokens: 3, outputTokens: 2, costUsd: null });
     expect(first.inputTokens).toBe(3);
-    expect(toolCallBudgetFor("run-unbounded")).not.toBe(first);
+    expect(first.toolCalls.limit).toBe(60);
+    expect(toolCallBudgetFor("run-default-fused")).toBe(first);
+    releaseToolCallBudget("run-default-fused", false);
+
+    // The explicit opt-out still yields no retained budget object.
+    process.env.MAX_TOOL_CALLS_PER_TURN = "0";
+    const unbounded = toolCallBudgetFor("run-unbounded");
+    expect(toolCallBudgetFor("run-unbounded")).not.toBe(unbounded);
+    releaseToolCallBudget("run-unbounded", false);
+    delete process.env.MAX_TOOL_CALLS_PER_TURN;
   });
 
   it("resolves routine limits from the run kind", () => {
