@@ -409,21 +409,16 @@ describe("the proposal RPC client", () => {
   it("uses ONE absolute deadline: a slow body cannot borrow a second timeout", async () => {
     // Headers arrive at once; the body trickles one byte per tick for longer than the
     // whole budget. With a deadline restarted per step this call would still succeed.
-    const fetch: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
-      const payload = new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":"0x185d9"}');
-      let index = 0;
+    const fetch: typeof globalThis.fetch = (async (_url: unknown, _init?: RequestInit) => {
       // A stream that NEVER completes on its own: every byte waits far longer than
       // the whole budget. The only way this call can end is the deadline, so the
       // test measures the deadline rather than racing the fake's own pacing.
       const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          await new Promise((resolve) => setTimeout(resolve, 5_000));
-          if (init?.signal?.aborted || index >= payload.length) {
-            controller.error(new Error("aborted"));
-            return;
-          }
-          controller.enqueue(payload.slice(index, index + 1));
-          index += 1;
+        async pull() {
+          // Never resolves and never enqueues: nothing the fake does can end this
+          // call, so the deadline is the only exit and the assertion cannot race a
+          // partially delivered body on a loaded runner.
+          await new Promise(() => undefined);
         },
       });
       return new Response(stream, { status: 200 });
@@ -514,10 +509,13 @@ describe("the proposal RPC client", () => {
     const timingOut: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
       if (body.method === "eth_maxPriorityFeePerGas") {
+        // A body that produces nothing and never closes, so the deadline is the
+        // only exit: an enqueued byte could be read as a complete (unparseable)
+        // body on a loaded runner, which fails as rpc_error instead of the
+        // timeout this test is about.
         const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("{"));
-            init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+          async pull() {
+            await new Promise(() => undefined);
           },
         });
         return new Response(stream, { status: 200 });
