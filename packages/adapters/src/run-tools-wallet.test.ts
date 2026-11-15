@@ -167,16 +167,110 @@ describe("browser_act types a saved wallet only where the user approved it", () 
 });
 
 describe("list_wallets", () => {
-  it("shows names, chains and addresses only", async () => {
+  it("returns the id wallet_propose needs, and nothing secret", async () => {
     const { prisma } = await walletStore();
     const result = await walletTools.list_wallets!(
       { deps: { prisma }, run: { userId: "u" } } as never,
       {} as never,
     );
-    expect(result).toEqual({ wallets: [{ name: "burner", chain: "evm", address: ADDRESS }] });
+    // The id is the handle wallet_propose takes. Without it a bot can name a wallet
+    // by a value the tool will never accept, which is how no proposal could ever be
+    // created: list_wallets is the only place a bot learns what to pass.
+    expect(result).toEqual({
+      wallets: [{ id: "w1", name: "burner", chain: "evm", address: ADDRESS }],
+    });
     const seen = JSON.stringify(result);
     expect(seen).not.toContain(KEY);
     expect(seen).not.toContain("secretCipher");
+    expect(seen).not.toContain("keyCiphertext");
+    expect(seen).not.toContain("passwordWrap");
+  });
+
+  it("is the id wallet_propose then accepts, end to end", async () => {
+    // The two tools are only useful together: a bot reads the list, then proposes
+    // with what the list gave it. This drives exactly that pair against one store.
+    const { prisma } = await walletStore();
+    const listed = (await walletTools.list_wallets!(
+      { deps: { prisma }, run: { userId: "u" } } as never,
+      {} as never,
+    )) as { wallets: Array<{ id: string }> };
+    expect(listed.wallets[0]!.id).toBe("w1");
+
+    // A store whose wallet lookup is strict on the id, as the real service is.
+    const created: Array<Record<string, unknown>> = [];
+    const strict = {
+      userWallet: {
+        findFirst: vi.fn(async ({ where }: { where: { id: string; userId: string } }) =>
+          where.userId === "u" && where.id === "w1"
+            ? {
+                id: "w1",
+                userId: "u",
+                name: "burner",
+                address: ADDRESS,
+                migrationStatus: "password_protected",
+              }
+            : null,
+        ),
+      },
+      securityEvent: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
+      $queryRaw: vi.fn(async (_s: TemplateStringsArray, ...values: unknown[]) => {
+        const id = String(values[0] ?? "");
+        if (!/^c[a-z0-9]{24}$/.test(id)) return [];
+        const createdAt = new Date("2026-11-15T12:00:00.000Z");
+        const stored = {
+          id,
+          walletId: values[2],
+          fromAddress: values[3],
+          chainId: values[4],
+          to: values[5],
+          asset: values[6],
+          amountWei: values[7],
+          data: values[8],
+          nonce: values[9],
+          gasLimit: values[10],
+          maxFeePerGas: values[11],
+          maxPriorityFeePerGas: values[12],
+          rpcProfile: values[13],
+          canonicalHash: values[15],
+          createdAt,
+          expiresAt: new Date(createdAt.getTime() + 15 * 60 * 1_000),
+        };
+        created.push(stored);
+        return [{ id, createdAt, expiresAt: stored.expiresAt }];
+      }),
+      $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(strict)),
+    };
+    const walletRpc = () => ({
+      chainId: async () => 99801,
+      balanceWei: async () => "1000000000000000000",
+      nonce: async () => 0,
+      estimateGas: async () => "21000",
+      fees: async () => ({ maxFeePerGas: "3000000000", maxPriorityFeePerGas: "1000000000" }),
+    });
+    const ctx = {
+      deps: { prisma: strict, walletRpc },
+      run: { id: "run-1", userId: "u", spaceId: "space", threadId: "t1", trigger: "user" },
+      bot: { id: "b1", name: "Chief" },
+      thread: { id: "t1" },
+      runId: "run-1",
+      source: { ownerStartedRun: true },
+      secrets: [],
+      state: {},
+    };
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: {
+          walletId: listed.wallets[0]!.id,
+          chainId: 99801,
+          to: "0x000000000000000000000000000000000000dEaD",
+          value: "1000",
+          data: null,
+        },
+      } as never,
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({ chainId: 99801 });
+    expect(created).toHaveLength(1);
   });
 });
 
@@ -212,7 +306,14 @@ describe("wallet_propose", () => {
       migrationStatus: options.migrationStatus ?? "password_protected",
     };
     const prisma = {
-      userWallet: { findFirst: vi.fn(async () => wallet), findMany: vi.fn(async () => [wallet]) },
+      userWallet: {
+        // Strict on both keys, as the real service is: the lookup is by id and
+        // userId, so a name or an address finds nothing.
+        findFirst: vi.fn(async ({ where }: { where: { id?: string; userId?: string } }) =>
+          where.userId === wallet.userId && where.id === wallet.id ? wallet : null,
+        ),
+        findMany: vi.fn(async () => [wallet]),
+      },
 
       securityEvent: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
       // The service's parameterized INSERT ... RETURNING: one row appears for
@@ -337,6 +438,52 @@ describe("wallet_propose", () => {
     )) as { error: string };
     expect(result.error).toContain("not protected by the wallet password");
     expect(created).toHaveLength(0);
+  });
+
+  it("reaches the legacy gate with the id list_wallets returned", async () => {
+    // The live bug was that the gate was unreachable: a bot had no id to pass, so
+    // every call stopped at wallet_not_found and the migration check never ran.
+    // This drives the real pair — list, then propose with what the list returned —
+    // against a wallet that is still legacy.
+    const { prisma, created } = proposeContext({ migrationStatus: "legacy_server_only" });
+    const ctx = {
+      deps: { prisma },
+      run: { id: "run-1", userId: "u", spaceId: "space", threadId: "t1", trigger: "user" },
+      bot: { id: "b1", name: "Chief" },
+      thread: { id: "t1" },
+      runId: "run-1",
+      source: { ownerStartedRun: true },
+      secrets: [],
+      state: {},
+    };
+    const listed = (await walletTools.list_wallets!(
+      { deps: { prisma }, run: { userId: "u" } } as never,
+      {} as never,
+    )) as { wallets: Array<{ id: string }> };
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: { ...PROPOSED, walletId: listed.wallets[0]!.id },
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("not protected by the wallet password");
+    expect(created).toHaveLength(0);
+  });
+
+  it("still refuses a name or an address passed as walletId", async () => {
+    // The lookup stays id-only: the list now hands out an id, and anything else is
+    // a mistake the model must be told about, not a second accepted key form.
+    for (const walletId of ["burner", ADDRESS]) {
+      const { ctx, created } = proposeContext();
+      const result = (await walletTools.wallet_propose!(
+        ctx as never,
+        {
+          args: { ...PROPOSED, walletId },
+        } as never,
+      )) as { error: string };
+      expect(result.error, walletId).toContain("Pass the id that list_wallets returns");
+      expect(created, walletId).toHaveLength(0);
+    }
   });
 
   it("refuses insufficient balance including the fee, and stores nothing", async () => {

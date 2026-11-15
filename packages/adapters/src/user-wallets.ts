@@ -9,7 +9,15 @@ import type { PrismaClient } from "@rakazo/db";
  * the run to hide everywhere else.
  */
 
-export type UserWalletSummary = { name: string; chain: string; address: string };
+/**
+ * What a bot may plan with: the wallet's opaque id, its name, chain family and
+ * public address — never the secret. The id is the handle wallet_propose takes;
+ * it is an internal identifier, not a credential: naming it authorizes nothing,
+ * because every wallet action is owner-started, owner-confirmed and gated by the
+ * server. Without it a bot cannot name a wallet at all, which is why every list
+ * of wallets a bot sees carries it.
+ */
+export type UserWalletSummary = { id: string; name: string; chain: string; address: string };
 
 type WalletRow = {
   id: string;
@@ -21,7 +29,7 @@ type WalletRow = {
   updatedAt: Date;
 };
 
-/** The wallets a bot may plan with: name, chain and public address, never the secret. */
+/** The wallets a bot may plan with: id, name, chain and public address, never the secret. */
 export async function listUserWallets(
   prisma: PrismaClient,
   userId: string,
@@ -29,10 +37,15 @@ export async function listUserWallets(
   const rows = await prisma.userWallet.findMany({
     where: { userId },
     orderBy: { createdAt: "asc" },
-    select: { name: true, chain: true, address: true },
+    select: { id: true, name: true, chain: true, address: true },
   });
   // Mapped field by field, so nothing else on the row can reach a bot.
-  return rows.map((row) => ({ name: row.name, chain: row.chain, address: row.address }));
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    chain: row.chain,
+    address: row.address,
+  }));
 }
 
 export async function findUserWallet(

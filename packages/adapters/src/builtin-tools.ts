@@ -673,7 +673,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "list_wallets",
     description:
-      "List the user's saved crypto wallets with their chain and public address, for planning testnet and airdrop work. Keys and seed phrases are never returned; type one into a page with browser_act fill_wallet, which asks the user first, every time. To send value or call a contract, use wallet_propose.",
+      "List the user's saved crypto wallets. Each entry has an id, a name, its chain and its public address; pass that id as walletId to wallet_propose. Keys and seed phrases are never returned; type one into a page with browser_act fill_wallet, which asks the user first, every time.",
     inputSchema: { type: "object", properties: {} },
     readOnly: true,
   },
