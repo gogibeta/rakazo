@@ -24,6 +24,12 @@ verify_download() {
   local filename="$1"
   local path="$2"
   local expected actual
+  if [[ "${RAKAZO_SKIP_DOWNLOAD_VERIFY:-}" == "true" ]]; then
+    # An operator building from their own mirror or a modified tree can say so. It is
+    # a deliberate downgrade, so it is named after what it skips.
+    echo "WARNING: not verifying ${filename}; RAKAZO_SKIP_DOWNLOAD_VERIFY=true." >&2
+    return 0
+  fi
   expected="$(expected_digest "$filename")" || expected=""
   if [[ -z "$expected" ]]; then
     echo "Rakazo setup failed: ${filename} is not covered by ${CHECKSUM_FILE}; refusing an unverified download." >&2
@@ -564,6 +570,9 @@ remove_replaced_images() {
 # The manifest first, against the digest pinned in this script. Everything else is
 # checked against it, so it is the one file whose integrity cannot come from itself.
 fetch_checksum_manifest() {
+  if [[ "${RAKAZO_SKIP_DOWNLOAD_VERIFY:-}" == "true" ]]; then
+    return 0
+  fi
   [[ -n "$DOWNLOAD_BASE" ]] || resolve_download_base
   local url="${DOWNLOAD_BASE}/${CHECKSUM_FILE}"
   if [[ -f "$CHECKSUM_FILE" ]] && [[ "$offline" == true || "$skip_existing" == true ]]; then
