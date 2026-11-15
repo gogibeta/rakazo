@@ -46,10 +46,16 @@ describe("signup policy", () => {
     expect(isMessagingEmail("msg-1@messaging.invalid.example.com")).toBe(false);
   });
 
-  it("honors SIGNUPS_ENABLED", () => {
-    expect(signupsOpen(undefined)).toBe(true);
+  it("is closed unless SIGNUPS_ENABLED says otherwise", () => {
+    // Unset is the shipped default, and it must not mean "open to anyone": a
+    // deployment that never configured signup should not accept strangers.
+    expect(signupsOpen(undefined)).toBe(false);
+    expect(signupsOpen("")).toBe(false);
     expect(signupsOpen("false")).toBe(false);
     expect(signupsOpen("0")).toBe(false);
+    // Opening it stays one explicit word.
+    expect(signupsOpen("true")).toBe(true);
+    expect(signupsOpen("1")).toBe(true);
   });
 
   it("builds a normalized policy from environment defaults", () => {
