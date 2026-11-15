@@ -201,7 +201,9 @@ done
 
 setup_work "$tmp/local-missing"
 rm -- "$tmp/local-missing/cwd/docker-compose.images.yml"
-local_out="$(run_install "$tmp/local-missing" --local 2>&1)"
+# --local falls back to downloading the missing file, so this case names a ref, as a
+# real deployment must now that a branch is no longer a valid download target.
+local_out="$(export RAKAZO_DOWNLOAD_REF=v0.7.0; run_install "$tmp/local-missing" --local 2>&1)"
 [[ -s "$tmp/local-missing/curl.log" ]] || fail "--local should download missing files"
 has_compose_pull "$tmp/local-missing" || fail "--local should still pull images"
 grep -q 'VERB=up' "$tmp/local-missing/docker.log" || fail "--local should start services"

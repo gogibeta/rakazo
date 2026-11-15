@@ -44,34 +44,6 @@ image_tag="${RAKAZO_IMAGE_TAG-}"
 if [[ -z "${RAKAZO_IMAGE_TAG+x}" && -f .env ]]; then
   image_tag=$(sed -nE "s/^[[:space:]]*(export[[:space:]]+)?RAKAZO_IMAGE_TAG[[:space:]]*=[[:space:]]*[\"']?([^\"'#[:space:]]*).*/\2/p" .env | tail -n 1)
 fi
-# Pin the ref to a release tag, never to a moving branch. `main` changes under an
-# operator mid-run, so the compose file they execute is not necessarily the one
-# anyone reviewed; a release tag names one reviewed tree. An operator who wants a
-# specific tag sets RAKAZO_IMAGE_TAG (or RAKAZO_DOWNLOAD_REF).
-download_ref="${RAKAZO_RELEASE_TAG:-}"
-if [[ "$image_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  download_ref="$image_tag"
-elif [[ -n "${RAKAZO_DOWNLOAD_REF:-}" ]]; then
-  download_ref="$RAKAZO_DOWNLOAD_REF"
-elif [[ -z "$download_ref" ]]; then
-  download_ref="$(latest_release_tag 2>/dev/null || true)"
-  [[ -n "$download_ref" ]] || {
-    echo "Rakazo setup failed: could not determine the latest release tag. Set RAKAZO_DOWNLOAD_REF to a release tag (for example v1.2.3), or RAKAZO_RELEASE_TAG." >&2
-    exit 1
-  }
-fi
-DOWNLOAD_BASE="${RAKAZO_DOWNLOAD_BASE:-https://raw.githubusercontent.com/elie222/rakazo/${download_ref}/infra/compose}"
-while [[ "$DOWNLOAD_BASE" == */ ]]; do
-  DOWNLOAD_BASE="${DOWNLOAD_BASE%/}"
-done
-case "$DOWNLOAD_BASE" in
-  https://*) ;;
-  *)
-    echo "Rakazo setup failed: RAKAZO_DOWNLOAD_BASE must use https." >&2
-    exit 1
-    ;;
-esac
-readonly DOWNLOAD_BASE
 
 readonly COMPOSE_FILE="docker-compose.images.yml"
 # Optional operator overlay, layered after the base file the way Compose itself does by default.
@@ -130,6 +102,42 @@ fail() {
   exit 1
 }
 
+# Pin the ref to a release tag, never to a moving branch. `main` changes under an
+# operator mid-run, so the compose file they execute is not necessarily the one
+# anyone reviewed; a release tag names one reviewed tree. An operator who wants a
+# specific tag sets RAKAZO_IMAGE_TAG or RAKAZO_DOWNLOAD_REF.
+#
+# Resolved late, because an --offline install downloads nothing: requiring a release
+# tag there would fail a run that never needed the network.
+resolve_download_base() {
+  local ref="${RAKAZO_RELEASE_TAG:-}"
+  if [[ "$image_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ref="$image_tag"
+  elif [[ -n "${RAKAZO_DOWNLOAD_REF:-}" ]]; then
+    ref="$RAKAZO_DOWNLOAD_REF"
+  elif [[ -z "$ref" ]]; then
+    ref="$(latest_release_tag 2>/dev/null || true)"
+    [[ -n "$ref" ]] || {
+      echo "Rakazo setup failed: could not determine the latest release tag. Set RAKAZO_DOWNLOAD_REF to a release tag (for example v1.2.3), or RAKAZO_RELEASE_TAG." >&2
+      exit 1
+    }
+  fi
+  local base="${RAKAZO_DOWNLOAD_BASE:-https://raw.githubusercontent.com/elie222/rakazo/${ref}/infra/compose}"
+  while [[ "$base" == */ ]]; do
+    base="${base%/}"
+  done
+  case "$base" in
+    https://*) ;;
+    *)
+      echo "Rakazo setup failed: RAKAZO_DOWNLOAD_BASE must use https." >&2
+      exit 1
+      ;;
+  esac
+  DOWNLOAD_BASE="$base"
+}
+
+
+DOWNLOAD_BASE=""
 required_files=("$COMPOSE_FILE" "$ENV_EXAMPLE")
 # The manifest is fetched first and verified against the digest pinned in this script,
 # because it is what every other download is checked against: a manifest that could be
@@ -349,8 +357,9 @@ download() {
 
 download() {
   local filename="$1"
-  local url="${DOWNLOAD_BASE}/${filename}"
 
+  # Checked BEFORE resolving a download base: a file that is already here needs no
+  # ref, no manifest and no network.
   if [[ "$skip_existing" == true && -e "$filename" ]]; then
     echo "Using local ${filename}"
     return 0
@@ -358,6 +367,8 @@ download() {
   if [[ "$offline" == true ]]; then
     fail "--offline cannot download missing ${filename}; copy it into the working directory first."
   fi
+  [[ -n "$DOWNLOAD_BASE" ]] || resolve_download_base
+  local url="${DOWNLOAD_BASE}/${filename}"
 
   temporary_file=$(mktemp "./${filename}.tmp.XXXXXX")
   if ! curl_download "$url" "$temporary_file"; then
@@ -512,8 +523,15 @@ configure_computer_egress() {
     return 0
   fi
   reason=$(egress_rules_unsupported)
-  if [[ -z "$reason" ]] && ! (trap cleanup EXIT; download "$EGRESS_SCRIPT"); then
-    reason="$EGRESS_SCRIPT could not be downloaded"
+  if [[ -z "$reason" && ! -f "$EGRESS_SCRIPT" && "$offline" == true ]]; then
+    # Nothing is fetched in an offline install, so the script has to be local; if it
+    # is not there, the honest answer is that egress could not be restricted.
+    reason="$EGRESS_SCRIPT is not present in an --offline install"
+  fi
+  if [[ -z "$reason" && ! -f "$EGRESS_SCRIPT" ]]; then
+    if ! (trap cleanup EXIT; download "$EGRESS_SCRIPT"); then
+      reason="$EGRESS_SCRIPT could not be downloaded"
+    fi
   fi
   if [[ -z "$reason" ]]; then
     echo "Restricting bot computer egress; installing host firewall rules needs root."
@@ -546,8 +564,9 @@ remove_replaced_images() {
 # The manifest first, against the digest pinned in this script. Everything else is
 # checked against it, so it is the one file whose integrity cannot come from itself.
 fetch_checksum_manifest() {
+  [[ -n "$DOWNLOAD_BASE" ]] || resolve_download_base
   local url="${DOWNLOAD_BASE}/${CHECKSUM_FILE}"
-  if [[ "$offline" == true || "$skip_existing" == true ]] && [[ -f "$CHECKSUM_FILE" ]]; then
+  if [[ -f "$CHECKSUM_FILE" ]] && [[ "$offline" == true || "$skip_existing" == true ]]; then
     echo "Using local ${CHECKSUM_FILE}"
     return 0
   fi
@@ -569,10 +588,29 @@ fetch_checksum_manifest() {
   temporary_file=""
 }
 
-fetch_checksum_manifest
-for filename in "${required_files[@]}"; do
-  download "$filename"
-done
+# Verification is for downloads. An --offline install uses files the operator put
+# there themselves, which is the trust boundary they chose; requiring a manifest for
+# them would fail an install that fetched nothing.
+if [[ "$offline" == true ]]; then
+  # Everything is local by definition, so no tag, no manifest, no network.
+  for filename in "${required_files[@]}"; do
+    echo "Using local ${filename}"
+  done
+else
+  # Only fetch the manifest when something actually has to be downloaded: a --local
+  # run whose files are all present should not need the network, or a tag to name it.
+  needs_download=false
+  for filename in "${required_files[@]}"; do
+    if [[ "$skip_existing" == true && -e "$filename" ]]; then continue; fi
+    needs_download=true
+  done
+  if [[ "$needs_download" == true ]]; then
+    fetch_checksum_manifest
+  fi
+  for filename in "${required_files[@]}"; do
+    download "$filename"
+  done
+fi
 
 compose_files=(-f "$COMPOSE_FILE")
 override_present=""
