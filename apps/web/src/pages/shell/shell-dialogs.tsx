@@ -93,6 +93,8 @@ export function ShellDialogs({
   bots,
   activeId,
   activeGroupId,
+  /** The non-primary session open in the shell, if any; groups keep one session. */
+  activeSessionId,
   alive,
   navigate,
   setPanel,
@@ -113,6 +115,8 @@ export function ShellDialogs({
   bots: Bot[];
   activeId: string | undefined;
   activeGroupId: string | undefined;
+  /** The non-primary session open in the shell, if any; groups keep one session. */
+  activeSessionId: string | undefined;
   alive: RefObject<boolean>;
   navigate: (path: string) => void;
   setPanel: (panel: Panel) => void;
@@ -161,6 +165,35 @@ export function ShellDialogs({
   const queries = useSpaceQueries();
   const [pageSearch, setPageSearch] = useState("");
   const pageQuery = useDeferredValue(pageSearch.trim());
+  // Clear acts on the conversation on screen: when the target is the open bot and a
+  // non-primary session is open, it clears that session — never the main conversation
+  // behind it. Clearing any other bot clears its main conversation, as before.
+  const clearIsOpenChat =
+    clearTarget != null &&
+    ((clearTarget.kind === "bot" && activeId === clearTarget.chat.id) ||
+      (clearTarget.kind === "group" && activeGroupId === clearTarget.chat.id));
+  const clearSessionId =
+    clearTarget?.kind === "bot" && clearIsOpenChat ? activeSessionId : undefined;
+  const [clearSessionTitle, setClearSessionTitle] = useState<string | null>(null);
+  useEffect(() => {
+    setClearSessionTitle(null);
+    if (clearTarget?.kind !== "bot" || !clearSessionId) return;
+    let cancelled = false;
+    rpc.threads
+      .listSessions({ botId: clearTarget.chat.id })
+      .then((sessions) => {
+        if (cancelled) return;
+        setClearSessionTitle(
+          sessions.find((session) => session.id === clearSessionId)?.title ?? null,
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setClearSessionTitle(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clearTarget, clearSessionId, rpc]);
   const pages = useQuery({
     ...queries.pages.list.queryOptions({ input: pageQuery ? { query: pageQuery } : {} }),
     enabled: commandPaletteOpen,
@@ -369,11 +402,16 @@ export function ShellDialogs({
       {clearTarget ? (
         <ClearConversationDialog
           bot={clearTarget.chat}
+          kind={clearTarget.kind}
+          sessionTitle={clearSessionId ? clearSessionTitle : undefined}
           onCancel={() => setClearTarget(null)}
           onConfirm={async () => {
             await rpc.threads.clear(
               clearTarget.kind === "bot"
-                ? { botId: clearTarget.chat.id }
+                ? {
+                    botId: clearTarget.chat.id,
+                    ...(clearSessionId ? { threadId: clearSessionId } : {}),
+                  }
                 : { groupId: clearTarget.chat.id },
             );
             if (
