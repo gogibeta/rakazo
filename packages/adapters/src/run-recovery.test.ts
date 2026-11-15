@@ -27,4 +27,28 @@ describe("run recovery blockers", () => {
     );
     expect([...blockers]).toEqual([["next-turn", "chat-turn"]]);
   });
+
+  it("does not block a run for another bot's lease on the shared computer", async () => {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 60_000);
+    const prisma = {
+      computerExecutionLease: {
+        findMany: vi.fn(async () => [
+          { computerId: "computer", botId: "other-bot", runId: "other-turn", expiresAt },
+        ]),
+      },
+      run: { findMany: vi.fn(async () => []) },
+    } as unknown as PrismaClient;
+    const waiting = {
+      id: "waiting-turn",
+      botId: "bot",
+      trigger: "user",
+      bot: { computerId: "computer" },
+    };
+    // Execution leases are per bot: another bot's live lease on the shared
+    // team computer never blocks this bot's run — bots drive distinct
+    // screens, and a delegating run may be waiting on that other bot's run.
+    const blockers = await findRunRecoveryBlockers(prisma, [waiting], now);
+    expect([...blockers]).toEqual([]);
+  });
 });

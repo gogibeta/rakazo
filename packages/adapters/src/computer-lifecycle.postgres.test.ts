@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AdapterContext, JobPublisher } from "@rakazo/adapter-kit";
 import type { Prisma, PrismaClient, ThreadEvents } from "@rakazo/db";
-import { asSystem, createDb, provisionMessagingIdentity, runAsSystem } from "@rakazo/db";
+import {
+  asSystem,
+  createDb,
+  expireComputerExecutionLeases,
+  provisionMessagingIdentity,
+  runAsSystem,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sleepComputerIfIdle } from "./computer-idle.js";
 import {
@@ -1131,5 +1137,120 @@ describePostgres("Team Computer takeover recovery (PostgreSQL)", () => {
       runId: other.id,
       fence: recovered!.fence + 1,
     });
+  });
+
+  it("shares the team computer across bots while excluding a second run of the same bot", async () => {
+    const { spaceId, userId, threadId } = identity;
+    // Earlier tests in this suite leave live leases behind; start clean.
+    await expireComputerExecutionLeases(prisma, { computerId });
+    const otherBot = await prisma.bot.create({
+      data: { spaceId, userId, name: "Lease neighbour", color: "#000000", computerId },
+    });
+    const task = await prisma.task.create({
+      data: {
+        spaceId,
+        botId: identity.botId,
+        threadId,
+        userId,
+        prompt: "fixture",
+        status: "running",
+      },
+    });
+    const makeRun = (botId: string, workerId: string) =>
+      prisma.run.create({
+        data: {
+          spaceId,
+          userId,
+          botId,
+          threadId,
+          taskId: task.id,
+          status: "running",
+          trigger: "user",
+          leaseOwner: workerId,
+          leaseFence: 1,
+          leaseExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+    const firstRun = await makeRun(identity.botId, "worker-first");
+    const secondRun = await makeRun(otherBot.id, "worker-second");
+    const firstInput = {
+      computerId,
+      botId: identity.botId,
+      runId: firstRun.id,
+      workerId: "worker-first",
+      runFence: 1,
+    };
+    const secondInput = {
+      computerId,
+      botId: otherBot.id,
+      runId: secondRun.id,
+      workerId: "worker-second",
+      runFence: 1,
+    };
+    const leaseOf = (botId: string) =>
+      prisma.computerExecutionLease.findUniqueOrThrow({
+        where: { computerId_botId: { computerId, botId } },
+      });
+    try {
+      const first = await acquireComputerExecutionLease(prisma, firstInput);
+      expect(first).not.toBeNull();
+
+      // The lease is per bot: the neighbouring bot takes its own lease on the
+      // same computer at the same time — the two-bots-on-distinct-screens
+      // case — with an independent fence.
+      const second = await acquireComputerExecutionLease(prisma, secondInput);
+      expect(second).toMatchObject({ runId: secondRun.id });
+
+      // But a second run of either bot is refused while that bot's run holds
+      // its lease: through a worker claim and a claimless API operation.
+      const firstNext = await makeRun(identity.botId, "worker-third");
+      await expect(
+        acquireComputerExecutionLease(prisma, {
+          ...firstInput,
+          runId: firstNext.id,
+          workerId: "worker-third",
+        }),
+      ).rejects.toBeInstanceOf(ComputerBusyError);
+      await expect(
+        acquireComputerExecutionLease(prisma, {
+          computerId,
+          botId: otherBot.id,
+          runId: "boot:fixture",
+        }),
+      ).rejects.toBeInstanceOf(ComputerBusyError);
+
+      // Releasing the first bot's lease (a run finishing) lets its next run in
+      // with the next fence and leaves the neighbour's live lease untouched.
+      await releaseComputerExecutionLease(prisma, first);
+      const firstAgain = await acquireComputerExecutionLease(prisma, {
+        ...firstInput,
+        runId: firstNext.id,
+        workerId: "worker-third",
+      });
+      expect(firstAgain).toMatchObject({ runId: firstNext.id, fence: first!.fence + 1 });
+      await expect(leaseOf(otherBot.id)).resolves.toMatchObject({
+        runId: secondRun.id,
+        fence: second!.fence,
+      });
+
+      // The cancel/stop sweep expiring one bot's lease by run id frees only
+      // that bot: its next run takes the next fence, the other lease stands.
+      await expireComputerExecutionLeases(prisma, { runId: secondRun.id });
+      const secondNext = await makeRun(otherBot.id, "worker-fourth");
+      const secondAgain = await acquireComputerExecutionLease(prisma, {
+        ...secondInput,
+        runId: secondNext.id,
+        workerId: "worker-fourth",
+      });
+      expect(secondAgain).toMatchObject({ runId: secondNext.id, fence: second!.fence + 1 });
+      await expect(leaseOf(identity.botId)).resolves.toMatchObject({
+        runId: firstNext.id,
+        fence: firstAgain!.fence,
+      });
+      await releaseComputerExecutionLease(prisma, firstAgain);
+      await releaseComputerExecutionLease(prisma, secondAgain);
+    } finally {
+      await expireComputerExecutionLeases(prisma, { computerId });
+    }
   });
 });
