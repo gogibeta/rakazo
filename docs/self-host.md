@@ -25,6 +25,13 @@ curl -fsSLO https://raw.githubusercontent.com/elie222/rakazo/main/infra/compose/
 bash install-images.sh
 ```
 
+The installer pins its download to the latest **release tag** — never `main`, which moves under the
+run — fetches a `SHA256SUMS` manifest whose digest is pinned in the installer itself, and verifies
+every download against that manifest before any of it is executed. A mismatched or unlisted file
+stops the install. To install a specific release instead, set `RAKAZO_DOWNLOAD_REF` (or
+`RAKAZO_IMAGE_TAG`); when you change any of the downloaded files, regenerate the manifest with
+`infra/compose/write-download-checksums.sh` and update the pin in `install-images.sh`.
+
 The installer downloads `docker-compose.images.yml` and `.env.images.example`, creates `.env` with
 random secrets, then pulls and starts the images. It preserves an existing `.env` when rerun. For
 the installer secret list, non-reuse rules, and recovery, see
