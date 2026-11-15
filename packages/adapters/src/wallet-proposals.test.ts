@@ -514,10 +514,14 @@ describe("the proposal RPC client", () => {
     const timingOut: typeof globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { id: number; method: string };
       if (body.method === "eth_maxPriorityFeePerGas") {
+        // A body that produces NOTHING and never closes. An earlier version
+        // enqueued a byte and then waited for the abort; if the abort landed after
+        // that byte was delivered, the reader saw a complete (unparseable) body and
+        // the call failed as rpc_error instead of the timeout this test is about.
+        // Here the first read never resolves, so the deadline is the only exit.
         const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode("{"));
-            init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
+          async pull() {
+            await new Promise(() => undefined);
           },
         });
         return new Response(stream, { status: 200 });
@@ -530,7 +534,9 @@ describe("the proposal RPC client", () => {
       chainId: 99801,
       rpcUrl: "https://rpc.test",
       fetch: timingOut,
-      timeoutMs: 60,
+      // Long enough to be unambiguous on a loaded runner, short enough to keep the
+      // test fast: the stream never ends, so the deadline is the only exit.
+      timeoutMs: 250,
     });
     await expect(failing.fees()).rejects.toMatchObject({ code: "rpc_unavailable" });
   });
