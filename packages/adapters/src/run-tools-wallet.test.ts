@@ -179,3 +179,162 @@ describe("list_wallets", () => {
     expect(seen).not.toContain("secretCipher");
   });
 });
+
+describe("wallet_propose", () => {
+  const RECIPIENT = "0x000000000000000000000000000000000000dEaD";
+  const PROPOSED = {
+    walletId: "w1",
+    chainId: 99801,
+    to: RECIPIENT,
+    value: "1000000000000000",
+    data: null,
+  };
+
+  /**
+   * A store with one wallet and its proposals, and a stand-in chain that reports
+   * fixed values: the seam the executor uses so no test reaches a network.
+   */
+  function proposeContext(
+    options: {
+      ownerStartedRun?: boolean;
+      migrationStatus?: string;
+      balanceWei?: string;
+      gas?: string;
+      audits?: unknown[];
+    } = {},
+  ) {
+    const created: Array<Record<string, unknown>> = [];
+    const wallet = {
+      id: "w1",
+      userId: "u",
+      name: "burner",
+      address: ADDRESS,
+      migrationStatus: options.migrationStatus ?? "password_protected",
+    };
+    const prisma = {
+      userWallet: { findFirst: vi.fn(async () => wallet), findMany: vi.fn(async () => [wallet]) },
+      walletProposal: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const stored = { id: "p1", createdAt: new Date("2026-11-15T12:00:00.000Z"), ...data };
+          created.push(stored);
+          return stored;
+        }),
+      },
+      externalEffect: {
+        findUnique: vi.fn(async () => null),
+        findMany: vi.fn(async () => []),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: "e1",
+          ...data,
+        })),
+      },
+      auditEvent: { createMany: vi.fn(async () => ({ count: 1 })) },
+      space: { findUnique: vi.fn(async () => ({ organizationId: "org", name: "Test" })) },
+      user: { findUnique: vi.fn(async () => ({ email: "owner@rakazo.test" })) },
+    };
+    const walletRpc = () => ({
+      chainId: async () => 99801,
+      balanceWei: async () => options.balanceWei ?? "1000000000000000000",
+      nonce: async () => 0,
+      estimateGas: async () => options.gas ?? "21000",
+      fees: async () => ({ maxFeePerGas: "3000000000", maxPriorityFeePerGas: "1000000000" }),
+    });
+    const ctx = {
+      deps: { prisma, walletRpc },
+      run: { id: "run-1", userId: "u", spaceId: "space", threadId: "t1", trigger: "user" },
+      bot: { id: "b1", name: "Chief" },
+      thread: { id: "t1" },
+      runId: "run-1",
+      source: { ownerStartedRun: options.ownerStartedRun ?? true },
+      secrets: [],
+      state: {},
+    };
+    return { ctx, created, prisma };
+  }
+
+  it("returns a deterministic summary and stores the validated proposal", async () => {
+    const { ctx, created } = proposeContext();
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      id: "p1",
+      chainId: 99801,
+      to: RECIPIENT,
+      amountWei: "1000000000000000",
+      nonce: 0,
+      gasLimit: "25201",
+      maxFeePerGas: "3000000000",
+      maxPriorityFeePerGas: "1000000000",
+      maxTotalFeeWei: "75603000000000",
+      canonicalHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      walletName: "burner",
+      chainName: "Elysium Testnet",
+      nativeSymbol: "HYPE",
+    });
+    expect(created).toHaveLength(1);
+    // Nothing that could sign is ever in the result.
+    const seen = JSON.stringify(result);
+    for (const forbidden of ["private", "passwordWrap", "keyCiphertext", "secretCipher"]) {
+      expect(seen).not.toContain(forbidden);
+    }
+  });
+
+  it("refuses a run the owner did not start, before any chain read", async () => {
+    const { ctx, created } = proposeContext({ ownerStartedRun: false });
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("run the owner started");
+    expect(created).toHaveLength(0);
+  });
+
+  it("refuses a legacy wallet with the reason the model can act on", async () => {
+    const { ctx, created } = proposeContext({ migrationStatus: "legacy_server_only" });
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("not protected by the wallet password");
+    expect(created).toHaveLength(0);
+  });
+
+  it("refuses insufficient balance including the fee, and stores nothing", async () => {
+    const { ctx, created } = proposeContext({ balanceWei: "1000000000000000" });
+    const result = (await walletTools.wallet_propose!(
+      ctx as never,
+      {
+        args: PROPOSED,
+      } as never,
+    )) as { error: string };
+    expect(result.error).toContain("enough for the amount plus the maximum fee");
+    expect(created).toHaveLength(0);
+  });
+
+  it("refuses a malformed proposal before the chain is touched", async () => {
+    const { ctx, created } = proposeContext();
+    for (const args of [
+      { ...PROPOSED, to: "nope" },
+      { ...PROPOSED, value: "0.5" },
+      { ...PROPOSED, chainId: 1 },
+    ]) {
+      const result = (await walletTools.wallet_propose!(
+        ctx as never,
+        {
+          args,
+        } as never,
+      )) as { error: string };
+      expect(result.error).toBeTruthy();
+      expect(created).toHaveLength(0);
+    }
+  });
+});

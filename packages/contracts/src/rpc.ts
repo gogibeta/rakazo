@@ -228,6 +228,11 @@ import {
   SystemFilesWriteSchema,
 } from "./system-files.js";
 import {
+  WalletProposalIdInput,
+  WalletProposalListSchema,
+  WalletProposalSchema,
+} from "./wallet-proposals.js";
+import {
   WalletAddInput,
   WalletMigrateInput,
   WalletRemoveInput,
@@ -557,6 +562,11 @@ export const appContract = {
     vaultLock: oc.output(WalletVaultStatusSchema),
     setVaultPassword: oc.input(WalletVaultPasswordSetupInput).output(WalletVaultStatusSchema),
     changeVaultPassword: oc.input(WalletVaultPasswordChangeInput).output(WalletVaultStatusSchema),
+    /** The owner's transaction proposals, newest first. Confirmation is a later step. */
+    proposals: oc.output(WalletProposalListSchema),
+    proposal: oc.input(WalletProposalIdInput).output(WalletProposalSchema),
+    /** Cancel one proposal that has not expired. Nothing is signed. */
+    cancelProposal: oc.input(WalletProposalIdInput).output(WalletProposalSchema),
   },
   /** Deployment-owner view of the append-only security event log, newest first. */
   security: {
