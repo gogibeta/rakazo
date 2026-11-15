@@ -69,3 +69,46 @@ test("sets and changes the wallet password, and rejects a wrong current password
   await settings.getByRole("button", { name: "Change wallet password", exact: true }).click();
   await expect(settings.getByText("Saved")).toBeVisible();
 });
+
+test("migrates a wallet to password protection from Settings", async ({ page }, testInfo) => {
+  const stamp = Date.now();
+  await signup(page, `wallet-migrate-${stamp}@rakazo.test`, "password12", "Migration Owner");
+  await completeOnboarding(page);
+  const settings = await openUserSettings(page, "wallets");
+
+  await settings.getByLabel("Name", { exact: true }).fill("Airdrop burner");
+  await settings.getByRole("textbox", { name: "Private key or seed phrase" }).fill(HARDHAT_KEY);
+  await settings.getByRole("button", { name: "Add wallet", exact: true }).click();
+
+  const wallet = settings.locator("li", { hasText: "Airdrop burner" });
+  await expect(wallet).toBeVisible();
+  // Before a wallet password exists, the wallet says what it needs first.
+  await expect(wallet.getByText("Not password protected yet.")).toBeVisible();
+  await expect(wallet.getByText("Set a wallet password first.")).toBeVisible();
+
+  await settings.getByLabel("Wallet password", { exact: true }).fill("migration-password-one");
+  await settings
+    .getByLabel("Confirm wallet password", { exact: true })
+    .fill("migration-password-one");
+  await settings.getByRole("button", { name: "Set wallet password", exact: true }).click();
+  await expect(settings.getByLabel("Current wallet password", { exact: true })).toBeVisible();
+
+  // A wrong password is refused generically and changes nothing.
+  await wallet.getByRole("button", { name: "Migrate", exact: true }).click();
+  await wallet.getByLabel("Wallet password", { exact: true }).fill("migration-password-nope");
+  await wallet.getByRole("button", { name: "Migrate wallet", exact: true }).click();
+  await expect(wallet.getByText("The wallet password could not be verified.")).toBeVisible();
+  await expect(wallet.getByText("Not password protected yet.")).toBeVisible();
+
+  await wallet.getByLabel("Wallet password", { exact: true }).fill("migration-password-one");
+  await wallet.getByRole("button", { name: "Migrate wallet", exact: true }).click();
+  // Exact text: the plain substring would also match "Not password
+  // protected yet." and pass before the migration has even answered.
+  await expect(wallet.getByText("Password protected", { exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "wallet-migrated");
+
+  const listed = JSON.stringify(await rpc(page, "wallets/list", {}));
+  expect(listed).toContain("password_protected");
+  expect(listed).not.toContain(HARDHAT_KEY);
+  expect(listed).not.toContain("migration-password-one");
+});

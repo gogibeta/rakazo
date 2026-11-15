@@ -17,6 +17,7 @@ type WalletRow = {
   chain: string;
   address: string;
   secretCipher: string;
+  migrationStatus: string;
   updatedAt: Date;
 };
 
@@ -70,6 +71,15 @@ export async function resolveUserWalletFill(input: {
   if (!target.success) return { error: "site must be the page's HTTPS origin." };
   const row = await findUserWallet(input.prisma, input.userId, input.name);
   if (!row) return { error: "No wallet is saved under this name. Check list_wallets." };
+  // A migrated wallet's key exists only inside its password envelope; the
+  // legacy server seal this path opens was emptied by the migration. It is
+  // vault-only now, and this path must never become a way back to it.
+  if (row.migrationStatus === "password_protected") {
+    return {
+      error:
+        "This wallet is protected by the wallet password, so its secret can no longer be typed into a page from here.",
+    };
+  }
   if (row.updatedAt.toISOString() !== input.savedAt) {
     return {
       error:

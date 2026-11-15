@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { appContract } from "./rpc.js";
-import { WalletAddInput, WalletSummarySchema, WalletUseSummarySchema } from "./wallets.js";
+import {
+  WalletAddInput,
+  WalletMigrateInput,
+  WalletSummarySchema,
+  WalletUseSummarySchema,
+} from "./wallets.js";
 
 // The well-known public Hardhat test account #0: a published test vector.
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -20,13 +25,25 @@ describe("wallets rpc contract", () => {
     );
   });
 
+  it("bounds the migrate input: a wallet id and the wallet password, nothing unbounded", () => {
+    expect(WalletMigrateInput.safeParse({ walletId: "w1", password: "pw" }).success).toBe(true);
+    expect(WalletMigrateInput.safeParse({ walletId: "w1", password: "" }).success).toBe(false);
+    expect(
+      WalletMigrateInput.safeParse({ walletId: "w1", password: "x".repeat(1_025) }).success,
+    ).toBe(false);
+    expect(WalletMigrateInput.safeParse({ password: "pw" }).success).toBe(false);
+  });
+
   it("strips the secret and its sealed form from every output", () => {
     const row = {
       id: "w1",
       name: "burner",
       chain: "evm",
       address: ADDRESS,
+      migrationStatus: "legacy_server_only",
       secretCipher: "v2:sealed",
+      keyCiphertext: "pwk-v1:sealed",
+      passwordWrap: "pw-v1:sealed",
       secret: KEY,
       createdAt: "2026-09-01T00:00:00.000Z",
     };
@@ -36,6 +53,7 @@ describe("wallets rpc contract", () => {
       name: "burner",
       chain: "evm",
       address: ADDRESS,
+      migrationStatus: "legacy_server_only",
       createdAt: "2026-09-01T00:00:00.000Z",
     });
     const seen = JSON.stringify(summary);
@@ -55,11 +73,12 @@ describe("wallets rpc contract", () => {
     expect(JSON.stringify(use)).not.toContain(KEY);
   });
 
-  it("exposes exactly list, add, remove, uses and the vault password calls", () => {
+  it("exposes exactly list, add, remove, migrate, uses and the vault password calls", () => {
     expect(Object.keys(appContract.wallets).sort()).toEqual([
       "add",
       "changeVaultPassword",
       "list",
+      "migrate",
       "remove",
       "setVaultPassword",
       "uses",

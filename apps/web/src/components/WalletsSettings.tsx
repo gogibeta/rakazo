@@ -19,7 +19,11 @@ import { SuccessPop } from "./ai/primitives";
  * never stored or read back, and there is no recovery — a forgotten password
  * means importing the wallets again under a new one.
  */
-function WalletPasswordSettings() {
+function WalletPasswordSettings({
+  onStatusChange,
+}: {
+  onStatusChange?: (configured: boolean) => void;
+}) {
   const { t } = useLingui();
   const formId = useId();
   const [status, setStatus] = useState<WalletVaultStatus | null>(null);
@@ -35,7 +39,10 @@ function WalletPasswordSettings() {
     rpc.wallets
       .vaultStatus()
       .then((next) => {
-        if (alive) setStatus(next);
+        if (alive) {
+          setStatus(next);
+          onStatusChange?.(next.configured);
+        }
       })
       .catch((caught: unknown) => {
         if (alive) setError(errorText(caught, t`Could not load the wallet password state`));
@@ -43,7 +50,7 @@ function WalletPasswordSettings() {
     return () => {
       alive = false;
     };
-  }, [t]);
+  }, [t, onStatusChange]);
 
   const configured = status?.configured ?? false;
   const canSubmit =
@@ -63,6 +70,7 @@ function WalletPasswordSettings() {
         ? await rpc.wallets.changeVaultPassword({ currentPassword, newPassword: password })
         : await rpc.wallets.setVaultPassword({ password });
       setStatus(next);
+      onStatusChange?.(next.configured);
       setCurrentPassword("");
       setPassword("");
       setConfirmation("");
@@ -169,6 +177,11 @@ export function WalletsSettings() {
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [uses, setUses] = useState<WalletUseSummary[] | null>(null);
   const [usesError, setUsesError] = useState<string | null>(null);
+  const [vaultConfigured, setVaultConfigured] = useState(false);
+  const [migrateId, setMigrateId] = useState<string | null>(null);
+  const [migratePassword, setMigratePassword] = useState("");
+  const [migratePending, setMigratePending] = useState(false);
+  const [migrateError, setMigrateError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -221,6 +234,28 @@ export function WalletsSettings() {
     }
   }
 
+  async function migrate(event: FormEvent, wallet: WalletSummary) {
+    event.preventDefault();
+    if (migratePending || migratePassword.length === 0) return;
+    setMigratePending(true);
+    setMigrateError(null);
+    try {
+      const migrated = await rpc.wallets.migrate({
+        walletId: wallet.id,
+        password: migratePassword,
+      });
+      setWallets((current) =>
+        (current ?? []).map((entry) => (entry.id === migrated.id ? migrated : entry)),
+      );
+      setMigrateId(null);
+      setMigratePassword("");
+    } catch (caught) {
+      setMigrateError(errorText(caught, t`Could not migrate the wallet`));
+    } finally {
+      setMigratePending(false);
+    }
+  }
+
   async function toggleHistory(wallet: WalletSummary) {
     if (historyId === wallet.id) {
       setHistoryId(null);
@@ -242,7 +277,7 @@ export function WalletsSettings() {
       <p className="text-body-sm text-muted-foreground">
         <Trans>Use burner wallets only — never a wallet that holds real funds.</Trans>
       </p>
-      <WalletPasswordSettings />
+      <WalletPasswordSettings onStatusChange={setVaultConfigured} />
       <form onSubmit={add} className="space-y-3 rounded-xl border border-border px-4 py-4">
         <Field>
           <FieldLabel htmlFor={`${formId}-name`}>
@@ -319,6 +354,84 @@ export function WalletsSettings() {
                   </Button>
                 </div>
               </div>
+              {wallet.migrationStatus === "password_protected" ? (
+                <p className="pt-1 text-body-sm text-muted-foreground">
+                  <Trans>Password protected</Trans>
+                </p>
+              ) : (
+                <div className="space-y-2 pt-2">
+                  <p className="text-body-sm text-muted-foreground">
+                    {wallet.migrationStatus === "migration_failed" ? (
+                      <Trans>Migration failed — the wallet is unchanged.</Trans>
+                    ) : (
+                      <Trans>Not password protected yet.</Trans>
+                    )}
+                  </p>
+                  {!vaultConfigured ? (
+                    <p className="text-body-sm text-muted-foreground">
+                      <Trans>Set a wallet password first.</Trans>
+                    </p>
+                  ) : migrateId === wallet.id ? (
+                    <form
+                      onSubmit={(event) => void migrate(event, wallet)}
+                      className="flex flex-wrap items-end gap-2"
+                    >
+                      <Field>
+                        <FieldLabel htmlFor={`${formId}-migrate-${wallet.id}`}>
+                          <Trans>Wallet password</Trans>
+                        </FieldLabel>
+                        <Input
+                          id={`${formId}-migrate-${wallet.id}`}
+                          type="password"
+                          value={migratePassword}
+                          onChange={(event) => setMigratePassword(event.target.value)}
+                          autoComplete="current-password"
+                          required
+                        />
+                      </Field>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        disabled={migratePending || migratePassword.length === 0}
+                      >
+                        {migratePending ? <Spinner /> : null}
+                        <Trans>Migrate wallet</Trans>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={migratePending}
+                        onClick={() => {
+                          setMigrateId(null);
+                          setMigratePassword("");
+                          setMigrateError(null);
+                        }}
+                      >
+                        <Trans>Cancel</Trans>
+                      </Button>
+                    </form>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setMigrateId(wallet.id);
+                        setMigratePassword("");
+                        setMigrateError(null);
+                      }}
+                    >
+                      <Trans>Migrate</Trans>
+                    </Button>
+                  )}
+                  {migrateId === wallet.id && migrateError ? (
+                    <p role="alert" className="text-body-sm text-destructive">
+                      {migrateError}
+                    </p>
+                  ) : null}
+                </div>
+              )}
               {historyId === wallet.id ? (
                 <div className="pt-3">
                   {usesError ? (
