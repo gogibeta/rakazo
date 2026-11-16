@@ -9,7 +9,9 @@ import {
   parseObservation,
   sandboxCommandTimedOut,
   sandboxTimeoutCommand,
+  WORKSPACE_ROOT,
 } from "./supervisor-logic.js";
+import { workspaceWriteScript } from "./workspace-file-scripts.js";
 
 export async function runContainerCommand(
   container: Docker.Container,
@@ -156,20 +158,16 @@ export async function writeContainerFile(
   content: Buffer,
   executable = false,
 ) {
-  const script = [
-    "import os, sys",
-    "target = sys.argv[1]",
-    "os.makedirs(os.path.dirname(target), exist_ok=True)",
-    "with open(target, 'wb') as f: f.write(sys.stdin.buffer.read())",
-    `os.chmod(target, ${executable ? "0o700" : "0o600"})`,
-  ].join("\n");
+  // The script resolves `target` and refuses anything outside the workspace root, creates the
+  // parent only after checking it, and opens the resolved path with O_NOFOLLOW. A symlink a
+  // previous writer left in the workspace therefore cannot redirect this write out of it.
   const exec = await container.exec({
-    Cmd: ["python3", "-c", script, target],
+    Cmd: ["python3", "-c", workspaceWriteScript(), WORKSPACE_ROOT, target, executable ? "1" : "0"],
     AttachStdin: true,
     AttachStdout: true,
     AttachStderr: true,
-    WorkingDir: "/home/rakazo",
-    Env: ["HOME=/home/rakazo"],
+    WorkingDir: WORKSPACE_ROOT,
+    Env: [`HOME=${WORKSPACE_ROOT}`],
   });
   const stream = await exec.start({ hijack: true, stdin: true });
   const chunks: Buffer[] = [];
