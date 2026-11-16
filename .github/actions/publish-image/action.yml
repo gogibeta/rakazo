@@ -14,6 +14,12 @@ inputs:
       `edge` after the suite passes.
     required: false
     default: "true"
+outputs:
+  digest:
+    description: >-
+      The published multi-platform manifest digest, as sha256:<hex>. Callers record
+      it so a later gated job can move a tag to exactly the image this run built.
+    value: ${{ steps.manifest.outputs.digest }}
 runs:
   using: composite
   steps:
