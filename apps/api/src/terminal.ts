@@ -22,6 +22,12 @@ export interface TerminalUpgradeDeps {
 export interface TerminalServer {
   /** Node `upgrade` listener for the terminal path. Returns false for any other path. */
   handleUpgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => boolean;
+  /**
+   * End this person's shell now. Called when a session is revoked or replaced:
+   * the shell was authorized by that session at upgrade time, so it must not
+   * outlive it. Safe to call for someone with no shell.
+   */
+  endUser: (userId: string) => void;
   close: () => void;
 }
 
@@ -64,8 +70,10 @@ export function createTerminalServer(deps: TerminalUpgradeDeps): TerminalServer 
       clearTimeout(session.idle);
       session.idle = setTimeout(() => endSession(userId), TERMINAL_IDLE_TIMEOUT_MS);
     };
+    // Only INBOUND input keeps the shell alive. Resetting the timer on the
+    // shell's own output meant a long-running command kept the session forever,
+    // so an idle timeout never fired on exactly the shell someone left running.
     const send = (data: Buffer) => {
-      keepAlive();
       if (socket.readyState === socket.OPEN) socket.send(data.toString("utf8"));
     };
     child.stdout?.on("data", send);
@@ -111,6 +119,9 @@ export function createTerminalServer(deps: TerminalUpgradeDeps): TerminalServer 
         reject(500, "Internal Server Error");
       });
       return true;
+    },
+    endUser(userId: string) {
+      endSession(userId);
     },
     close() {
       closed = true;
