@@ -55,7 +55,6 @@ import {
   runContainerCommand,
   writeContainerFile,
 } from "./exec.js";
-import { allowPrivateBrowserHosts, navigableUrl } from "./page-browser-navigation.js";
 import { assertComputerHomeWritable } from "./home-ownership.js";
 import {
   assertBotHomePath,
@@ -75,6 +74,7 @@ import {
   removeBotNetwork,
   removeUnusedComputerNetwork,
 } from "./networks.js";
+import { allowPrivateBrowserHosts, navigableUrl } from "./page-browser-navigation.js";
 import { publishedScreenUrl } from "./readiness.js";
 import { limitSupervisorRequestBody, supervisorFileWriteSchema } from "./request-limits.js";
 import {
