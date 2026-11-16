@@ -79,8 +79,10 @@ import {
   observeThreadChanges,
   parsePositiveInteger,
   pushSessionExpiresAt,
+  rowSecurityRefusal,
   rowSecurityWarning,
   runAsSystem,
+  unenforcedRowSecurityAllowed,
   verifyContentKeys,
 } from "@rakazo/db";
 import { SERVICE_NAMES } from "@rakazo/logging";
@@ -109,8 +111,15 @@ async function main() {
   });
   const { pool } = created;
   let { prisma } = created;
-  const rowSecurity = rowSecurityWarning(await describeRowSecurity(prisma));
+  const rowSecurityStatus = await describeRowSecurity(prisma);
+  const rowSecurity = rowSecurityWarning(rowSecurityStatus);
   if (rowSecurity) logger.warn(rowSecurity);
+  // The worker runs the same tenant-scoped queries as the API, so the same refusal
+  // applies: no database separation means nothing to separate.
+  if (!unenforcedRowSecurityAllowed()) {
+    const refusal = rowSecurityRefusal(rowSecurityStatus);
+    if (refusal) throw new Error(refusal);
+  }
   // Set once push delivery is configured below; thread changes before then have no cards.
   let workActivities: WorkActivities | undefined;
   // Every thread change this process commits also updates its users' live status cards.

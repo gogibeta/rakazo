@@ -50,6 +50,7 @@ COMPUTER_MAX_ACTIVE_MS=7200000 # uptime cap for providers that bill while runnin
 COMPUTER_MAX_ACTIVE_UNBILLED_MS=0 # uptime cap for providers that do not bill while running (Docker, Kubernetes, Incus); minimum 60000; 0 (default) disables; needs SANDBOX_IDLE_MS on
 SANDBOX_COMMAND_TIMEOUT_MS=300000 # stop a shell command after 5 minutes
 MAX_TOOL_CALLS_PER_TURN=60 # tool calls a run may make in one turn; default 60, 0 = unlimited
+RAKAZO_ALLOW_UNENFORCED_RLS= # unset refuses to start when the database does not enforce row-level security; true accepts it
 RUN_TOKEN_BUDGET_HARD=    # optional per-run token budget (input + output); unset/0 = unlimited
 RUN_TOKEN_BUDGET_SOFT=    # soft token budget: the model gets a wrap-up note past it; default 80% of the hard budget
 RUN_COST_BUDGET_USD_HARD= # optional per-run cost budget in USD; unset/0 = unlimited

@@ -10,6 +10,7 @@ import {
   provisionRuntimeRole,
   RUNTIME_ROLE,
   SINGLE_DATABASE_URL_WARNING,
+  unenforcedRowSecurityAllowed,
 } from "@rakazo/db";
 
 loadRootEnv();
@@ -26,6 +27,17 @@ await migrateJobQueue(urls.migrationUrl);
 
 if (!urls.separate) {
   process.stderr.write(`WARNING: ${SINGLE_DATABASE_URL_WARNING}\n`);
+  // One URL means one login, and that login is the owner: the policies do not bind
+  // it, so the deployment has no database-level tenant isolation. Migrating is how a
+  // deployment gets set up, so this is the moment to stop rather than let it run and
+  // find out later.
+  if (!unenforcedRowSecurityAllowed()) {
+    process.stderr.write(
+      "Refusing to migrate a deployment without tenant isolation. Point DATABASE_URL at the runtime login and DATABASE_MIGRATION_URL at the owner, or set RAKAZO_ALLOW_UNENFORCED_RLS=true to accept that the database enforces no isolation between Spaces.\n",
+    );
+    process.exitCode = 1;
+    throw new Error("un-enforced row-level security");
+  }
 } else {
   const { warning } = await provisionRuntimeRole(urls.migrationUrl, urls.url);
   if (warning) process.stderr.write(`WARNING: ${warning}\n`);
