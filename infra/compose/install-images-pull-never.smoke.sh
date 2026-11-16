@@ -153,6 +153,11 @@ run_install() {
   (
     export STUB_DOCKER_LOG="$work/docker.log"
     export STUB_CURL_LOG="$work/curl.log"
+    # The stub serves synthetic bodies with no real manifest; download integrity is
+    # covered by install-verification.test.py. Also name a ref, since a branch is no
+    # longer a valid download target.
+    export RAKAZO_SKIP_DOWNLOAD_VERIFY=true
+    export RAKAZO_DOWNLOAD_REF=v0.7.0
     export PATH="$work/bin:$PATH"
     cd "$work/cwd"
     bash "$src" "$@"
@@ -201,7 +206,9 @@ done
 
 setup_work "$tmp/local-missing"
 rm -- "$tmp/local-missing/cwd/docker-compose.images.yml"
-local_out="$(run_install "$tmp/local-missing" --local 2>&1)"
+# --local falls back to downloading the missing file, so this case names a ref, as a
+# real deployment must now that a branch is no longer a valid download target.
+local_out="$(export RAKAZO_DOWNLOAD_REF=v0.7.0; run_install "$tmp/local-missing" --local 2>&1)"
 [[ -s "$tmp/local-missing/curl.log" ]] || fail "--local should download missing files"
 has_compose_pull "$tmp/local-missing" || fail "--local should still pull images"
 grep -q 'VERB=up' "$tmp/local-missing/docker.log" || fail "--local should start services"
@@ -285,14 +292,18 @@ download_ref() {
   ) || fail "$name install failed"
   grep -F 'docker-compose.images.yml' "$tmp/$name/curl.log" | grep -oE 'rakazo/[^/]+/infra/compose' | sort -u
 }
+# No pin no longer means main: the installer resolves a release tag, which the
+# fixture supplies through RAKAZO_DOWNLOAD_REF, and never downloads from a branch.
 ref="$(download_ref untagged "")"
-[[ "$ref" == "rakazo/main/infra/compose" ]] || fail "no pin should use main, got: $ref"
+[[ "$ref" == "rakazo/v0.7.0/infra/compose" ]] || fail "unpinned should use the release ref, got: $ref"
+[[ "$ref" != *"/main/"* ]] || fail "a branch must never be a download target, got: $ref"
 ref="$(download_ref shell-pin v0.8.0)"
 [[ "$ref" == "rakazo/v0.8.0/infra/compose" ]] || fail "shell pin should use its tag, got: $ref"
+# `edge` is an image tag, not a download ref: the files still come from the release.
 ref="$(download_ref shell-edge edge)"
-[[ "$ref" == "rakazo/main/infra/compose" ]] || fail "edge should use main, got: $ref"
+[[ "$ref" == "rakazo/v0.7.0/infra/compose" ]] || fail "edge should still use the release ref, got: $ref"
 ref="$(download_ref shell-custom v0.8.0-custom)"
-[[ "$ref" == "rakazo/main/infra/compose" ]] || fail "a tag that is not a release should use main, got: $ref"
+[[ "$ref" == "rakazo/v0.7.0/infra/compose" ]] || fail "a non-release tag should use the release ref, got: $ref"
 
 setup_work "$tmp/env-pin"
 printf 'RAKAZO_IMAGE_TAG=edge\nexport RAKAZO_IMAGE_TAG="v0.7.0" # pinned\r\n' >> "$tmp/env-pin/cwd/.env"
@@ -315,7 +326,9 @@ grep -qF 'rakazo/v0.7.0/infra/compose/docker-compose.images.yml' "$tmp/env-space
 setup_work "$tmp/shell-empty"
 printf 'RAKAZO_IMAGE_TAG=v0.7.0\n' >> "$tmp/shell-empty/cwd/.env"
 (export RAKAZO_IMAGE_TAG=; run_install "$tmp/shell-empty" >/dev/null 2>&1) || fail "shell-empty install failed"
-grep -qF 'rakazo/main/infra/compose/docker-compose.images.yml' "$tmp/shell-empty/curl.log" ||
+# The empty shell value still wins over .env, so no tag is pinned — and the installer
+# falls back to the release ref rather than to a branch.
+grep -qF 'rakazo/v0.7.0/infra/compose/docker-compose.images.yml' "$tmp/shell-empty/curl.log" ||
   fail "an empty shell value should win over .env, as in Compose: $(cat "$tmp/shell-empty/curl.log")"
 
 setup_work "$tmp/mirror"

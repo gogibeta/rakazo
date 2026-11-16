@@ -2,27 +2,54 @@
 
 set -Eeuo pipefail
 
+# The tag of the newest release, so the installer downloads a reviewed tree rather
+# than whatever main happens to be. Falls back to nothing, which the caller refuses.
+latest_release_tag() {
+  local api="${RAKAZO_RELEASE_API:-https://api.github.com/repos/elie222/rakazo/releases/latest}"
+  curl -fsSL --proto-redir =https "$api" 2>/dev/null |
+    sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1
+}
+
+# The digest this run expects for a file, from the manifest downloaded for THIS ref.
+# Empty means the manifest has no entry, which is treated as a failure: a file the
+# manifest does not cover is a file nothing verified.
+expected_digest() {
+  local filename="$1"
+  local sums="${CHECKSUM_FILE}"
+  [[ -f "$sums" ]] || return 1
+  awk -v f="$filename" '$2 == f || $2 == "*" f { print $1; exit }' "$sums"
+}
+
+verify_download() {
+  local filename="$1"
+  local path="$2"
+  local expected actual
+  if [[ "${RAKAZO_SKIP_DOWNLOAD_VERIFY:-}" == "true" ]]; then
+    # An operator building from their own mirror or a modified tree can say so. It is
+    # a deliberate downgrade, so it is named after what it skips.
+    echo "WARNING: not verifying ${filename}; RAKAZO_SKIP_DOWNLOAD_VERIFY=true." >&2
+    return 0
+  fi
+  expected="$(expected_digest "$filename")" || expected=""
+  if [[ -z "$expected" ]]; then
+    echo "Rakazo setup failed: ${filename} is not covered by ${CHECKSUM_FILE}; refusing an unverified download." >&2
+    return 1
+  fi
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "Rakazo setup failed: ${filename} does not match the published checksum (expected ${expected}, got ${actual}). Refusing to use it." >&2
+    return 1
+  fi
+}
+
+
+
+
 # A pinned release gets its own Compose files. Like Compose, prefer the shell's tag over .env.
 image_tag="${RAKAZO_IMAGE_TAG-}"
 if [[ -z "${RAKAZO_IMAGE_TAG+x}" && -f .env ]]; then
   image_tag=$(sed -nE "s/^[[:space:]]*(export[[:space:]]+)?RAKAZO_IMAGE_TAG[[:space:]]*=[[:space:]]*[\"']?([^\"'#[:space:]]*).*/\2/p" .env | tail -n 1)
 fi
-download_ref=main
-if [[ "$image_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  download_ref="$image_tag"
-fi
-DOWNLOAD_BASE="${RAKAZO_DOWNLOAD_BASE:-https://raw.githubusercontent.com/elie222/rakazo/${download_ref}/infra/compose}"
-while [[ "$DOWNLOAD_BASE" == */ ]]; do
-  DOWNLOAD_BASE="${DOWNLOAD_BASE%/}"
-done
-case "$DOWNLOAD_BASE" in
-  https://*) ;;
-  *)
-    echo "Rakazo setup failed: RAKAZO_DOWNLOAD_BASE must use https." >&2
-    exit 1
-    ;;
-esac
-readonly DOWNLOAD_BASE
 
 readonly COMPOSE_FILE="docker-compose.images.yml"
 # Optional operator overlay, layered after the base file the way Compose itself does by default.
@@ -30,6 +57,8 @@ readonly OVERRIDE_FILE="docker-compose.override.yml"
 readonly ENV_EXAMPLE=".env.images.example"
 readonly ENV_FILE=".env"
 readonly EGRESS_SCRIPT="restrict-computer-egress.sh"
+# The manifest every download is checked against; it travels with the files it covers.
+readonly CHECKSUM_FILE="SHA256SUMS"
 
 prepare_only=false
 skip_existing=false
@@ -79,7 +108,48 @@ fail() {
   exit 1
 }
 
+# Pin the ref to a release tag, never to a moving branch. `main` changes under an
+# operator mid-run, so the compose file they execute is not necessarily the one
+# anyone reviewed; a release tag names one reviewed tree. An operator who wants a
+# specific tag sets RAKAZO_IMAGE_TAG or RAKAZO_DOWNLOAD_REF.
+#
+# Resolved late, because an --offline install downloads nothing: requiring a release
+# tag there would fail a run that never needed the network.
+resolve_download_base() {
+  local ref="${RAKAZO_RELEASE_TAG:-}"
+  if [[ "$image_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ref="$image_tag"
+  elif [[ -n "${RAKAZO_DOWNLOAD_REF:-}" ]]; then
+    ref="$RAKAZO_DOWNLOAD_REF"
+  elif [[ -z "$ref" ]]; then
+    ref="$(latest_release_tag 2>/dev/null || true)"
+    [[ -n "$ref" ]] || {
+      echo "Rakazo setup failed: could not determine the latest release tag. Set RAKAZO_DOWNLOAD_REF to a release tag (for example v1.2.3), or RAKAZO_RELEASE_TAG." >&2
+      exit 1
+    }
+  fi
+  local base="${RAKAZO_DOWNLOAD_BASE:-https://raw.githubusercontent.com/elie222/rakazo/${ref}/infra/compose}"
+  while [[ "$base" == */ ]]; do
+    base="${base%/}"
+  done
+  case "$base" in
+    https://*) ;;
+    *)
+      echo "Rakazo setup failed: RAKAZO_DOWNLOAD_BASE must use https." >&2
+      exit 1
+      ;;
+  esac
+  DOWNLOAD_BASE="$base"
+}
+
+
+DOWNLOAD_BASE=""
 required_files=("$COMPOSE_FILE" "$ENV_EXAMPLE")
+# The manifest is fetched first and verified against the digest pinned in this script,
+# because it is what every other download is checked against: a manifest that could be
+# swapped would verify anything. Regenerate this constant with
+# infra/compose/write-download-checksums.sh and update it here when those files change.
+readonly SHA256SUMS_SHA256="316895993669c695db313fbd76edf0c38dcc245f463fb52643122ff0d8e30887"
 if [[ "$offline" == true ]]; then
   for filename in "${required_files[@]}"; do
     [[ -f "$filename" ]] || fail "--offline requires local ${filename}; copy it into the working directory first."
@@ -216,9 +286,86 @@ curl_download() {
 }
 
 download() {
-  local filename="$1"
-  local url="${DOWNLOAD_BASE}/${filename}"
+  local url="$1"
+  local out="$2"
+  local attempt
+  local max_attempts=3
 
+  if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+    curl -fsSL --proto-redir =https --retry 3 --retry-delay 2 --retry-all-errors "$url" -o "$out"
+    return $?
+  fi
+
+  attempt=1
+  while [[ "$attempt" -le "$max_attempts" ]]; do
+    if curl -fsSL --proto-redir =https "$url" -o "$out"; then
+      return 0
+    fi
+    if [[ "$attempt" -eq "$max_attempts" ]]; then
+      return 1
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+download() {
+  local url="$1"
+  local out="$2"
+  local attempt
+  local max_attempts=3
+
+  if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+    curl -fsSL --proto-redir =https --retry 3 --retry-delay 2 --retry-all-errors "$url" -o "$out"
+    return $?
+  fi
+
+  attempt=1
+  while [[ "$attempt" -le "$max_attempts" ]]; do
+    if curl -fsSL --proto-redir =https "$url" -o "$out"; then
+      return 0
+    fi
+    if [[ "$attempt" -eq "$max_attempts" ]]; then
+      return 1
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+download() {
+  local url="$1"
+  local out="$2"
+  local attempt
+  local max_attempts=3
+
+  if curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+    curl -fsSL --proto-redir =https --retry 3 --retry-delay 2 --retry-all-errors "$url" -o "$out"
+    return $?
+  fi
+
+  attempt=1
+  while [[ "$attempt" -le "$max_attempts" ]]; do
+    if curl -fsSL --proto-redir =https "$url" -o "$out"; then
+      return 0
+    fi
+    if [[ "$attempt" -eq "$max_attempts" ]]; then
+      return 1
+    fi
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+
+download() {
+  local filename="$1"
+
+  # Checked BEFORE resolving a download base: a file that is already here needs no
+  # ref, no manifest and no network.
   if [[ "$skip_existing" == true && -e "$filename" ]]; then
     echo "Using local ${filename}"
     return 0
@@ -226,10 +373,19 @@ download() {
   if [[ "$offline" == true ]]; then
     fail "--offline cannot download missing ${filename}; copy it into the working directory first."
   fi
+  [[ -n "$DOWNLOAD_BASE" ]] || resolve_download_base
+  local url="${DOWNLOAD_BASE}/${filename}"
 
   temporary_file=$(mktemp "./${filename}.tmp.XXXXXX")
   if ! curl_download "$url" "$temporary_file"; then
     fail "could not download ${filename} from ${url}. Set HTTP_PROXY/HTTPS_PROXY in the shell or .env (NO_PROXY for localhost), or pre-place the file and use --local / --offline."
+  fi
+  # Verified before it is moved into place: an unverified or mismatched file never
+  # becomes the compose file this script is about to run.
+  if ! verify_download "$filename" "$temporary_file"; then
+    rm -f -- "$temporary_file"
+    temporary_file=""
+    fail "refused ${filename}: it could not be verified against ${CHECKSUM_FILE}."
   fi
   mv -- "$temporary_file" "$filename"
   temporary_file=""
@@ -373,8 +529,15 @@ configure_computer_egress() {
     return 0
   fi
   reason=$(egress_rules_unsupported)
-  if [[ -z "$reason" ]] && ! (trap cleanup EXIT; download "$EGRESS_SCRIPT"); then
-    reason="$EGRESS_SCRIPT could not be downloaded"
+  if [[ -z "$reason" && ! -f "$EGRESS_SCRIPT" && "$offline" == true ]]; then
+    # Nothing is fetched in an offline install, so the script has to be local; if it
+    # is not there, the honest answer is that egress could not be restricted.
+    reason="$EGRESS_SCRIPT is not present in an --offline install"
+  fi
+  if [[ -z "$reason" && ! -f "$EGRESS_SCRIPT" ]]; then
+    if ! (trap cleanup EXIT; download "$EGRESS_SCRIPT"); then
+      reason="$EGRESS_SCRIPT could not be downloaded"
+    fi
   fi
   if [[ -z "$reason" ]]; then
     echo "Restricting bot computer egress; installing host firewall rules needs root."
@@ -404,9 +567,59 @@ remove_replaced_images() {
   done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}} {{.Tag}}' 2>/dev/null)
 }
 
-for filename in "${required_files[@]}"; do
-  download "$filename"
-done
+# The manifest first, against the digest pinned in this script. Everything else is
+# checked against it, so it is the one file whose integrity cannot come from itself.
+fetch_checksum_manifest() {
+  if [[ "${RAKAZO_SKIP_DOWNLOAD_VERIFY:-}" == "true" ]]; then
+    return 0
+  fi
+  [[ -n "$DOWNLOAD_BASE" ]] || resolve_download_base
+  local url="${DOWNLOAD_BASE}/${CHECKSUM_FILE}"
+  if [[ -f "$CHECKSUM_FILE" ]] && [[ "$offline" == true || "$skip_existing" == true ]]; then
+    echo "Using local ${CHECKSUM_FILE}"
+    return 0
+  fi
+  if [[ "$offline" == true ]]; then
+    fail "--offline requires local ${CHECKSUM_FILE}; copy it into the working directory first."
+  fi
+  temporary_file=$(mktemp "./${CHECKSUM_FILE}.tmp.XXXXXX")
+  if ! curl_download "$url" "$temporary_file"; then
+    rm -f -- "$temporary_file"; temporary_file=""
+    fail "could not download ${CHECKSUM_FILE} from ${url}."
+  fi
+  local actual
+  actual="$(sha256sum "$temporary_file" | awk '{print $1}')"
+  if [[ "$actual" != "$SHA256SUMS_SHA256" ]]; then
+    rm -f -- "$temporary_file"; temporary_file=""
+    fail "${CHECKSUM_FILE} does not match the digest pinned in this installer. Refusing to continue: nothing it vouches for could be trusted."
+  fi
+  mv -- "$temporary_file" "$CHECKSUM_FILE"
+  temporary_file=""
+}
+
+# Verification is for downloads. An --offline install uses files the operator put
+# there themselves, which is the trust boundary they chose; requiring a manifest for
+# them would fail an install that fetched nothing.
+if [[ "$offline" == true ]]; then
+  # Everything is local by definition, so no tag, no manifest, no network.
+  for filename in "${required_files[@]}"; do
+    echo "Using local ${filename}"
+  done
+else
+  # Only fetch the manifest when something actually has to be downloaded: a --local
+  # run whose files are all present should not need the network, or a tag to name it.
+  needs_download=false
+  for filename in "${required_files[@]}"; do
+    if [[ "$skip_existing" == true && -e "$filename" ]]; then continue; fi
+    needs_download=true
+  done
+  if [[ "$needs_download" == true ]]; then
+    fetch_checksum_manifest
+  fi
+  for filename in "${required_files[@]}"; do
+    download "$filename"
+  done
+fi
 
 compose_files=(-f "$COMPOSE_FILE")
 override_present=""
