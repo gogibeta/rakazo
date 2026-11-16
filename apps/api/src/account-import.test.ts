@@ -443,6 +443,11 @@ describe("remapIds", () => {
 describe("account import concurrency and disk headroom", () => {
   const roomy = roomyDisk;
 
+  it("allows one import per user and two in the process", () => {
+    // The numbers the tests below rely on, stated once so a change to them is deliberate.
+    expect(ACCOUNT_IMPORT_CONCURRENCY).toEqual({ perUser: 1, total: 2 });
+  });
+
   /**
    * The import reads its body as it runs, so a body held open keeps the import in flight: the
    * first chunk arrives, then nothing until the test releases it.
@@ -472,7 +477,7 @@ describe("account import concurrency and disk headroom", () => {
       const { body, release } = heldOpen(archiveBytes());
       // The first import fails on the archive, which still exercises the slot: it is held until
       // the body finishes, and the refusal below happens while it is.
-      const first = importAccount(deps, actor, body, { spoolDir: dir, freeBytes: roomy }).catch(
+      const first = importAccount(deps, actor, body(), { spoolDir: dir, freeBytes: roomy }).catch(
         (error: unknown) => error,
       );
       await expect(
@@ -500,7 +505,7 @@ describe("account import concurrency and disk headroom", () => {
         importAccount(
           deps,
           { ...actor, userId: `user-global-${index}`, spaceId: `space-global-${index}` },
-          entry.body,
+          entry.body(),
           { spoolDir: dir, freeBytes: roomy },
         ).catch((error: unknown) => error),
       );
@@ -709,7 +714,7 @@ describe("account import route statuses", () => {
         controller.close();
       },
     });
-    const first = post(stream).catch((error: unknown) => error);
+    const first = Promise.resolve(post(stream)).catch((error: unknown) => error);
     const refused = await post(new Uint8Array(1));
     expect(refused.status).toBe(429);
     expect(await refused.json()).toMatchObject({
