@@ -491,8 +491,9 @@ import {
 import { MISSING_TOOL_FINAL_RESPONSE_ERROR, PiAgentRuntime } from "./pi-runtime.js";
 import { providerFailureText } from "./pi-runtime-errors.js";
 import { TOOL_RESULT_TEXT_LIMIT } from "./pi-runtime-limits.js";
-import { maxToolCallsPerTurn } from "./pi-runtime-tools.js";
+import { DEFAULT_MAX_TOOL_CALLS_PER_TURN, maxToolCallsPerTurn } from "./pi-runtime-tools.js";
 import { toolCompletionAuditPayload } from "./tool-completion-audit.js";
+import { MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS } from "./tool-loop.js";
 import { serializeTurnCheckpoint } from "./turn-checkpoint.js";
 import { midTaskMessageFromPrompt, midTaskMessagePrompt } from "./user-progress.js";
 
@@ -1975,7 +1976,7 @@ describe("Pi connector tool dispatch", () => {
     });
   });
 
-  it("allows more than 80 tool calls by default when no fuse is configured", async () => {
+  it("stops at the shipped fuse when no limit is configured", async () => {
     fakeAgentState.mode = "parent-limit";
     const executeTool = vi.fn(async () => ({ ok: true }));
     const runtime = new PiAgentRuntime();
@@ -2004,9 +2005,10 @@ describe("Pi connector tool dispatch", () => {
       events.push(event);
     }
 
-    expect(executeTool).toHaveBeenCalledTimes(100);
-    expect(fakeAgentState.abortCount).toBe(0);
-    expect(events).not.toContainEqual(
+    // Unset no longer means unlimited: the run stops at the shipped default
+    // rather than running until the model gives up.
+    expect(executeTool).toHaveBeenCalledTimes(DEFAULT_MAX_TOOL_CALLS_PER_TURN);
+    expect(events).toContainEqual(
       expect.objectContaining({
         type: "progress",
         text: expect.stringContaining("tool calls in one turn"),
@@ -2378,14 +2380,26 @@ describe("Pi connector tool dispatch", () => {
     expect(second.at(-1)).toEqual({ type: "done", text: stopText });
   });
 
-  it("treats unset, empty, and non-positive MAX_TOOL_CALLS_PER_TURN as unlimited", () => {
-    expect(maxToolCallsPerTurn({})).toBe(0);
-    expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "" })).toBe(0);
+  it("ships a finite fuse, and only 0 turns it off", () => {
+    // The loop guard catches near-identical repeats; nothing else bounded a run
+    // that kept calling tools with fresh arguments, so unset meant unlimited
+    // cost. Unset now means the shipped default, and 0 is the explicit opt-out.
+    expect(maxToolCallsPerTurn({})).toBe(DEFAULT_MAX_TOOL_CALLS_PER_TURN);
+    expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "" })).toBe(
+      DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    );
     expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "0" })).toBe(0);
-    expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "-5" })).toBe(0);
-    expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "abc" })).toBe(0);
+    expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "-5" })).toBe(
+      DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    );
+    expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "abc" })).toBe(
+      DEFAULT_MAX_TOOL_CALLS_PER_TURN,
+    );
     expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: "80" })).toBe(80);
     expect(maxToolCallsPerTurn({ MAX_TOOL_CALLS_PER_TURN: " 12.9 " })).toBe(12);
+    // The default must sit above every loop-guard threshold, or ordinary work
+    // would meet the fuse before the shape checks ever fire.
+    expect(DEFAULT_MAX_TOOL_CALLS_PER_TURN).toBeGreaterThan(MAX_CONSECUTIVE_SIMILAR_TOOL_CALLS);
   });
 
   it("lets a parallel tool batch finish before the optional fuse aborts", async () => {

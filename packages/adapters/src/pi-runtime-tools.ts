@@ -86,11 +86,25 @@ const MAX_AGENT_TOOL_NAME_LENGTH = 64;
 const FALLBACK_AGENT_TOOL_NAME = "connector_tool";
 
 /** Optional self-host fuse. Unset, empty, or 0 means unlimited (default). */
+/**
+ * The per-turn tool-call fuse that ships by default.
+ *
+ * Generously above every loop-guard threshold (the loosest repeated-shape check
+ * trips at 25 similar calls) so ordinary work never meets it, and low enough that
+ * a model stuck in a productive-looking loop — different arguments every time, so
+ * the shape checks never match — still stops at a bounded cost. 0 turns the fuse
+ * off for an operator who wants no bound at all.
+ */
+export const DEFAULT_MAX_TOOL_CALLS_PER_TURN = 60;
+
 export function maxToolCallsPerTurn(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.MAX_TOOL_CALLS_PER_TURN?.trim();
-  if (!raw) return 0;
+  // Unset means the shipped default, not unlimited: the loop guard only catches
+  // near-identical repeats, so nothing else bounds a run that keeps calling tools
+  // with fresh arguments.
+  if (!raw) return DEFAULT_MAX_TOOL_CALLS_PER_TURN;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MAX_TOOL_CALLS_PER_TURN;
   return Math.floor(parsed);
 }
 
