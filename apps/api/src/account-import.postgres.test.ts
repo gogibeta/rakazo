@@ -14,7 +14,7 @@ import { PAGE_SOURCE_MAX_BYTES } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { asSystem, createDb, createOrganizationForUser } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AccountImportError, importAccount } from "./account-import.js";
+import { ACCOUNT_IMPORT_LIMITS, AccountImportError, importAccount } from "./account-import.js";
 import {
   buildArchive,
   chunked,
@@ -374,6 +374,8 @@ describePostgres("account import (PostgreSQL)", () => {
       },
       importer,
       chunked(bytes),
+      // The runner's free space is not what this test is about; the limits themselves are.
+      { freeBytes: async () => ACCOUNT_IMPORT_LIMITS.bodyBytes * 10 },
     );
   const ownedSpaceIds = async () =>
     (await system.spaceMember.findMany({ where: { userId }, select: { spaceId: true } }))

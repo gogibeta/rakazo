@@ -23,7 +23,7 @@ import { unzipSync } from "fflate";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mountAccountExportRoute } from "./account-export.js";
-import { importAccount } from "./account-import.js";
+import { ACCOUNT_IMPORT_LIMITS, importAccount } from "./account-import.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres = process.env.VERIFY_DATABASE && databaseUrl ? describe : describe.skip;
@@ -507,6 +507,8 @@ describePostgres("account export (PostgreSQL)", () => {
         (async function* () {
           yield archive;
         })(),
+        // The runner's free space is not what this test is about; the limits themselves are.
+        { freeBytes: async () => ACCOUNT_IMPORT_LIMITS.bodyBytes * 10 },
       );
       expect(result.spaces.map((space) => space.name).sort()).toEqual(["Mine", "Theirs"]);
 

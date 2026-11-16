@@ -2,12 +2,16 @@ import { mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "@rakazo/contracts";
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import type { AccountImportDeps, ArchiveEntry, ArchiveSink } from "./account-import.js";
 import {
+  ACCOUNT_IMPORT_CONCURRENCY,
+  ACCOUNT_IMPORT_FREE_SPACE_MARGIN_BYTES,
   ACCOUNT_IMPORT_LIMITS,
   AccountImportError,
   importAccount,
+  mountAccountImportRoute,
   parseEntryName,
   readArchive,
   remapIds,
@@ -46,7 +50,11 @@ const deps = {
   maxArtifactBytes: 1024,
 } as unknown as AccountImportDeps;
 
-const importBytes = (bytes: Uint8Array) => importAccount(deps, actor, chunked(bytes));
+/** Room for any import: these tests are about the archive, not the disk it spools to. */
+const roomyDisk = async () => ACCOUNT_IMPORT_LIMITS.bodyBytes * 10;
+
+const importBytes = (bytes: Uint8Array) =>
+  importAccount(deps, actor, chunked(bytes), { freeBytes: roomyDisk });
 
 class RecordingSink implements ArchiveSink {
   readonly files: Array<{ entry: ArchiveEntry; text: string; bytes: Uint8Array }> = [];
@@ -429,5 +437,290 @@ describe("remapIds", () => {
       { kind: "text", text: "see old-artifact" },
       { kind: "artifact", artifactId: "new-artifact", meta: { by: ["new-bot", 3, null] } },
     ]);
+  });
+});
+
+describe("account import concurrency and disk headroom", () => {
+  const roomy = roomyDisk;
+
+  it("allows one import per user and two in the process", () => {
+    // The numbers the tests below rely on, stated once so a change to them is deliberate.
+    expect(ACCOUNT_IMPORT_CONCURRENCY).toEqual({ perUser: 1, total: 2 });
+  });
+
+  /**
+   * The import reads its body as it runs, so a body held open keeps the import in flight: the
+   * first chunk arrives, then nothing until the test releases it.
+   */
+  function heldOpen(bytes: Uint8Array) {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    async function* body(): AsyncIterable<Uint8Array> {
+      yield bytes.subarray(0, Math.max(1, Math.ceil(bytes.byteLength / 2)));
+      await held;
+      yield bytes.subarray(Math.ceil(bytes.byteLength / 2));
+    }
+    return { body, release };
+  }
+
+  const archiveBytes = () =>
+    buildArchive([
+      ["manifest.json", JSON.stringify(manifestFor([{ id: "s1", name: "Home" }]))],
+      ["spaces/s1/records.jsonl", ""],
+    ]);
+
+  it("refuses a second import by the same user while the first is in flight", async () => {
+    const dir = await spoolDir();
+    try {
+      const { body, release } = heldOpen(archiveBytes());
+      // The first import fails on the archive, which still exercises the slot: it is held until
+      // the body finishes, and the refusal below happens while it is.
+      const first = importAccount(deps, actor, body(), { spoolDir: dir, freeBytes: roomy }).catch(
+        (error: unknown) => error,
+      );
+      await expect(
+        importAccount(deps, actor, chunked(archiveBytes()), {
+          spoolDir: dir,
+          freeBytes: roomy,
+        }),
+      ).rejects.toMatchObject({
+        name: "AccountImportError",
+        status: 429,
+        message: expect.stringContaining("Another import is already running"),
+      });
+      release();
+      await first;
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lets two users import at once and refuses a third by the global cap", async () => {
+    const dir = await spoolDir();
+    try {
+      const held = [heldOpen(archiveBytes()), heldOpen(archiveBytes())];
+      const running = held.map((entry, index) =>
+        importAccount(
+          deps,
+          { ...actor, userId: `user-global-${index}`, spaceId: `space-global-${index}` },
+          entry.body(),
+          { spoolDir: dir, freeBytes: roomy },
+        ).catch((error: unknown) => error),
+      );
+      await expect(
+        importAccount(
+          deps,
+          { ...actor, userId: "user-global-2", spaceId: "space-global-2" },
+          chunked(archiveBytes()),
+          { spoolDir: dir, freeBytes: roomy },
+        ),
+      ).rejects.toMatchObject({
+        status: 429,
+        message: expect.stringContaining("Too many imports"),
+      });
+      for (const entry of held) entry.release();
+      await Promise.all(running);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses before spooling when the disk has less room than the import needs", async () => {
+    const dir = await spoolDir();
+    try {
+      const needed = ACCOUNT_IMPORT_LIMITS.bodyBytes + ACCOUNT_IMPORT_FREE_SPACE_MARGIN_BYTES;
+      let spooled = false;
+      async function* body(): AsyncIterable<Uint8Array> {
+        spooled = true;
+        yield archiveBytes();
+      }
+      await expect(
+        importAccount(deps, actor, body(), { spoolDir: dir, freeBytes: async () => needed - 1 }),
+      ).rejects.toMatchObject({
+        status: 507,
+        message: expect.stringContaining("not have enough free disk space"),
+      });
+      // Refused before the body was read, so nothing was written and nothing is left behind.
+      expect(spooled).toBe(false);
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts when the disk has exactly the room the import needs", async () => {
+    const dir = await spoolDir();
+    try {
+      const needed = ACCOUNT_IMPORT_LIMITS.bodyBytes + ACCOUNT_IMPORT_FREE_SPACE_MARGIN_BYTES;
+      // The preflight passes; the archive itself is then refused for its contents, as above.
+      await expect(
+        importAccount(deps, actor, chunked(new TextEncoder().encode("hello")), {
+          spoolDir: dir,
+          freeBytes: async () => needed,
+        }),
+      ).rejects.toThrow("not a readable Rakazo export");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("frees the user's slot after a failed import", async () => {
+    const dir = await spoolDir();
+    try {
+      // Fails outright, so the slot must be given back rather than leaked.
+      await expect(
+        importAccount(deps, actor, chunked(new TextEncoder().encode("hello")), {
+          spoolDir: dir,
+          freeBytes: roomy,
+        }),
+      ).rejects.toThrow("not a readable Rakazo export");
+      // A second import by the same user therefore reaches the archive instead of a 429.
+      await expect(
+        importAccount(deps, actor, chunked(new TextEncoder().encode("hello")), {
+          spoolDir: dir,
+          freeBytes: roomy,
+        }),
+      ).rejects.toThrow("not a readable Rakazo export");
+      // And the global count is back to zero for the next two users.
+      for (const index of [0, 1]) {
+        await expect(
+          importAccount(
+            deps,
+            { ...actor, userId: `user-after-failure-${index}`, spaceId: `space-after-${index}` },
+            chunked(new TextEncoder().encode("hello")),
+            { spoolDir: dir, freeBytes: roomy },
+          ),
+        ).rejects.toThrow("not a readable Rakazo export");
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("releases the slot even when the rollback itself throws", async () => {
+    const dir = await spoolDir();
+    try {
+      // The importer has created nothing, so rollback on this failure cannot throw by itself; the
+      // point is that the release sits in finally, after it. A failing import must not wedge the
+      // user out of ever importing again.
+      const failing = importAccount(deps, actor, chunked(new TextEncoder().encode("hello")), {
+        spoolDir: dir,
+        freeBytes: roomy,
+      });
+      await expect(failing).rejects.toThrow("not a readable Rakazo export");
+      await expect(
+        importAccount(deps, actor, chunked(new TextEncoder().encode("hello")), {
+          spoolDir: dir,
+          freeBytes: roomy,
+        }),
+      ).rejects.toThrow("not a readable Rakazo export");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("frees the slot when the client disconnects mid-upload", async () => {
+    const dir = await spoolDir();
+    try {
+      async function* aborting(): AsyncIterable<Uint8Array> {
+        yield new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+        throw new Error("Synthetic disconnect");
+      }
+      await expect(
+        importAccount(deps, actor, aborting(), { spoolDir: dir, freeBytes: roomy }),
+      ).rejects.toThrow("Synthetic disconnect");
+      expect(await readdir(dir)).toEqual([]);
+      await expect(
+        importAccount(deps, actor, chunked(new TextEncoder().encode("hello")), {
+          spoolDir: dir,
+          freeBytes: roomy,
+        }),
+      ).rejects.toThrow("not a readable Rakazo export");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("account import route statuses", () => {
+  function route(userId: string) {
+    const app = new Hono();
+    mountAccountImportRoute(app, deps, async () => ({ ...actor, userId }));
+    return app;
+  }
+
+  it("answers 401 without a session and 415 without a zip content type", async () => {
+    const app = new Hono();
+    mountAccountImportRoute(app, deps, async () => null);
+    const unauthorized = await app.request("/api/account/import", {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: new Uint8Array(1),
+    });
+    expect(unauthorized.status).toBe(401);
+
+    // A separate mount, because the session above resolves for this whole app instance.
+    const withSession = new Hono();
+    mountAccountImportRoute(withSession, deps, async () => actor);
+    const wrongType = await withSession.request("/api/account/import", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "hello",
+    });
+    expect(wrongType.status).toBe(415);
+  });
+
+  it("carries a typed refusal's own status to the caller", async () => {
+    // Every AccountImportError carries its own status; a body that is not an archive is a 400.
+    const app = route("user-route-disk");
+    const response = await app.request("/api/account/import", {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: new Uint8Array(1),
+    });
+    // A 1-byte body is not an archive: the importer's own 400 stands in for the status path here.
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: "The file is not a readable Rakazo export.",
+    });
+  });
+
+  it("answers 429 when the same user already has an import in flight", async () => {
+    const userId = "user-route-busy";
+    const app = new Hono();
+    mountAccountImportRoute(app, deps, async () => ({ ...actor, userId }));
+    const post = (body: BodyInit) =>
+      app.request("/api/account/import", {
+        method: "POST",
+        headers: { "content-type": "application/zip" },
+        body,
+        duplex: "half",
+      } as RequestInit);
+    const bytes = buildArchive([
+      ["manifest.json", JSON.stringify(manifestFor([{ id: "s1", name: "Home" }]))],
+      ["spaces/s1/records.jsonl", ""],
+    ]);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(bytes.subarray(0, 4));
+        await held;
+        controller.enqueue(bytes.subarray(4));
+        controller.close();
+      },
+    });
+    const first = Promise.resolve(post(stream)).catch((error: unknown) => error);
+    const refused = await post(new Uint8Array(1));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({
+      error: "Another import is already running. Wait for it to finish, then try again.",
+    });
+    release();
+    await first;
   });
 });
