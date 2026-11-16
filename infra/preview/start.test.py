@@ -1,10 +1,12 @@
 """Run the real boot script offline with stand-ins for Postgres and app processes."""
+import contextlib
 import os
 from pathlib import Path
 import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 
@@ -72,6 +74,64 @@ class PreviewBoot(unittest.TestCase):
         self.image = self.preview / "image-id"
         self.image.write_text("first-image\n")
 
+    # How long the preview may take to serve. The script itself allows its API 120 seconds, so a
+    # loaded runner is a reason to wait, not to fail: the test still requires that it serves.
+    READY_TIMEOUT = 60.0
+    # SIGTERM first, so the script's own trap runs; then this long for it to finish before the
+    # group is killed. A teardown timing out is a fault in this harness, never a result.
+    STOP_GRACE = 20.0
+
+    @staticmethod
+    def drain(process, collected):
+        """Reads the script's output as it arrives, so no part of it depends on when it exits.
+
+        Reading it after signalling (as `communicate` does) makes the verdict depend on how
+        quickly every child that inherited the pipe goes away, which is exactly what a loaded
+        runner does not promise.
+        """
+        assert process.stdout is not None
+        for line in process.stdout:
+            collected.append(line.decode(errors="replace"))
+
+    @staticmethod
+    def group_alive(pgid):
+        """Whether anything is left in this process group, the script included."""
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    @classmethod
+    def stop(cls, process):
+        """Ends the preview's whole process group, escalating if anything outlives SIGTERM.
+
+        The group is signalled even when the script has already exited: a child it started can
+        outlive it — one that inherited the output pipe keeps this test waiting — and killing
+        only the script leaves that child running.
+        """
+        pgid = process.pid
+        deadline = time.monotonic() + cls.STOP_GRACE
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pgid, sig)
+            except ProcessLookupError:
+                return
+            while time.monotonic() < deadline:
+                process.poll()
+                if not cls.group_alive(pgid):
+                    return
+                time.sleep(0.02)
+            # Escalate: a process that ignored SIGTERM gets SIGKILL.
+            deadline = time.monotonic() + 10.0
+        # Nothing may hang the suite: reap what can be reaped and move on.
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=5)
+
     def boot(self, succeeds=True):
         serving = self.data / "serving"
         serving.unlink(missing_ok=True)
@@ -82,19 +142,24 @@ class PreviewBoot(unittest.TestCase):
                  "PREVIEW_HOST": "preview.example.test"},
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
         )
+        collected: list[str] = []
+        reader = threading.Thread(target=self.drain, args=(process, collected), daemon=True)
+        reader.start()
         try:
-            deadline = time.monotonic() + 8
+            # Polling, with a deadline generous enough for a loaded runner. What is asserted is
+            # unchanged: it serves (or does not), and the failure path exits non-zero.
+            deadline = time.monotonic() + self.READY_TIMEOUT
             while not serving.exists() and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertEqual(serving.exists(), succeeds)
             if not succeeds:
-                self.assertNotEqual(process.wait(timeout=3), 0)
+                self.assertNotEqual(process.wait(timeout=self.READY_TIMEOUT), 0)
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
-            output = process.communicate(timeout=3)[0].decode()
+            self.stop(process)
+            # The reader ends at EOF; a child that outlived the kill cannot hold this up.
+            reader.join(timeout=self.STOP_GRACE)
             if succeeds:
-                self.assertIn("[preview] Ready", output)
+                self.assertIn("[preview] Ready", "".join(collected))
 
     def calls(self):
         return (self.data / "calls").read_text().splitlines()
