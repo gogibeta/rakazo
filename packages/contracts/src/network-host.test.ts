@@ -10,6 +10,7 @@ import {
   isLoopbackAddress,
   isLoopbackHost,
   isNonPublicAddress,
+  isNonPublicHostname,
   isPrivateNetworkAddress,
   isPrivateNetworkHost,
   normalizeHost,
@@ -316,5 +317,55 @@ describe("predicate relationships", () => {
   it("normalizes case, brackets, and one trailing dot", () => {
     expect(normalizeHost("[FE80::1]")).toBe("fe80::1");
     expect(normalizeHost("Example.Test.")).toBe("example.test");
+  });
+});
+
+describe("isNonPublicHostname", () => {
+  it.each([
+    "localhost",
+    "LOCALHOST",
+    "localhost.",
+    "app.localhost",
+    "printer.local",
+    "db.internal",
+    "host.docker.internal",
+    "metadata.google.internal",
+    "metadata.goog",
+    "127.0.0.1",
+    "127.1.2.3",
+    "0.0.0.0",
+    "10.0.0.1",
+    "172.16.0.1",
+    "192.168.1.10",
+    "100.64.0.1",
+    "169.254.169.254",
+    "[::1]",
+    "[fd00:ec2::254]",
+    "[::ffff:127.0.0.1]",
+  ])("refuses %s", (host) => {
+    expect(isNonPublicHostname(host)).toBe(true);
+  });
+
+  it.each(["example.test", "8.8.8.8", "203.0.113.10", "[2606:4700:4700::1111]"])(
+    "allows %s",
+    (host) => {
+      expect(isNonPublicHostname(host)).toBe(false);
+    },
+  );
+
+  // Deciding where a name resolves needs the address actually dialled, which this predicate never
+  // sees; a caller that connects checks that answer itself.
+  it("leaves an ordinary name to the caller that resolves it", () => {
+    expect(isNonPublicHostname("intranet.example.test")).toBe(false);
+  });
+
+  it("agrees with internal and metadata names, and with non-public IP literals", () => {
+    for (const [host] of HOSTS) {
+      const expected =
+        isInternalHostname(host) ||
+        isCloudMetadataHost(host) ||
+        (ipVersion(host) !== 0 && isNonPublicAddress(host));
+      expect({ host, nonPublic: isNonPublicHostname(host) }).toEqual({ host, nonPublic: expected });
+    }
   });
 });

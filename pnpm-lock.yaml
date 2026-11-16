@@ -841,6 +841,9 @@ importers:
       '@hono/node-server':
         specifier: 2.1.6
         version: 2.1.6(hono@4.13.17)
+      '@rakazo/contracts':
+        specifier: workspace:*
+        version: link:../../../packages/contracts
       '@rakazo/core':
         specifier: workspace:*
         version: link:../../../packages/core

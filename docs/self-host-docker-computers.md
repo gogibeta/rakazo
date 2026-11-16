@@ -95,6 +95,20 @@ of its first three servers (Docker uses no more) answers from a computer network
 fails this check retries it on the next start. The check runs from an IPv4-only network and
 skips IPv6 servers, so if those three are all IPv6 nothing is checked.
 
+### The page browser and private addresses
+
+A bot's browser runs on the computer's network, so this machine, the LAN, and a cloud
+metadata service are all reachable from it. The page tools refuse to open them: a page the
+bot read can steer it, and none of those addresses are the public web it was asked to use.
+Only address literals and local names are classified. Deciding where a name resolves needs
+the answer DNS gave the browser, which is the egress ruleset's job.
+
+`RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS=1` lifts that refusal for a deployment where the person
+watching the screen owns the services behind those addresses, such as a desktop app pointing a
+bot at a site on the same laptop. Cloud metadata services stay refused. Set it in `.env` and
+recreate the supervisor; it passes the setting to each computer with the rest of the page
+browser's environment.
+
 ### Opening egress
 
 If computers must reach LAN services, an internal proxy, or endpoints bound to the host,

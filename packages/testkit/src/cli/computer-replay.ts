@@ -61,6 +61,8 @@ async function main() {
     SANDBOX_SCREEN_NETWORK: "published",
     SANDBOX_SCREEN_HOST: "127.0.0.1",
     SANDBOX_CONTROL_VIA_LOOPBACK: "true",
+    // The fixture site runs inside this one throwaway computer.
+    RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS: "1",
     LOG_LEVEL: "off",
     ...(subnetArg ? { COMPUTER_REPLAY_SUBNET: subnetArg.slice("--subnet=".length) } : {}),
     ...(recordArg

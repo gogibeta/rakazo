@@ -1569,6 +1569,48 @@ class RunTest(unittest.TestCase):
             with self.subTest(url=url), self.assertRaisesRegex(RuntimeError, "Only HTTP"):
                 page(FakeAgentBrowser()).navigate(url)
 
+    def test_navigation_refuses_this_machine_and_the_private_network(self):
+        # The browser sits on the computer's network: these addresses are the host, the LAN and the
+        # person's own services, which a bot steered by a page it read must not reach.
+        for url in ("http://127.0.0.1/", "http://127.1/", "http://0x7f.1/", "http://2130706433/",
+                    "http://0177.0.0.1/", "http://0/", "http://localhost/", "http://LOCALHOST./",
+                    "http://app.localhost/", "http://printer.local/", "http://db.internal/",
+                    "http://10.0.0.1/", "http://192.168.1.10/", "http://172.16.0.1/",
+                    "http://100.64.0.1/", "http://[::1]/", "http://[fd12:3456::1]/",
+                    "http://[fe80::1]/", "http://[::]/", "http://[::ffff:127.0.0.1]/",
+                    "http://１２７.０.０.１/", "http://127。0。0。1/"):
+            with self.subTest(url=url), self.assertRaisesRegex(RuntimeError, "private network"):
+                page(FakeAgentBrowser()).navigate(url)
+
+    def test_navigation_refuses_a_cloud_metadata_service_even_when_private_hosts_are_allowed(self):
+        for url in ("http://169.254.169.254/latest/meta-data", "http://100.100.100.200/",
+                    "http://metadata.google.internal/", "http://metadata.goog./",
+                    "http://[fd00:ec2::254]/", "http://[::ffff:169.254.169.254]/",
+                    "http://[64:ff9b::169.254.169.254]/"):
+            with self.subTest(url=url), patch.dict(os.environ, {"RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS": "1"}), \
+                    self.assertRaisesRegex(RuntimeError, "metadata service"):
+                page(FakeAgentBrowser()).navigate(url)
+
+    def test_an_operator_on_their_own_machine_may_open_its_addresses(self):
+        with patch.dict(os.environ, {"RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS": "1"}), \
+                patch.object(helper.time, "sleep"):
+            for url in ("http://127.0.0.1:3000/", "http://host.docker.internal:45175/"):
+                with self.subTest(url=url):
+                    self.assertEqual(page(FakeAgentBrowser()).navigate(url)["ok"], True)
+
+    def test_navigation_still_opens_public_sites(self):
+        with patch.object(helper.time, "sleep"):
+            for url in ("https://example.test/", "http://203.0.113.10/", "https://[2606:4700:4700::1111]/"):
+                with self.subTest(url=url):
+                    self.assertEqual(page(FakeAgentBrowser()).navigate(url)["ok"], True)
+
+    def test_public_addresses_and_names_are_not_refused_as_private(self):
+        for host in ("example.test", "8.8.8.8", "203.0.113.10", "2606:4700:4700::1111",
+                     "intranet.example.test"):
+            with self.subTest(host=host):
+                self.assertFalse(helper.private_host(host))
+                self.assertFalse(helper.metadata_host(host))
+
     def test_navigation_leaves_no_referrer_and_returns_the_page_it_reached(self):
         browser = FakeAgentBrowser()
         with patch.object(helper.time, "sleep"):

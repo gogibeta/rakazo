@@ -74,6 +74,7 @@ import {
   removeBotNetwork,
   removeUnusedComputerNetwork,
 } from "./networks.js";
+import { allowPrivateBrowserHosts, navigableUrl } from "./page-browser-navigation.js";
 import { publishedScreenUrl } from "./readiness.js";
 import { limitSupervisorRequestBody, supervisorFileWriteSchema } from "./request-limits.js";
 import {
@@ -516,15 +517,12 @@ app.post("/computers/:id/browser", async (c) => {
     .discriminatedUnion("command", [
       z.object({
         command: z.literal("navigate"),
+        // Refused here as well as in the computer, so nothing runs and an older image is covered too.
         url: z
           .string()
           .url()
           .max(8192)
-          .refine((value) => {
-            if (!URL.canParse(value)) return false;
-            const url = new URL(value);
-            return /^https?:$/.test(url.protocol) && !url.username && !url.password;
-          }),
+          .refine((value) => navigableUrl(value) !== undefined),
         downloads: downloadFolder,
       }),
       z.object({
@@ -656,6 +654,8 @@ app.post("/computers/:id/browser", async (c) => {
           ...(process.env.RAKAZO_BROWSER_UPLOAD_MAX_BYTES !== undefined
             ? [`RAKAZO_BROWSER_UPLOAD_MAX_BYTES=${process.env.RAKAZO_BROWSER_UPLOAD_MAX_BYTES}`]
             : []),
+          // The computer checks the destination too, and has to agree with this route about it.
+          ...(allowPrivateBrowserHosts() ? ["RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS=1"] : []),
         ],
         timeoutMs: 25_000,
         signal,

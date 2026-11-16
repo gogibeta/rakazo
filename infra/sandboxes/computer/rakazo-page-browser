@@ -10,6 +10,7 @@ Saved logins, cards and pay tokens go through page_secrets instead.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import json
 import math
 import mimetypes
@@ -36,6 +37,10 @@ discover_ws_url = page_secrets.discover_ws_url
 AGENT_BROWSER = os.environ.get("RAKAZO_AGENT_BROWSER") or "/usr/local/bin/agent-browser"
 
 NO_ANSWER = "The page did not answer in time."
+PRIVATE_DESTINATION = ("Only public websites can be opened here. This address is on this machine or a private "
+                      "network, so nothing was opened.")
+METADATA_DESTINATION = ("A cloud metadata service is never opened in the page browser, whatever is configured, "
+                        "so nothing was opened.")
 STALE_REF = "Stale element ref: the page has changed since that snapshot. Use a ref from the page below."
 NOT_KEPT = "The page did not keep every character typed. Check the field in this snapshot before trying again."
 DISABLED = "That control is disabled, so nothing happened. Pick another control from this snapshot."
@@ -336,10 +341,183 @@ def internal(url: str) -> bool:
     return urlsplit(url).scheme in INTERNAL_SCHEMES
 
 
+# Cloud metadata services answer here and nowhere else a page should reach.
+METADATA_IPV4 = frozenset({0xA9FEA9FE, 0xA9FEAA02, 0x646464C8})
+METADATA_NAMES = frozenset({"metadata.google.internal", "metadata.goog"})
+# IPv4 special-purpose ranges (RFC 6890) that are not globally reachable unicast. Documentation
+# ranges are left out, as the shared classifier leaves them out: they are public for tests.
+NON_PUBLIC_IPV4 = (
+    (0x00000000, 0xFF000000),  # 0.0.0.0/8 "this network"
+    (0x0A000000, 0xFF000000),  # 10.0.0.0/8 RFC 1918
+    (0x64400000, 0xFFC00000),  # 100.64.0.0/10 CGNAT and Tailscale
+    (0x7F000000, 0xFF000000),  # 127.0.0.0/8 loopback
+    (0xA9FE0000, 0xFFFF0000),  # 169.254.0.0/16 link-local and metadata
+    (0xAC100000, 0xFFF00000),  # 172.16.0.0/12 RFC 1918
+    (0xC0000000, 0xFFFFFF00),  # 192.0.0.0/24 IETF protocol assignments
+    (0xC0586300, 0xFFFFFF00),  # 192.88.99.0/24 deprecated 6to4 relay anycast
+    (0xC0A80000, 0xFFFF0000),  # 192.168.0.0/16 RFC 1918
+    (0xC6120000, 0xFFFE0000),  # 198.18.0.0/15 benchmarking
+    (0xE0000000, 0xF0000000),  # 224.0.0.0/4 multicast
+    (0xF0000000, 0xF0000000),  # 240.0.0.0/4 reserved, including broadcast
+)
+# The URL standard reads these as dots, so a host spelled with one is the same host.
+URL_DOTS = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
+
+
+def allow_private_hosts() -> bool:
+    """An operator's own machine, where the person watching the screen is the one served."""
+    return os.environ.get("RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS") == "1"
+
+
+def whatwg_ipv4(host: str) -> int | None:
+    """The address the URL standard reads in a host, or None when it is not an IPv4 literal.
+
+    Chromium accepts one to four dot-separated parts, each decimal, octal with a leading zero, or
+    hex with 0x, the last part filling the remaining bytes. A trailing dot is the same host.
+    Classifying the name Chromium resolves any other way is the caller's job; this only has to
+    agree with the browser on what an address literal is.
+    """
+    parts = host.split(".")
+    if len(parts) > 1 and parts[-1] == "":
+        parts.pop()
+    if not parts or len(parts) > 4:
+        return None
+    numbers = []
+    for part in parts:
+        base, digits = 10, part
+        if len(part) >= 2 and part[:2].lower() == "0x":
+            base, digits = 16, part[2:]
+        elif len(part) >= 2 and part[0] == "0":
+            base, digits = 8, part[1:]
+        if digits == "" and base != 10:
+            numbers.append(0)
+            continue
+        allowed = "0123456789abcdef"[:base]
+        if not digits or any(character not in allowed for character in digits.lower()):
+            return None
+        numbers.append(int(digits, base))
+    if any(number > 255 for number in numbers[:-1]) or numbers[-1] >= 256 ** (5 - len(numbers)):
+        return None
+    value = numbers[-1]
+    for index, number in enumerate(numbers[:-1]):
+        value += number << (8 * (3 - index))
+    return value
+
+
+def embedded_ipv4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """An IPv4 destination carried inside an IPv6 address, in the forms a URL can spell."""
+    if address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    if address.sixtofour is not None:
+        return address.sixtofour
+    # 64:ff9b::/96 NAT64 well-known prefix.
+    if address.packed[:12] == bytes.fromhex("0064ff9b0000000000000000"):
+        return ipaddress.IPv4Address(address.packed[12:])
+    return None
+
+
+def non_public_ipv4(value: int) -> bool:
+    return any(value & mask == network for network, mask in NON_PUBLIC_IPV4)
+
+
+def literal_host(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The address a host literal names, as Chromium reads one, or None for an ordinary name."""
+    name = unicodedata.normalize("NFKC", host).translate(URL_DOTS).lower()
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    if name.endswith("."):
+        name = name[:-1]
+    literal = whatwg_ipv4(name)
+    if literal is not None:
+        return ipaddress.IPv4Address(literal)
+    if ":" not in name:
+        return None
+    try:
+        return ipaddress.IPv6Address(name.split("%", 1)[0])
+    except ValueError:
+        return None
+
+
+def metadata_host(host: str) -> bool:
+    """A cloud metadata service, by name or by address. Never opened, whoever the operator is."""
+    name = unicodedata.normalize("NFKC", host).translate(URL_DOTS).lower()
+    if name.endswith("."):
+        name = name[:-1]
+    if name in METADATA_NAMES:
+        return True
+    address = literal_host(host)
+    if isinstance(address, ipaddress.IPv4Address):
+        return int(address) in METADATA_IPV4
+    if isinstance(address, ipaddress.IPv6Address):
+        # AWS IMDS over IPv6, fd00:ec2::254.
+        if address.packed == bytes.fromhex("fd000ec2000000000000000000000254"):
+            return True
+        embedded = embedded_ipv4(address)
+        return embedded is not None and int(embedded) in METADATA_IPV4
+    return False
+
+
+def private_host(host: str) -> bool:
+    """This machine or the person's own network, as the browser sees the host.
+
+    Names that are not address literals are left to DNS: whether one resolves privately needs the
+    answer the browser got, which this helper never sees.
+    """
+    name = unicodedata.normalize("NFKC", host).translate(URL_DOTS).lower()
+    if name.endswith("."):
+        name = name[:-1]
+    if name == "localhost" or name.endswith((".localhost", ".local", ".internal")):
+        return True
+    address = literal_host(host)
+    if isinstance(address, ipaddress.IPv4Address):
+        return non_public_ipv4(int(address))
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.is_unspecified or address.is_loopback or address.is_link_local:
+            return True
+        if address.is_multicast or address.ipv4_mapped is not None or address.sixtofour is not None:
+            return True
+        # fc00::/7 unique local, fec0::/10 deprecated site-local, 100::/64 discard-only, and
+        # 2001::/23 IETF protocol assignments (Teredo, benchmarking).
+        if address.packed[0] & 0xFE == 0xFC or address.packed[0] & 0xFF == 0xFE:
+            return True
+        if address.packed[:7] == bytes(7):
+            return True
+        if address.packed[:2] == bytes.fromhex("2001") and address.packed[2] < 0x02:
+            return True
+        embedded = embedded_ipv4(address)
+        return embedded is not None and non_public_ipv4(int(embedded))
+    return False
+
+
+def url_host(url: str) -> str:
+    """The host Chromium reads in an http(s) URL, parsed as the URL standard reads one.
+
+    urlsplit splits the authority on /?# only, keeps a backslash inside it, and leaves the
+    full-width dots above unfolded, so it can name a different host than the browser will dial.
+    Everything before the last @ is user information, a backslash ends the authority, and what
+    is left is a bracketed IPv6 address or a name up to its port.
+    """
+    rest = url.split("://", 1)[1] if "://" in url else url
+    authority = re.split(r"[/?#\\]", rest, maxsplit=1)[0]
+    host_port = authority.rpartition("@")[2]
+    if host_port.startswith("["):
+        end = host_port.find("]")
+        return host_port[: end + 1] if end != -1 else host_port
+    return host_port.split(":", 1)[0]
+
+
 def check_url(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
         raise RuntimeError("Only HTTP(S) URLs without embedded credentials are supported")
+    # A bot steered by the page it read must not drive the browser at a cloud metadata service, nor,
+    # unless the operator is running this on their own machine, at this machine or the person's
+    # network.
+    host = url_host(url)
+    if metadata_host(host):
+        raise RuntimeError(METADATA_DESTINATION)
+    if not allow_private_hosts() and private_host(host):
+        raise RuntimeError(PRIVATE_DESTINATION)
 
 
 class AgentBrowser:

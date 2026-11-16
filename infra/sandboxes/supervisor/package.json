@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@hono/node-server": "2.1.6",
+    "@rakazo/contracts": "workspace:*",
     "@rakazo/core": "workspace:*",
     "@rakazo/logging": "workspace:*",
     "dockerode": "5.0.1",

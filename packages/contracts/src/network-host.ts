@@ -206,6 +206,20 @@ export function isCloudMetadataHost(hostname: string): boolean {
   return CLOUD_METADATA_NAMES.has(host) || (ipVersion(host) !== 0 && isCloudMetadataAddress(host));
 }
 
+/**
+ * A host that must not become a request target without the operator saying so: this machine's
+ * names, cloud metadata names, and IP literals outside globally reachable unicast.
+ *
+ * A name that is not an IP literal is allowed here: deciding where it resolves belongs to the
+ * caller that connects, which checks the address it actually dialled. Use this where the
+ * destination is only known as a name, such as a browser the person is watching.
+ */
+export function isNonPublicHostname(hostname: string): boolean {
+  const host = normalizeHost(hostname);
+  if (isInternalHostname(host) || isCloudMetadataHost(host)) return true;
+  return ipVersion(host) !== 0 && isNonPublicAddress(host);
+}
+
 function canonical(hostname: string): string {
   return hostname.toLowerCase().replace(/^\[|\]$/g, "");
 }

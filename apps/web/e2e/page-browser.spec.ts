@@ -12,6 +12,11 @@ const helper = path.resolve(
   "../../../infra/sandboxes/computer/rakazo-page-browser",
 );
 
+// Every fixture here is served on this runner's own loopback, so the page tools are told that the
+// machine they run on is the one being driven (RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS). Without it the
+// helper refuses a private destination, which is what it does for a real bot's computer.
+const PRIVATE_HOSTS = { RAKAZO_BROWSER_ALLOW_PRIVATE_HOSTS: "1" };
+
 // The helper drives Chromium through agent-browser; CI installs the pinned binary and sets this.
 test.skip(
   !process.env.CI && !process.env.RAKAZO_AGENT_BROWSER,
@@ -48,7 +53,7 @@ test("live page helper preserves identity, masks passwords, and reports partial 
     }).toPass({ timeout: 5_000 });
     async function command(name: string, args: Record<string, unknown> = {}) {
       const { stdout } = await execute("python3", [helper, name, JSON.stringify(args)], {
-        env: { ...process.env, RAKAZO_CDP_PORT: port },
+        env: { ...process.env, ...PRIVATE_HOSTS, RAKAZO_CDP_PORT: port },
         timeout: 30_000,
       });
       return JSON.parse(stdout);
@@ -216,7 +221,7 @@ test("live page helper waits for a site's sign-in check, or says the page is sti
     }).toPass({ timeout: 5_000 });
     const snapshot = async () => {
       const { stdout } = await execute("python3", [helper, "snapshot", "{}"], {
-        env: { ...process.env, RAKAZO_CDP_PORT: port },
+        env: { ...process.env, ...PRIVATE_HOSTS, RAKAZO_CDP_PORT: port },
         timeout: 30_000,
       });
       return JSON.parse(stdout);
@@ -290,7 +295,7 @@ test("live page helper reads a checkout's order lines for the pay approval", asy
     const { stdout } = await execute(
       "python3",
       [helper, "purchase_check", JSON.stringify({ desktop: true, enter: true })],
-      { env: { ...process.env, RAKAZO_CDP_PORT: port }, timeout: 30_000 },
+      { env: { ...process.env, ...PRIVATE_HOSTS, RAKAZO_CDP_PORT: port }, timeout: 30_000 },
     );
     expect(JSON.parse(stdout)).toMatchObject({
       ok: true,
@@ -341,7 +346,7 @@ test("live page helper reaches a form past the control limit by query or by scro
     }).toPass({ timeout: 5_000 });
     async function command(name: string, args: Record<string, unknown> = {}) {
       const { stdout } = await execute("python3", [helper, name, JSON.stringify(args)], {
-        env: { ...process.env, RAKAZO_CDP_PORT: port },
+        env: { ...process.env, ...PRIVATE_HOSTS, RAKAZO_CDP_PORT: port },
         timeout: 30_000,
       });
       return JSON.parse(stdout);
@@ -583,7 +588,7 @@ test("live page helper types codes as real key presses into one-box-per-digit fi
     }).toPass({ timeout: 5_000 });
     async function command(name: string, args: Record<string, unknown> = {}) {
       const { stdout } = await execute("python3", [helper, name, JSON.stringify(args)], {
-        env: { ...process.env, RAKAZO_CDP_PORT: port },
+        env: { ...process.env, ...PRIVATE_HOSTS, RAKAZO_CDP_PORT: port },
         timeout: 30_000,
       });
       return JSON.parse(stdout);
@@ -893,7 +898,7 @@ test("live page helper types a purchase's card into a payment provider's frame o
     }).toPass({ timeout: 5_000 });
     async function command(name: string, args: Record<string, unknown> = {}) {
       const { stdout } = await execute("python3", [helper, name, JSON.stringify(args)], {
-        env: { ...process.env, RAKAZO_CDP_PORT: port },
+        env: { ...process.env, ...PRIVATE_HOSTS, RAKAZO_CDP_PORT: port },
         timeout: 30_000,
       });
       return JSON.parse(stdout);
