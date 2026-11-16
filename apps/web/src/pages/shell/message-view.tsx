@@ -44,6 +44,7 @@ import { ReplyLine } from "./chat-context";
 import { FALLBACK_BOT_COLOR, previewMessageText } from "./chat-shared";
 import type { ImportSetupTarget } from "./import-setup-card";
 import { ImportSetupCard } from "./import-setup-card";
+import { LongTextBlock } from "./long-text-block";
 import {
   AppConnectCard,
   ArtifactImage,
@@ -301,13 +302,17 @@ export const MessageView = memo(function MessageView({
                       key={i}
                       data-quote-message-id={block.kind === "text" ? quoteMessageId : undefined}
                     >
-                      <ChatMarkdown
-                        streaming={block.kind === "progress"}
-                        renderMention={renderMention}
-                        onOpenPage={openPage}
-                      >
-                        {block.text}
-                      </ChatMarkdown>
+                      {block.kind === "progress" ? (
+                        <ChatMarkdown streaming renderMention={renderMention} onOpenPage={openPage}>
+                          {block.text}
+                        </ChatMarkdown>
+                      ) : (
+                        <LongTextBlock
+                          text={block.text}
+                          renderMention={renderMention}
+                          onOpenPage={openPage}
+                        />
+                      )}
                     </div>
                   );
                 }
@@ -601,9 +606,11 @@ export const MessageView = memo(function MessageView({
                   dir="auto"
                 >
                   <div data-quote-message-id={quoteMessageId}>
-                    <ChatMarkdown renderMention={renderMention} onOpenPage={openPage}>
-                      {block.text}
-                    </ChatMarkdown>
+                    <LongTextBlock
+                      text={block.text}
+                      renderMention={renderMention}
+                      onOpenPage={openPage}
+                    />
                   </div>
                   {voiceReady ? (
                     <Button
