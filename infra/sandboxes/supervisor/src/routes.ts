@@ -85,6 +85,7 @@ import {
   setInteractiveScreen,
 } from "./screens.js";
 import {
+  assertInsideWorkspace,
   assertRequestIdentity,
   attemptComputerControl,
   clearComputerScreenRegistry,
@@ -109,8 +110,14 @@ import {
   teardownReleasedScreen,
   terminalCommand,
   toSandboxInput,
+  WORKSPACE_ROOT,
   workspaceTarget,
 } from "./supervisor-logic.js";
+import {
+  WORKSPACE_ESCAPE_EXIT,
+  WORKSPACE_ESCAPE_MESSAGE,
+  workspaceReadScript,
+} from "./workspace-file-scripts.js";
 
 const app = new Hono();
 
@@ -797,30 +804,28 @@ app.get("/computers/:id/files", async (c) => {
   try {
     const { container } = await managedContainer(c.req.param("id"), headers.botId, headers.spaceId);
     const relative = normalizeWorkspaceRelative(c.req.query("path") ?? "");
-    const target = workspaceTarget(relative);
+    const target = assertInsideWorkspace(WORKSPACE_ROOT, workspaceTarget(relative));
     if (c.req.query("mode") === "read") {
       const maxBytesRaw = c.req.query("maxBytes");
       const maxBytes = maxBytesRaw === undefined ? undefined : Number(maxBytesRaw);
       if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
         return c.json({ error: "invalid maxBytes" }, 400);
       }
-      const script = [
-        "import base64, sys",
-        "target, limit = sys.argv[1], int(sys.argv[2])",
-        "with open(target, 'rb') as source:",
-        "  content = source.read() if limit < 0 else source.read(limit + 1)",
-        "if limit >= 0 and len(content) > limit: sys.exit(42)",
-        "sys.stdout.write(base64.b64encode(content).decode())",
-      ].join("\n");
+      // The script refuses a path that resolves outside the workspace: a symlink planted there
+      // must not let a profile without a shell of its own read what is beyond the root.
       const result = await runContainerCommand(container, [
         "python3",
         "-c",
-        script,
+        workspaceReadScript(),
+        WORKSPACE_ROOT,
         target,
         String(maxBytes ?? -1),
       ]);
       if (result.code === 42) {
         return c.json({ error: `computer file exceeds ${maxBytes} bytes` }, 413);
+      }
+      if (result.code === WORKSPACE_ESCAPE_EXIT) {
+        return c.json({ error: WORKSPACE_ESCAPE_MESSAGE }, 400);
       }
       if (result.code !== 0) return c.json({ error: result.stderr || "file not found" }, 404);
       return c.json({ content: result.stdout.trim() });
@@ -856,7 +861,10 @@ app.post("/computers/:id/files", async (c) => {
   const body = supervisorFileWriteSchema().parse(await c.req.json());
   try {
     const { container } = await managedContainer(c.req.param("id"), headers.botId, headers.spaceId);
-    const target = workspaceTarget(normalizeWorkspaceRelative(body.path));
+    const target = assertInsideWorkspace(
+      WORKSPACE_ROOT,
+      workspaceTarget(normalizeWorkspaceRelative(body.path)),
+    );
     await writeContainerFile(
       container,
       target,

@@ -171,3 +171,41 @@ describe("computer command identity", () => {
     expectContainerUser();
   });
 });
+
+describe("workspace file routes refuse an escaping path", () => {
+  const get = (query: string) =>
+    supervisorApp.request(`/computers/computer-escape/files?${query}`, {
+      headers: {
+        authorization: `Bearer ${resolveSupervisorToken(process.env)}`,
+        "x-rakazo-bot-id": "bot",
+        "x-rakazo-space-id": "space",
+      },
+    });
+
+  // A path that survives lexical normalization but resolves out of the root: it must not be
+  // reported as a missing file, which would hide that something tried to leave the workspace.
+  it.each(["../../etc/passwd", "..%2f..%2fetc%2fpasswd", "a/../../etc/passwd"])(
+    "answers 400 for %s rather than a 404",
+    async (escaped) => {
+      const response = await get(`path=${escaped}&mode=read`);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: expect.stringContaining("escapes the computer workspace"),
+      });
+      // Refused before any command ran in the computer.
+      expect(mock.exec).not.toHaveBeenCalled();
+    },
+  );
+
+  it("answers 400 for an escaping write path", async () => {
+    const response = await post("/computers/computer-escape/files", {
+      path: "../../etc/passwd",
+      content: Buffer.from("x").toString("base64"),
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("escapes the computer workspace"),
+    });
+    expect(mock.exec).not.toHaveBeenCalled();
+  });
+});

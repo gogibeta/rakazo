@@ -601,8 +601,25 @@ export function normalizeWorkspaceRelative(value: string) {
   return segments.join("/");
 }
 
+/** Where a computer's workspace lives inside the container. */
+export const WORKSPACE_ROOT = "/home/rakazo";
+
 export function workspaceTarget(relative: string) {
-  return relative ? path.posix.join("/home/rakazo", relative) : "/home/rakazo";
+  return relative ? path.posix.join(WORKSPACE_ROOT, relative) : WORKSPACE_ROOT;
+}
+
+/**
+ * The same containment the file scripts apply inside the computer, as a pre-check here: a path
+ * whose resolved form leaves `root` is refused before a command runs at all. It cannot see the
+ * computer's filesystem from the supervisor, so this only judges what it is given — the scripts
+ * remain the enforcement, because they resolve against the real tree.
+ */
+export function assertInsideWorkspace(root: string, target: string) {
+  const resolved = path.posix.resolve(root, target);
+  if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+    throw new Error("path escapes the computer workspace");
+  }
+  return resolved;
 }
 
 export function sandboxTimeoutCommand(argv: string[], timeoutMs: number, completionMarker: string) {
