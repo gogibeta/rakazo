@@ -13,6 +13,7 @@ interface WorkflowStep {
   uses?: string;
   "continue-on-error"?: boolean;
   run?: string;
+  env?: Record<string, string>;
   with?: Record<string, unknown>;
 }
 interface WorkflowJob {
@@ -41,7 +42,10 @@ const ci = parse(readFileSync(path.join(workflowsDir, "ci.yml"), "utf8")) as {
   concurrency: { group: string; "cancel-in-progress": string };
   jobs: Record<string, WorkflowJob>;
 };
-const publisher = parse(publisherText) as { runs: { steps: WorkflowStep[] } };
+const publisher = parse(publisherText) as {
+  outputs?: Record<string, { description?: string; value?: string }>;
+  runs: { steps: WorkflowStep[] };
+};
 const publicationAction = "./.github/actions/publish-image";
 
 describe("server image publish workflow", () => {
@@ -126,6 +130,30 @@ describe("server image publish workflow", () => {
     expect(depotScan).toBeGreaterThanOrEqual(0);
     expect(depotSteps[depotScan]?.run).toContain("for platform in linux/amd64 linux/arm64; do");
     expect(publish).toBeGreaterThan(depotScan);
+  });
+
+  it("forwards the published digest as an output so the gated edge job can pin it", () => {
+    // Without this the caller's `steps.publish.outputs.digest` is always empty, the recorded
+    // digest file is blank, and the gated jobs that move `edge` fail their sha256 check.
+    expect(publisher.outputs?.digest?.value).toBe("${{ steps.manifest.outputs.digest }}");
+    // The output must name the step that actually writes the digest, or it resolves to nothing:
+    // the manifest step, whose publish.sh writes `digest=` to GITHUB_OUTPUT.
+    const manifest = publisher.runs.steps.find((step) => step.id === "manifest");
+    expect(manifest?.run).toContain("publish.sh");
+    const publishScript = readFileSync(path.join(publisherDir, "publish.sh"), "utf8");
+    expect(publishScript).toContain("digest=$published_digest");
+    expect(publishScript).toContain("GITHUB_OUTPUT");
+  });
+
+  it("records the forwarded digest and refuses an empty one before moving edge", () => {
+    const record = workflow.jobs.publish.steps.find((step) =>
+      step.run?.includes("digest-${IMAGE}.txt"),
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
+    expect(record?.env?.DIGEST).toBe("${{ steps.publish.outputs.digest }}");
+    // The gated job re-checks the format, so an empty output fails loudly instead of moving nothing.
+    const edge = ci.jobs["publish-edge-tag"];
+    expect(edge?.steps.some((step) => step.run?.includes("No published digest."))).toBe(true);
   });
 
   it("moves the edge tag only after the check suite, from a separate gated job", () => {
