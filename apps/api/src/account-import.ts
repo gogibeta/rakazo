@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { WriteStream } from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
-import { chmod, mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, rm, statfs, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -58,6 +58,20 @@ export const ACCOUNT_IMPORT_LIMITS = {
 };
 type ArchiveLimits = typeof ACCOUNT_IMPORT_LIMITS & { artifactBytes: number };
 
+/**
+ * How many imports may hold a spool at once. Each one can pin the body cap on the spool
+ * filesystem — the same host disk the database volume lives on — so the ceiling is what keeps
+ * concurrent uploads from filling it.
+ */
+export const ACCOUNT_IMPORT_CONCURRENCY = { perUser: 1, total: 2 } as const;
+
+/**
+ * Free space an import needs beyond its body cap: room for the loop's own spill files, logs, and
+ * the other import the global cap allows. Below this the import is refused rather than started and
+ * then killed by a full disk, which would take the database down with it.
+ */
+export const ACCOUNT_IMPORT_FREE_SPACE_MARGIN_BYTES = 1024 ** 3;
+
 /** Bounds what one push can inflate to (deflate expands at most ~1032x). */
 const MESSAGE_BATCH_SIZE = 500;
 
@@ -70,7 +84,7 @@ const READ_SPILL_BYTES = 16 * 1024;
 export class AccountImportError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 413 = 400,
+    readonly status: 400 | 413 | 429 | 507 = 400,
   ) {
     super(message);
     this.name = "AccountImportError";
@@ -82,6 +96,52 @@ const invalidEntry = () => new AccountImportError("The export contains an unexpe
 const outOfOrder = () => new AccountImportError("The export's files are out of order.");
 const missingRecord = () => new AccountImportError("The export refers to a missing record.");
 const tooLarge = () => new AccountImportError("The export is too large.", 413);
+const importAlreadyRunning = () =>
+  new AccountImportError(
+    "Another import is already running. Wait for it to finish, then try again.",
+    429,
+  );
+const tooManyImports = () =>
+  new AccountImportError("Too many imports are running right now. Try again in a moment.", 429);
+const notEnoughDisk = () =>
+  new AccountImportError(
+    "The server does not have enough free disk space to hold this export. Try again later.",
+    507,
+  );
+
+/**
+ * One import at a time per user, and at most two in this process. A spool is up to the body cap on
+ * the host disk, so without a ceiling a handful of uploads can fill it.
+ *
+ * The count is per process: several API instances each allow this much. Narrowing that needs a
+ * shared claim in Postgres, which this guard deliberately does not add.
+ */
+const activeImportsByUser = new Map<string, number>();
+let activeImports = 0;
+
+/** Takes a slot for one import, or throws; the returned release is safe to call more than once. */
+function acquireImportSlot(userId: string): () => void {
+  if ((activeImportsByUser.get(userId) ?? 0) >= ACCOUNT_IMPORT_CONCURRENCY.perUser)
+    throw importAlreadyRunning();
+  if (activeImports >= ACCOUNT_IMPORT_CONCURRENCY.total) throw tooManyImports();
+  activeImportsByUser.set(userId, (activeImportsByUser.get(userId) ?? 0) + 1);
+  activeImports += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeImports -= 1;
+    const left = (activeImportsByUser.get(userId) ?? 1) - 1;
+    if (left > 0) activeImportsByUser.set(userId, left);
+    else activeImportsByUser.delete(userId);
+  };
+}
+
+/** Bytes this process may write on the filesystem that holds `dir`. */
+export async function freeSpoolBytes(dir: string): Promise<number> {
+  const stats = await statfs(dir);
+  return Number(stats.bavail) * Number(stats.bsize);
+}
 
 export type AccountImportDeps = SpaceDeletionDeps & { maxArtifactBytes: number };
 
@@ -1125,18 +1185,47 @@ export async function importAccount(
   deps: AccountImportDeps,
   actor: Actor,
   body: AsyncIterable<Uint8Array>,
+  options?: { spoolDir?: string; freeBytes?: (dir: string) => Promise<number | undefined> },
 ): Promise<AccountImportResult> {
-  const importer = new AccountImporter(deps, actor);
+  const spoolDir = options?.spoolDir ?? tmpdir();
+  const freeBytes = options?.freeBytes ?? freeSpoolBytes;
+  // The cheap, specific refusal comes first: a user whose own import is running is told that,
+  // not that the disk is full.
+  const release = acquireImportSlot(actor.userId);
+  let importer: AccountImporter | undefined;
   try {
+    // Built inside the try: nothing that can throw may sit between taking the slot and the
+    // finally that gives it back.
+    importer = new AccountImporter(deps, actor);
+    // Before a byte is spooled: a spool is up to the body cap on the disk the database shares, and
+    // an import that filled it would take the deployment down. A filesystem that cannot report its
+    // free space is let through — the body and unpacked limits still bound the spool.
+    const free = await freeBytes(spoolDir).catch((error: unknown) => {
+      getLogger().warn("account import could not read free disk space", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    });
+    if (
+      free !== undefined &&
+      free < ACCOUNT_IMPORT_LIMITS.bodyBytes + ACCOUNT_IMPORT_FREE_SPACE_MARGIN_BYTES
+    )
+      throw notEnoughDisk();
     await readArchive(
       body,
       { ...ACCOUNT_IMPORT_LIMITS, artifactBytes: deps.maxArtifactBytes },
       importer,
+      { spoolDir },
     );
     return await importer.finish();
   } catch (error) {
-    await importer.rollback();
+    // All or nothing: an import that failed part-way leaves no space behind.
+    await importer?.rollback();
     throw error;
+  } finally {
+    // Success, a refused archive, or a client that disconnected mid-upload. The slot goes back
+    // even when the rollback above threw.
+    release();
   }
 }
 
