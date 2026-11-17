@@ -4,6 +4,7 @@ import { BYOK_TIERS } from "@rakazo/contracts";
 import type { BillingAccount, PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { isUniqueViolation } from "./prisma-errors.js";
+import { runAsSystem } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 
 const ACCESS_STATUSES = new Set(["trialing", "active", "past_due"]);
@@ -442,10 +443,15 @@ export async function organizationSeatCount(
   prisma: PrismaClient,
   organizationId: string,
 ): Promise<number> {
-  const members = await prisma.member.count({
-    where: { organizationId, role: { not: GUEST_ROLE } },
+  // A guest reading their own billing is scoped to the Space that invited them, so
+  // the members of the organization that pays for them are outside that tenant.
+  // The count is for one named organization and only ever sizes a bill.
+  return runAsSystem("count the seats an organization is billed for", async () => {
+    const members = await prisma.member.count({
+      where: { organizationId, role: { not: GUEST_ROLE } },
+    });
+    return Math.max(1, members);
   });
-  return Math.max(1, members);
 }
 
 /** An organization that is not being deleted: its default Space is not being torn down. */
@@ -482,6 +488,18 @@ export async function organizationForMember(
   prisma: PrismaClient,
   input: { spaceId: string; userId: string },
 ): Promise<{ organizationId: string; isOwner: boolean } | null> {
+  // A guest's own organization is not the Space's, so for them this reads outside
+  // the current tenant. It resolves which organization pays, which a tenant-scoped
+  // read cannot answer.
+  return runAsSystem("resolve the organization that pays for a member", () =>
+    resolveOrganizationForMember(prisma, input),
+  );
+}
+
+async function resolveOrganizationForMember(
+  prisma: PrismaClient,
+  input: { spaceId: string; userId: string },
+): Promise<{ organizationId: string; isOwner: boolean } | null> {
   const space = await prisma.space.findUnique({
     where: { id: input.spaceId },
     select: { organizationId: true },
@@ -504,15 +522,19 @@ export async function ownedBillingAccounts(
   prisma: PrismaClient,
   userId: string,
 ): Promise<BillingAccount[]> {
-  const memberships = await prisma.member.findMany({
-    where: { userId, organization: { billing: { isNot: null } } },
-    select: { role: true, organization: { select: { billing: true } } },
+  // The accounts a person owns span every organization they belong to, which is
+  // wider than the one Space a request runs in.
+  return runAsSystem("list the billing accounts a person owns", async () => {
+    const memberships = await prisma.member.findMany({
+      where: { userId, organization: { billing: { isNot: null } } },
+      select: { role: true, organization: { select: { billing: true } } },
+    });
+    return memberships.flatMap((membership) =>
+      isOwnerRole(membership.role) && membership.organization.billing
+        ? [membership.organization.billing]
+        : [],
+    );
   });
-  return memberships.flatMap((membership) =>
-    isOwnerRole(membership.role) && membership.organization.billing
-      ? [membership.organization.billing]
-      : [],
-  );
 }
 
 /** Before an organization's billing rows go, so a subscription that predates the user-level mark still counts. */

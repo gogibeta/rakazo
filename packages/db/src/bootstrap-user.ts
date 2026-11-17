@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { signupPolicyFromEnv } from "@rakazo/core";
 import type { PrismaClient } from "./client.js";
 import { isUniqueViolation } from "./prisma-errors.js";
+import { runAsSystem } from "./row-security.js";
 
 export interface SignupPolicyEnv {
   signupsEnabled: string | undefined;
@@ -100,7 +101,19 @@ export async function createOrganizationWithDefaultSpace(
 }
 
 /** Provision a personal workspace. Signup never grants deployment administration. */
-export async function bootstrapUserSpace(
+export function bootstrapUserSpace(
+  prisma: PrismaClient,
+  user: { id: string },
+  env: SignupPolicyEnv,
+): Promise<{ spaceId: string }> {
+  // Signup runs before the account has a Space to scope to, and creates the first
+  // one: nothing may be tenant-scoped yet.
+  return runAsSystem("give a new account its personal Space", () =>
+    provisionUserSpace(prisma, user, env),
+  );
+}
+
+async function provisionUserSpace(
   prisma: PrismaClient,
   user: { id: string },
   env: SignupPolicyEnv,

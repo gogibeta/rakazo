@@ -11,6 +11,7 @@ import {
 } from "./billing.js";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
+import { asSystem, runAsTenant } from "./row-security.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres = process.env.VERIFY_DATABASE && databaseUrl ? describe : describe.skip;
@@ -46,18 +47,19 @@ describePostgres("billing accounts (PostgreSQL)", () => {
       await db.pool.end();
     };
     const createdAt = new Date();
+    const fixtures = asSystem(prisma);
     for (const id of [ownerId, memberId]) {
-      await prisma.user.create({
+      await fixtures.user.create({
         data: { id, name: id, email: `${id}@rakazo.test`, emailVerified: false },
       });
     }
-    await prisma.organization.create({
+    await fixtures.organization.create({
       data: { id: organizationId, name: "Billing Org", slug: organizationId, createdAt },
     });
-    await prisma.space.create({
+    await fixtures.space.create({
       data: { id: spaceId, organizationId, name: "General", isDefault: true },
     });
-    await prisma.member.createMany({
+    await fixtures.member.createMany({
       data: [
         { id: `m-${ownerId}`, organizationId, userId: ownerId, role: "admin, owner", createdAt },
         { id: `m-${memberId}`, organizationId, userId: memberId, role: "member", createdAt },
@@ -67,25 +69,31 @@ describePostgres("billing accounts (PostgreSQL)", () => {
 
   afterAll(async () => {
     if (!prisma) return;
-    await prisma.organization.deleteMany({ where: { id: organizationId } });
-    await prisma.user.deleteMany({ where: { id: { in: [ownerId, memberId] } } });
+    await asSystem(prisma).organization.deleteMany({ where: { id: organizationId } });
+    await asSystem(prisma).user.deleteMany({ where: { id: { in: [ownerId, memberId] } } });
     await close();
   });
 
   it("reads model access from a whole run row, not just its key", async () => {
     const run = { id: "run-1", spaceId, userId: memberId, botId: "bot-1" };
-    await expect(memberHasModelAccess(prisma, run)).resolves.toBe(false);
+    // Called for a run's own Space in production, so it runs in that scope.
+    await expect(
+      runAsTenant({ spaceId, userId: memberId }, () => memberHasModelAccess(prisma, run)),
+    ).resolves.toBe(false);
   });
 
   it("detects the organization owner from comma-separated roles", async () => {
-    await expect(organizationForMember(prisma, { spaceId, userId: ownerId })).resolves.toEqual({
-      organizationId,
-      isOwner: true,
-    });
-    await expect(organizationForMember(prisma, { spaceId, userId: memberId })).resolves.toEqual({
-      organizationId,
-      isOwner: false,
-    });
+    // Both run inside a request's tenant scope in production.
+    await expect(
+      runAsTenant({ spaceId, userId: ownerId }, () =>
+        organizationForMember(prisma, { spaceId, userId: ownerId }),
+      ),
+    ).resolves.toEqual({ organizationId, isOwner: true });
+    await expect(
+      runAsTenant({ spaceId, userId: memberId }, () =>
+        organizationForMember(prisma, { spaceId, userId: memberId }),
+      ),
+    ).resolves.toEqual({ organizationId, isOwner: false });
     await expect(organizationSeatCount(prisma, organizationId)).resolves.toBe(2);
   });
 
@@ -96,8 +104,10 @@ describePostgres("billing accounts (PostgreSQL)", () => {
       customerId: `${customerId}-dup`,
     });
     expect(again.customerId).toBe(customerId);
-    await expect(ownedBillingAccounts(prisma, ownerId)).resolves.toMatchObject([{ customerId }]);
-    await expect(ownedBillingAccounts(prisma, memberId)).resolves.toEqual([]);
+    const asOwner = (userId: string) =>
+      runAsTenant({ spaceId, userId }, () => ownedBillingAccounts(prisma, userId));
+    await expect(asOwner(ownerId)).resolves.toMatchObject([{ customerId }]);
+    await expect(asOwner(memberId)).resolves.toEqual([]);
   });
 
   it("overwrites the snapshot idempotently and records the first subscription and payment once", async () => {
