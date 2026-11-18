@@ -16,6 +16,8 @@ import {
   bootstrapUserSpace,
   personalOrganizationIds,
   recordSecurityEvent,
+  runAsSystem,
+  runAsSystemInTransaction,
   SpaceDeletionInProgressError,
 } from "@rakazo/db";
 import type { BetterAuthOptions, BetterAuthPlugin } from "better-auth";
@@ -189,15 +191,24 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
       },
       select: { id: true },
     });
-    return (
-      others.length > 0 &&
-      Boolean(
-        await client.spaceMember.findFirst({
-          where: { userId: { in: others.map((other) => other.id) } },
-          select: { userId: true },
-        }),
-      )
-    );
+    // Admission is decided before any request has a Space, so whether another
+    // account already holds a membership is read as system, in whichever
+    // client the caller passed.
+    const readMembership = () =>
+      client.spaceMember.findFirst({
+        where: { userId: { in: others.map((other) => other.id) } },
+        select: { userId: true },
+      });
+    const reason = "decide admission before a request has a Space";
+    const anyClient = client as typeof client & Partial<Pick<PrismaClient, "$queryRaw">>;
+    const membership = anyClient.$queryRaw
+      ? await runAsSystemInTransaction(
+          anyClient as Pick<PrismaClient, "$queryRaw">,
+          reason,
+          readMembership,
+        )
+      : await runAsSystem(reason, readMembership);
+    return others.length > 0 && Boolean(membership);
   };
   /**
    * The signup policy in force: the deployment record an admin saved in
@@ -251,7 +262,9 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
     if (!env.directoryProvisioning) return false;
     const [subject, membership, user] = await Promise.all([
       prisma.scimSubject.findUnique({ where: { userId }, select: { profileSourceId: true } }),
-      prisma.spaceMember.findFirst({ where: { userId }, select: { userId: true } }),
+      runAsSystem("check a directory account's memberships before its first sign-in", () =>
+        prisma.spaceMember.findFirst({ where: { userId }, select: { userId: true } }),
+      ),
       prisma.user.findUnique({ where: { id: userId }, select: { deactivatedAt: true } }),
     ]);
     // A deactivated account takes no new login, so nothing is linked while it is off.
@@ -714,7 +727,12 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
               });
             }
             // Only admitted sessions provision a workspace; never assign administration.
-            const membership = await prisma.spaceMember.findFirst({ where: { userId: user.id } });
+            // The session hook runs before the request has a Space, so the
+            // any-membership check reads as system.
+            const membership = await runAsSystem(
+              "check a signing-in user's memberships before the request has a Space",
+              () => prisma.spaceMember.findFirst({ where: { userId: user.id } }),
+            );
             if (!membership) {
               if (
                 (!policy.enabled ||
