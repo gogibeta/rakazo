@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { getLogger } from "@rakazo/logging";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
 import {
@@ -711,12 +712,23 @@ describePostgres("row-level security (PostgreSQL)", () => {
 
   it("logs a missing context on the auth tables without failing the run", async () => {
     // The Better Auth adapter reads these before a request has a Space, so they are
-    // logged but never treated as a failure: draining must not report them.
-    drainUnscopedDatabaseAccess();
-    await db.account.findMany({ where: { userId: a.userId } });
-    await db.session.findMany({ where: { userId: a.userId } });
-    await db.user.findUnique({ where: { id: a.userId } });
-    expect(drainUnscopedDatabaseAccess()).toEqual([]);
+    // logged but never treated as a failure: draining must not report them. The log
+    // itself is asserted, so the audit trail cannot silently stop being written.
+    const error = vi.spyOn(getLogger(), "error").mockImplementation(() => undefined);
+    try {
+      drainUnscopedDatabaseAccess();
+      await db.account.findMany({ where: { userId: a.userId } });
+      await db.session.findMany({ where: { userId: a.userId } });
+      await db.user.findUnique({ where: { id: a.userId } });
+      expect(drainUnscopedDatabaseAccess()).toEqual([]);
+      expect(error).toHaveBeenCalledWith(
+        "database access without a tenant or system context",
+        expect.any(Error),
+        expect.objectContaining({ model: "Account", logOnly: true }),
+      );
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("limits a tenant to its own Space and user", async () => {
