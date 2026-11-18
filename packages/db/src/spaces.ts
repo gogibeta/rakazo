@@ -694,13 +694,17 @@ export async function personalOrganizationIds(
   prisma: Pick<PrismaClient, "member">,
   userId: string,
 ): Promise<string[]> {
-  const memberships = await prisma.member.findMany({
-    where: { userId, role: { not: GUEST_ROLE } },
-    select: {
-      organizationId: true,
-      organization: { select: { members: { select: { userId: true, role: true } } } },
-    },
-  });
+  // The memberships span every organization the user belongs to, so the list
+  // reads as system, bound to the user.
+  const memberships = await runAsSystem("list the user's personal organizations", () =>
+    prisma.member.findMany({
+      where: { userId, role: { not: GUEST_ROLE } },
+      select: {
+        organizationId: true,
+        organization: { select: { members: { select: { userId: true, role: true } } } },
+      },
+    }),
+  );
   return memberships
     .filter(({ organization }) =>
       organization.members.every(
