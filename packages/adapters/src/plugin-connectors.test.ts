@@ -273,7 +273,17 @@ describe("portable plugin parser", () => {
       `skills/s${s}/SKILL.md`,
       ...Array.from({ length: 40 }, (_, r) => `skills/s${s}/references/r${r}.md`),
     ]).flat();
-    expect(classifyPluginFiles(manySkills)).toBe("incomplete");
+    // 205 fetched components: five skills at the companion limit install, so the
+    // count alone no longer disqualifies a plugin this size.
+    expect(classifyPluginFiles(manySkills)).toEqual({ hasConnector: false, skillCount: 5 });
+    // One skill past the companion limit is left out, not the whole plugin.
+    expect(
+      classifyPluginFiles([
+        "skills/ok/SKILL.md",
+        ...Array.from({ length: 41 }, (_, r) => `skills/full/references/r${r}.md`),
+        "skills/full/SKILL.md",
+      ]),
+    ).toEqual({ hasConnector: false, skillCount: 1 });
     expect(classifyPluginFiles(["skills/a/SKILL.md", refs[0]!], undefined, big)).toEqual({
       hasConnector: false,
       skillCount: 1,
@@ -534,6 +544,113 @@ describe("GitHub acquisition", () => {
       ),
     ).rejects.toThrow(/incomplete/);
   });
+  /** A tree entry for a regular file of a plausible size. */
+  const blob = (path: string, size = 120) => ({ path, type: "blob", mode: "100644", size });
+
+  function skillTree(name: string, companions: number): Array<Record<string, unknown>> {
+    return [
+      blob(`skills/${name}/SKILL.md`),
+      ...Array.from({ length: companions }, (_, index) =>
+        blob(`skills/${name}/references/note-${index}.md`),
+      ),
+    ];
+  }
+
+  it("previews a plugin with hundreds of components, and skips a skill with too many companions", async () => {
+    // The shape of a large official plugin: many skills, one of them with more
+    // companion files than a skill may carry.
+    const tree = [
+      blob("plugin.json"),
+      ...skillTree("guide", 134),
+      ...Array.from({ length: 190 }, (_, index) => skillTree(`topic-${index}`, 1)).flat(),
+    ];
+    const read = vi.fn(async (url: string) => {
+      if (url.includes("/commits/"))
+        return JSON.stringify({ sha: SHA, commit: { tree: { sha: TREE } } });
+      if (url.includes("/git/trees/")) return JSON.stringify({ tree, truncated: false });
+      const name = /skills\/([^/]+)\//.exec(url)?.[1];
+      return name
+        ? `---\nname: ${name}\ndescription: Example\n---\n\nSteps.\n`
+        : JSON.stringify(manifest);
+    });
+    const repo = await fetchGitHubRepo(
+      parsePluginSource("https://github.com/example/plugin"),
+      undefined,
+      read,
+    );
+    // Over 200 fetched components, which the old cap refused outright.
+    expect(repo.files.length).toBeGreaterThan(200);
+    // The overfull skill's companions are never downloaded, so they cannot spend
+    // the budget the other skills share.
+    expect(repo.files.some((file) => file.path.startsWith("skills/guide/references/"))).toBe(false);
+    const preview = parsePluginDirectory(repo);
+    expect(preview.skills.map((skill) => skill.name)).toContain("topic-0");
+    expect(preview.skills.map((skill) => skill.name)).not.toContain("guide");
+    expect(preview.skipped).toContainEqual(
+      expect.objectContaining({
+        kind: "skill_invalid",
+        name: "skills/guide",
+        reason: "Skill has too many files",
+      }),
+    );
+  });
+
+  it("previews a plugin whose components are spread over hundreds of files", async () => {
+    // The shape of a rules-and-skills plugin: many separate small components.
+    const tree = [
+      blob("plugin.json"),
+      ...Array.from({ length: 315 }, (_, index) => skillTree(`rule-${index}`, 1)).flat(),
+    ];
+    const read = vi.fn(async (url: string) => {
+      if (url.includes("/commits/"))
+        return JSON.stringify({ sha: SHA, commit: { tree: { sha: TREE } } });
+      if (url.includes("/git/trees/")) return JSON.stringify({ tree, truncated: false });
+      const name = /skills\/([^/]+)\//.exec(url)?.[1];
+      return name
+        ? `---\nname: ${name}\ndescription: Example\n---\n\nSteps.\n`
+        : JSON.stringify(manifest);
+    });
+    const repo = await fetchGitHubRepo(
+      parsePluginSource("https://github.com/example/plugin"),
+      undefined,
+      read,
+    );
+    expect(repo.files.length).toBeGreaterThan(315);
+    const preview = parsePluginDirectory(repo);
+    expect(preview.skills).toHaveLength(315);
+    expect(preview.skipped).toEqual([]);
+  });
+
+  it("recognizes a .claude-plugin manifest the same way as the other formats", () => {
+    const preview = parse([
+      { path: ".claude-plugin/plugin.json", content: JSON.stringify(manifest) },
+      { path: "skills/example-skill/SKILL.md", content: skill },
+    ]);
+    expect(preview.format).toBe("claude");
+    expect(preview.name).toBe("example-plugin");
+    expect(preview.version).toBe("1.0.0");
+    expect(preview.skills.map((entry) => entry.name)).toEqual(["example-skill"]);
+  });
+
+  it("names why a repository cannot be previewed", () => {
+    expect(() => parse([{ path: "README.md", content: "# Nothing here" }])).toThrow(
+      expect.objectContaining({ name: "PluginRefusedError", reason: "no_manifest" }),
+    );
+    expect(() =>
+      parse([{ path: "plugin.json", content: JSON.stringify({ ...manifest, name: "Bad Name" }) }]),
+    ).toThrow(expect.objectContaining({ name: "PluginRefusedError", reason: "invalid_manifest" }));
+    expect(() =>
+      parse([
+        {
+          path: "plugin.json",
+          content: JSON.stringify({ ...manifest, $schema: "https://x.test/s.json" }),
+        },
+      ]),
+    ).toThrow(
+      expect.objectContaining({ name: "PluginRefusedError", reason: "unsupported_schema" }),
+    );
+  });
+
   it("scopes to a monorepo plugin subdirectory", async () => {
     const preview = await previewPluginInstall({
       source: "https://github.com/example/plugins@main#one",

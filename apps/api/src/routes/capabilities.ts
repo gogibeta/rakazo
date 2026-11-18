@@ -20,6 +20,7 @@ import { requireAdmin } from "../admins.js";
 import { searchIntegrationCatalog } from "../integration-catalog.js";
 import { assertMcpRemoteEndpoint, mayUsePrivateEndpoint } from "../mcp-servers.js";
 import { installPlugin, lockPluginInstalls, setPluginParts } from "../plugin-installs.js";
+import { previewRefusal } from "../plugin-preview-error.js";
 import {
   approvedPluginEntries,
   listPluginSubmissions,
@@ -287,9 +288,7 @@ export function capabilitiesRoutes(ctx: RouterContext) {
         } catch (error) {
           // Only content we can't support leaves browse; a slow or failing GitHub is retried.
           if (!isTransientFetchError(error)) pluginMarketplace.markUnreadable(input.source);
-          throw new ORPCError("BAD_REQUEST", {
-            message: "Could not preview a supported plugin from this repository",
-          });
+          throw previewRefusal(error);
         }
       }),
       remove: authed.capabilities.remove.handler(async ({ context, input }) => {
