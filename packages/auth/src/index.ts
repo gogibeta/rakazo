@@ -207,7 +207,7 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
       "$transaction" in client
         ? await runAsSystem(reason, readMembership)
         : await runAsSystemInTransaction(
-            client as Pick<PrismaClient, "$queryRaw">,
+            client as unknown as Pick<PrismaClient, "$queryRaw">,
             reason,
             readMembership,
           );
