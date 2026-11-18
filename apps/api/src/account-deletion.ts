@@ -275,6 +275,28 @@ async function deleteClaimedSpaces(
     signal?: AbortSignal;
   },
 ): Promise<void> {
+  // The claimed Spaces span organizations, outside any one Space's request
+  // scope, so the teardown runs as system, bound to the claim's Space list.
+  return runAsSystem("tear down the Spaces a deletion claimed", () =>
+    deleteClaimedSpacesScoped(deps, input),
+  );
+}
+
+async function deleteClaimedSpacesScoped(
+  deps: SpaceDeletionDeps,
+  input: {
+    userId: string;
+    operationId: string;
+    claimId: string;
+    spaceIds: string[];
+    soleMemberId?: string;
+    /** Deletes the organization with its last Space. */
+    organizationId?: string;
+    bots: Prisma.BotWhereInput;
+    computers: Prisma.ComputerWhereInput;
+    signal?: AbortSignal;
+  },
+): Promise<void> {
   const context = (spaceId: string, botId?: string) =>
     adapterContext(input.operationId, input.userId, spaceId, botId, input.signal);
   const bots = await deps.prisma.bot.findMany({

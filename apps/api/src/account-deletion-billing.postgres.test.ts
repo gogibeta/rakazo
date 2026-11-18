@@ -141,7 +141,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     );
     // Wait until the deletion has claimed the account's spaces before probing.
     await vi.waitFor(async () => {
-      const claimed = await prisma.space.findFirst({
+      const claimed = await asSystem(prisma).space.findFirst({
         where: { organizationId: first.organizationId, deletingAt: { not: null } },
         select: { id: true },
       });
@@ -154,7 +154,9 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     await expect(pending).resolves.toMatchObject({ url: expect.any(String) });
     await deleting;
     for (const { organizationId } of [first, second])
-      await expect(prisma.space.findFirst({ where: { organizationId } })).resolves.toBeNull();
+      await expect(
+        asSystem(prisma).space.findFirst({ where: { organizationId } }),
+      ).resolves.toBeNull();
   });
 
   it("rolls back only the claims this attempt took over", async () => {
@@ -167,11 +169,11 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     // A retry of a deletion that already failed mid-teardown, which handed its claim over, keeps
     // that claim; the stale marker belongs to a stalled organization deletion that may still
     // resume.
-    await prisma.space.updateMany({
+    await asSystem(prisma).space.updateMany({
       where: { organizationId: earlier.organizationId },
       data: { deletionClaimId: accountClaim, deletingAt: new Date(0) },
     });
-    await prisma.space.updateMany({
+    await asSystem(prisma).space.updateMany({
       where: { organizationId: stale.organizationId },
       data: { deletionClaimId: staleMarker, deletingAt: staleAt },
     });
@@ -186,13 +188,13 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
       ),
     ).rejects.toThrow("provider unavailable");
     await expect(
-      prisma.space.findFirst({ where: { organizationId: earlier.organizationId } }),
+      asSystem(prisma).space.findFirst({ where: { organizationId: earlier.organizationId } }),
     ).resolves.toMatchObject({ deletionClaimId: accountClaim, deletingAt: expect.any(Date) });
     await expect(
-      prisma.space.findFirst({ where: { organizationId: stale.organizationId } }),
+      asSystem(prisma).space.findFirst({ where: { organizationId: stale.organizationId } }),
     ).resolves.toMatchObject({ deletionClaimId: staleMarker, deletingAt: staleAt });
     await expect(
-      prisma.space.findFirst({ where: { organizationId: fresh.organizationId } }),
+      asSystem(prisma).space.findFirst({ where: { organizationId: fresh.organizationId } }),
     ).resolves.toMatchObject({ deletionClaimId: null, deletingAt: null });
   });
 
@@ -209,7 +211,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
       ),
     ).rejects.toThrow("provider unavailable");
     await expect(
-      prisma.space.findFirst({ where: { organizationId: only.organizationId } }),
+      asSystem(prisma).space.findFirst({ where: { organizationId: only.organizationId } }),
     ).resolves.toMatchObject({ deletingAt: null, deletionClaimId: null });
     await expect(
       prisma.organization.findUnique({ where: { id: only.organizationId } }),
@@ -220,7 +222,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     const personal = await organization("conflictfirst");
     const work = await organization("conflictwork");
     // Another attempt is deleting the newer organization right now.
-    await prisma.space.updateMany({
+    await asSystem(prisma).space.updateMany({
       where: { organizationId: work.organizationId },
       data: {
         deletionClaimId: `organization-deletion:${work.organizationId}:other`,
@@ -235,11 +237,11 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
         ),
       ).rejects.toBeInstanceOf(SpaceDeletionInProgressError);
       await expect(
-        prisma.space.findFirst({ where: { organizationId: personal.organizationId } }),
+        asSystem(prisma).space.findFirst({ where: { organizationId: personal.organizationId } }),
       ).resolves.toMatchObject({ deletionClaimId: null, deletingAt: null });
       expect(billing.cancelForDeletedUser).not.toHaveBeenCalled();
     } finally {
-      await prisma.space.updateMany({
+      await asSystem(prisma).space.updateMany({
         where: { organizationId: work.organizationId },
         data: { deletionClaimId: null, deletingAt: null },
       });
@@ -287,7 +289,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     await expect(first).resolves.toMatchObject({ message: "provider unavailable" });
     // The account stays as it was: nothing deleted, nothing left claimed.
     await expect(
-      prisma.space.findFirst({ where: { organizationId: shared.organizationId } }),
+      asSystem(prisma).space.findFirst({ where: { organizationId: shared.organizationId } }),
     ).resolves.toMatchObject({ deletionClaimId: null, deletingAt: null });
   });
 
@@ -317,7 +319,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     // Deleting again right away resumes the claims instead of waiting for them to go stale.
     await runAsSystem("account deletion billing test", () => deleteAccountContent(deps(), userId));
     await expect(
-      prisma.space.findFirst({ where: { organizationId: only.organizationId } }),
+      asSystem(prisma).space.findFirst({ where: { organizationId: only.organizationId } }),
     ).resolves.toBeNull();
   });
 
@@ -377,7 +379,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
         await secondInBilling.promise;
         failFirst.resolve();
         await expect(first).resolves.toBeInstanceOf(Error);
-        const during = await prisma.space.findFirst({
+        const during = await asSystem(prisma).space.findFirst({
           where: { organizationId: only.organizationId },
         });
         finishSecond.resolve();
@@ -389,7 +391,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
         );
         await expect(second).resolves.toBe("fulfilled");
         await expect(
-          prisma.space.findFirst({ where: { organizationId: only.organizationId } }),
+          asSystem(prisma).space.findFirst({ where: { organizationId: only.organizationId } }),
         ).resolves.toBeNull();
       } finally {
         failFirst.resolve();
@@ -479,7 +481,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
         await secondInBilling.promise;
         failFirst.resolve();
         await expect(firstOutcome).resolves.toBeInstanceOf(Error);
-        const during = await prisma.space.findFirst({
+        const during = await asSystem(prisma).space.findFirst({
           where: { organizationId: only.organizationId },
         });
         finishSecond.resolve();
@@ -538,7 +540,7 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
       expect(second).toBeInstanceOf(SpaceDeletionInProgressError);
       await expect(firstOutcome).resolves.toMatchObject({ message: "provider unavailable" });
       await expect(
-        prisma.space.findFirst({ where: { organizationId: only.organizationId } }),
+        asSystem(prisma).space.findFirst({ where: { organizationId: only.organizationId } }),
       ).resolves.toMatchObject({ deletionClaimId: null, deletingAt: null });
     } finally {
       failFirst.resolve();

@@ -5,6 +5,7 @@ import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import type { PageShareSecret } from "./page-shares.js";
 import { deletePageShareSecrets } from "./page-shares.js";
+import { runAsSystem, runAsSystemInTransaction } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 import { releasePendingSpacePayments } from "./spending.js";
 import { withTransactionRetry } from "./transaction-retry.js";
@@ -216,15 +217,19 @@ export async function fallbackSpaceForMember(
   userId: string,
   exceptSpaceId?: string,
 ): Promise<string | null> {
-  const memberships = await db.spaceMember.findMany({
-    where: {
-      userId,
-      space: { deletingAt: null },
-      ...(exceptSpaceId ? { spaceId: { not: exceptSpaceId } } : {}),
-    },
-    select: { spaceId: true, role: true, space: { select: { isDefault: true } } },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
+  // The fallback is by definition one of the member's other Spaces, so the list
+  // reads as system, bound to the member.
+  const memberships = await runAsSystem("find the member's fallback Space", () =>
+    db.spaceMember.findMany({
+      where: {
+        userId,
+        space: { deletingAt: null },
+        ...(exceptSpaceId ? { spaceId: { not: exceptSpaceId } } : {}),
+      },
+      select: { spaceId: true, role: true, space: { select: { isDefault: true } } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+  );
   const owned = memberships.filter((membership) => isOwnerRole(membership.role));
   const fallback =
     owned.find((membership) => membership.space.isDefault) ?? owned[0] ?? memberships[0];
@@ -336,20 +341,27 @@ async function loadActorSpace(
 
 /** Owner of a non-default Space that is not their last one in the organization. */
 async function assertSpaceDeletable(
-  db: Pick<PrismaClient, "spaceMember">,
+  db: Prisma.TransactionClient,
   input: SpaceMemberTargetInput,
 ): Promise<Array<{ spaceId: string; space: { isDefault: boolean } }>> {
   const owned = await loadActorSpace(db, input);
   if (owned.role !== "owner") throw new CannotDeleteSpaceAsNonOwnerError();
   if (owned.isDefault) throw new CannotDeleteDefaultSpaceError();
-  const memberships = await db.spaceMember.findMany({
-    where: {
-      userId: input.userId,
-      organizationId: owned.organizationId,
-    },
-    select: { spaceId: true, space: { select: { isDefault: true } } },
-    orderBy: { createdAt: "asc" },
-  });
+  // The member's Spaces span the whole organization, most of them outside the Space
+  // the deletion runs in, so the count reads as system inside this transaction.
+  const memberships = await runAsSystemInTransaction(
+    db,
+    "list the member's Spaces before a deletion",
+    () =>
+      db.spaceMember.findMany({
+        where: {
+          userId: input.userId,
+          organizationId: owned.organizationId,
+        },
+        select: { spaceId: true, space: { select: { isDefault: true } } },
+        orderBy: { createdAt: "asc" },
+      }),
+  );
   if (memberships.length <= 1) throw new CannotDeleteLastSpaceError();
   return memberships;
 }
@@ -434,14 +446,18 @@ export async function renewSpaceDeletionClaim(
   prisma: PrismaClient,
   input: ClaimedSpaceDeleteInput,
 ): Promise<boolean> {
-  const renewed = await prisma.space.updateMany({
-    where: {
-      id: input.spaceId,
-      deletionClaimId: input.claimId,
-      memberships: { some: { userId: input.userId, role: "owner" } },
-    },
-    data: { deletingAt: new Date() },
-  });
+  // Teardown runs outside any one Space's request scope, so the lease renewal
+  // runs as system, matched by claim id and the owner's membership.
+  const renewed = await runAsSystem("renew a Space deletion claim", () =>
+    prisma.space.updateMany({
+      where: {
+        id: input.spaceId,
+        deletionClaimId: input.claimId,
+        memberships: { some: { userId: input.userId, role: "owner" } },
+      },
+      data: { deletingAt: new Date() },
+    }),
+  );
   return renewed.count === 1;
 }
 
@@ -450,14 +466,16 @@ export async function releaseSpaceDeletionClaim(
   prisma: PrismaClient,
   input: ClaimedSpaceDeleteInput,
 ): Promise<void> {
-  await prisma.space.updateMany({
-    where: {
-      id: input.spaceId,
-      deletionClaimId: input.claimId,
-      memberships: { some: { userId: input.userId, role: "owner" } },
-    },
-    data: { deletingAt: null, deletionClaimId: null },
-  });
+  await runAsSystem("release a Space deletion claim", () =>
+    prisma.space.updateMany({
+      where: {
+        id: input.spaceId,
+        deletionClaimId: input.claimId,
+        memberships: { some: { userId: input.userId, role: "owner" } },
+      },
+      data: { deletingAt: null, deletionClaimId: null },
+    }),
+  );
 }
 
 /**
@@ -470,19 +488,23 @@ export async function restoreSpaceDeletionClaims(
   claim: { claimId: string; attemptId: string },
   takenOver: SpaceDeletionTakeover[],
 ): Promise<void> {
-  for (const space of takenOver)
-    await prisma.space.updateMany({
-      where: {
-        id: space.spaceId,
-        deletionClaimId: claim.claimId,
-        deletionAttemptId: claim.attemptId,
-      },
-      data: {
-        deletionClaimId: space.deletionClaimId,
-        deletingAt: space.deletingAt,
-        deletionAttemptId: space.deletionAttemptId,
-      },
-    });
+  // The claims being given back can sit in any of the account's organizations, so
+  // the restore runs as system, matched by claim and attempt ids.
+  await runAsSystem("give back the Space deletion claims an attempt took over", async () => {
+    for (const space of takenOver)
+      await prisma.space.updateMany({
+        where: {
+          id: space.spaceId,
+          deletionClaimId: claim.claimId,
+          deletionAttemptId: claim.attemptId,
+        },
+        data: {
+          deletionClaimId: space.deletionClaimId,
+          deletingAt: space.deletingAt,
+          deletionAttemptId: space.deletionAttemptId,
+        },
+      });
+  });
 }
 
 /**
@@ -493,10 +515,12 @@ export async function expireSpaceDeletionClaims(
   prisma: PrismaClient,
   claim: { claimId: string; attemptId: string },
 ): Promise<void> {
-  await prisma.space.updateMany({
-    where: { deletionClaimId: claim.claimId, deletionAttemptId: claim.attemptId },
-    data: { deletingAt: new Date(0) },
-  });
+  await runAsSystem("expire a failed attempt's Space deletion claims", () =>
+    prisma.space.updateMany({
+      where: { deletionClaimId: claim.claimId, deletionAttemptId: claim.attemptId },
+      data: { deletingAt: new Date(0) },
+    }),
+  );
 }
 
 /**
@@ -697,6 +721,22 @@ export async function personalOrganizationIds(
  * the previous release still finds an attempt's claims during a deploy.
  */
 export async function claimSpacesLeavingWithAccount(
+  prisma: PrismaClient,
+  userId: string,
+): Promise<{
+  claimId: string;
+  attemptId: string;
+  spaceIds: string[];
+  takenOver: SpaceDeletionTakeover[];
+}> {
+  // The account's organizations and Spaces sit outside any one Space's scope, so
+  // the whole claim runs as system, bound to the account being deleted.
+  return runAsSystem("claim the Spaces leaving with an account", () =>
+    claimSpacesLeavingWithAccountScoped(prisma, userId),
+  );
+}
+
+async function claimSpacesLeavingWithAccountScoped(
   prisma: PrismaClient,
   userId: string,
 ): Promise<{

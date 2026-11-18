@@ -4,6 +4,7 @@ import { GUEST_ROLE, LIVE_ORGANIZATION as LIVE } from "./billing.js";
 import { createOrganizationWithDefaultSpace } from "./bootstrap-user.js";
 import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
+import { runAsSystem } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 import {
   claimSpaceForDeletion,
@@ -149,6 +150,17 @@ export async function renameOrganization(
  * earlier one can no longer release the claim a later one is tearing down under.
  */
 export async function claimOrganizationForDeletion(
+  prisma: PrismaClient,
+  input: { userId: string; organizationId: string },
+): Promise<{ claimId: string; spaceIds: string[]; fresh: boolean }> {
+  // The checks span the owner's other organizations as well as this one, so the
+  // claim runs as system, bound to the owner and the organization being deleted.
+  return runAsSystem("claim an organization for deletion", () =>
+    claimOrganizationForDeletionScoped(prisma, input),
+  );
+}
+
+async function claimOrganizationForDeletionScoped(
   prisma: PrismaClient,
   input: { userId: string; organizationId: string },
 ): Promise<{ claimId: string; spaceIds: string[]; fresh: boolean }> {

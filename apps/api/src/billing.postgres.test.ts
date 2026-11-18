@@ -128,7 +128,7 @@ describePostgres("billing service (PostgreSQL)", () => {
   });
 
   it("only lets owners manage billing", async () => {
-    await prisma.member.create({
+    await asSystem(prisma).member.create({
       data: {
         id: `m-${memberId}`,
         organizationId,
@@ -283,10 +283,10 @@ describePostgres("billing service (PostgreSQL)", () => {
     for (const id of [invited, referrer])
       await prisma.organization.create({ data: { id, name: id, slug: id, createdAt } });
     try {
-      await prisma.space.create({
+      await asSystem(prisma).space.create({
         data: { id: invited, organizationId: invited, name: "General", isDefault: true },
       });
-      await prisma.member.create({
+      await asSystem(prisma).member.create({
         data: { id: invited, organizationId: invited, userId: inviteeId, role: "owner", createdAt },
       });
       await prisma.referralCode.create({

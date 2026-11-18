@@ -379,6 +379,19 @@ export async function leaveInvitedSpaces(
   onDeparture: (departure: SpaceDeparture & { spaceId: string }) => Promise<void>,
   { deactivated = false }: { deactivated?: boolean } = {},
 ): Promise<Array<SpaceDeparture & { spaceId: string }>> {
+  // The memberships span every Space the user was invited into, so the whole
+  // sweep runs as system, bound to the user who is leaving.
+  return runAsSystem("leave the Spaces a user was invited into", () =>
+    leaveInvitedSpacesScoped(prisma, userId, onDeparture, { deactivated }),
+  );
+}
+
+async function leaveInvitedSpacesScoped(
+  prisma: PrismaClient,
+  userId: string,
+  onDeparture: (departure: SpaceDeparture & { spaceId: string }) => Promise<void>,
+  { deactivated = false }: { deactivated?: boolean } = {},
+): Promise<Array<SpaceDeparture & { spaceId: string }>> {
   const owned = new Set(await personalOrganizationIds(prisma, userId));
   const memberships = await prisma.spaceMember.findMany({
     where: { userId },
