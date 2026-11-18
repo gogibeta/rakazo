@@ -200,14 +200,17 @@ export function createAuth(prisma: PrismaClient, env: AuthEnv) {
         select: { userId: true },
       });
     const reason = "decide admission before a request has a Space";
-    const anyClient = client as typeof client & Partial<Pick<PrismaClient, "$queryRaw">>;
-    const membership = anyClient.$queryRaw
-      ? await runAsSystemInTransaction(
-          anyClient as Pick<PrismaClient, "$queryRaw">,
-          reason,
-          readMembership,
-        )
-      : await runAsSystem(reason, readMembership);
+    // A root client can open its own scope; a transaction client already holds
+    // a connection, so the bypass is switched on inside it. Presence of
+    // $transaction is what tells the two apart (the billing reads do the same).
+    const membership =
+      "$transaction" in client
+        ? await runAsSystem(reason, readMembership)
+        : await runAsSystemInTransaction(
+            client as Pick<PrismaClient, "$queryRaw">,
+            reason,
+            readMembership,
+          );
     return others.length > 0 && Boolean(membership);
   };
   /**
