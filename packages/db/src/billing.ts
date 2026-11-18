@@ -588,14 +588,16 @@ export async function ownerHadTrial(
     )
       return true;
   }
-  const used = await prisma.member.findFirst({
-    where: {
-      userId,
-      role: { contains: "owner" },
-      organization: plan === "byok" ? { OR: [SUBSCRIBED, HAD_FREE_DAYS] } : SUBSCRIBED,
-    },
-    select: { id: true },
-  });
+  const used = await runAsSystem("check whether a person has used a trial", () =>
+    prisma.member.findFirst({
+      where: {
+        userId,
+        role: { contains: "owner" },
+        organization: plan === "byok" ? { OR: [SUBSCRIBED, HAD_FREE_DAYS] } : SUBSCRIBED,
+      },
+      select: { id: true },
+    }),
+  );
   return used !== null;
 }
 
