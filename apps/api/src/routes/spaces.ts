@@ -78,10 +78,14 @@ async function asMemberOf<T>(
   spaceId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const member = await prisma.spaceMember.findFirst({
-    where: { spaceId, userId: actor.userId },
-    select: { id: true },
-  });
+  // The Space being opened is not the actor's current one, so its membership row sits
+  // outside the request's tenant scope; this check is what admits the actor to it.
+  const member = await runAsSystem("check membership of the Space being opened", () =>
+    prisma.spaceMember.findFirst({
+      where: { spaceId, userId: actor.userId },
+      select: { id: true },
+    }),
+  );
   if (!member) throw new ORPCError("NOT_FOUND", { message: new SpaceNotFoundError().message });
   return runAsTenant({ spaceId, userId: actor.userId }, fn);
 }

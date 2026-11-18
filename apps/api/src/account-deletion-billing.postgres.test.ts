@@ -86,7 +86,8 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
     const spaceId = `acct-billing-${name}-space-${stamp}`;
     organizationIds.push(organizationId);
     const createdAt = new Date();
-    await prisma.organization.create({
+    const system = asSystem(prisma);
+    await system.organization.create({
       data: {
         id: organizationId,
         name: `Account billing ${name}`,
@@ -94,10 +95,10 @@ describePostgres("account deletion billing ordering (PostgreSQL)", () => {
         createdAt,
       },
     });
-    await prisma.space.create({
+    await system.space.create({
       data: { id: spaceId, organizationId, name: "Personal", isDefault: true },
     });
-    await prisma.member.create({
+    await system.member.create({
       data: {
         id: `acct-billing-${name}-member-${stamp}`,
         organizationId,

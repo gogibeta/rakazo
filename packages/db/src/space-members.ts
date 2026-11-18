@@ -241,13 +241,17 @@ export async function previewSpaceInvite(
   prisma: PrismaClient,
   input: { token: string; userId: string },
 ): Promise<{ spaceId: string; spaceName: string; inviterName: string; alreadyMember: boolean }> {
-  const { invite, alreadyMember } = await findInvite(prisma, input.token, input.userId);
-  return {
-    spaceId: invite.spaceId,
-    spaceName: invite.space.name,
-    inviterName: invite.createdBy.name,
-    alreadyMember,
-  };
+  // The link token is the credential: the invitee is not a member of the Space yet,
+  // so its rows sit outside the invitee's own tenant scope.
+  return runAsSystem("preview a Space invite by its link", async () => {
+    const { invite, alreadyMember } = await findInvite(prisma, input.token, input.userId);
+    return {
+      spaceId: invite.spaceId,
+      spaceName: invite.space.name,
+      inviterName: invite.createdBy.name,
+      alreadyMember,
+    };
+  });
 }
 
 /**
@@ -259,64 +263,69 @@ export async function acceptSpaceInvite(
   prisma: PrismaClient,
   input: { token: string; userId: string },
 ): Promise<{ spaceId: string; organizationId: string; joined: boolean }> {
-  return withTransactionRetry(() =>
-    prisma.$transaction(
-      async (tx) => {
-        const { invite, alreadyMember } = await findInvite(tx, input.token, input.userId);
-        const result = { spaceId: invite.spaceId, organizationId: invite.space.organizationId };
-        if (alreadyMember) return { ...result, joined: false };
-        await lockSpaceDeletion(tx, invite.spaceId);
-        const now = new Date();
-        const claimed = await tx.spaceInvite.updateMany({
-          where: { id: invite.id, acceptedAt: null, expiresAt: { gt: now } },
-          data: { acceptedAt: now, acceptedByUserId: input.userId },
-        });
-        const space = await tx.space.findUnique({
-          where: { id: invite.spaceId },
-          select: { deletingAt: true },
-        });
-        if (claimed.count !== 1 || !space || space.deletingAt) throw new SpaceInviteNotFoundError();
+  // The link token is the credential: claiming it and adding the member cross into a
+  // Space and organization the invitee does not belong to yet, outside their tenant scope.
+  return runAsSystem("accept a Space invite by its link", () =>
+    withTransactionRetry(() =>
+      prisma.$transaction(
+        async (tx) => {
+          const { invite, alreadyMember } = await findInvite(tx, input.token, input.userId);
+          const result = { spaceId: invite.spaceId, organizationId: invite.space.organizationId };
+          if (alreadyMember) return { ...result, joined: false };
+          await lockSpaceDeletion(tx, invite.spaceId);
+          const now = new Date();
+          const claimed = await tx.spaceInvite.updateMany({
+            where: { id: invite.id, acceptedAt: null, expiresAt: { gt: now } },
+            data: { acceptedAt: now, acceptedByUserId: input.userId },
+          });
+          const space = await tx.space.findUnique({
+            where: { id: invite.spaceId },
+            select: { deletingAt: true },
+          });
+          if (claimed.count !== 1 || !space || space.deletingAt)
+            throw new SpaceInviteNotFoundError();
 
-        const organizationId = invite.space.organizationId;
-        const existing = await tx.member.findUnique({
-          where: { organizationId_userId: { organizationId, userId: input.userId } },
-          select: { id: true },
-        });
-        if (!existing) {
-          const memberId = randomUUID();
-          await tx.member.create({
-            data: {
-              id: memberId,
+          const organizationId = invite.space.organizationId;
+          const existing = await tx.member.findUnique({
+            where: { organizationId_userId: { organizationId, userId: input.userId } },
+            select: { id: true },
+          });
+          if (!existing) {
+            const memberId = randomUUID();
+            await tx.member.create({
+              data: {
+                id: memberId,
+                organizationId,
+                userId: input.userId,
+                role: GUEST_ROLE,
+                createdAt: now,
+              },
+            });
+            // A database trigger adds every new organization member to its default
+            // Space. An invite opens one Space only, so undo that for any other.
+            if (!invite.space.isDefault) {
+              await tx.spaceMember.deleteMany({
+                where: { id: `default-space-member:${memberId}`, userId: input.userId },
+              });
+            }
+          }
+          await tx.spaceMember.upsert({
+            where: { spaceId_userId: { spaceId: invite.spaceId, userId: input.userId } },
+            create: {
+              id: randomUUID(),
+              spaceId: invite.spaceId,
               organizationId,
               userId: input.userId,
-              role: GUEST_ROLE,
+              role: "member",
               createdAt: now,
             },
+            // An invite into the default Space finds the trigger's row, which copied the org role.
+            update: { role: "member" },
           });
-          // A database trigger adds every new organization member to its default
-          // Space. An invite opens one Space only, so undo that for any other.
-          if (!invite.space.isDefault) {
-            await tx.spaceMember.deleteMany({
-              where: { id: `default-space-member:${memberId}`, userId: input.userId },
-            });
-          }
-        }
-        await tx.spaceMember.upsert({
-          where: { spaceId_userId: { spaceId: invite.spaceId, userId: input.userId } },
-          create: {
-            id: randomUUID(),
-            spaceId: invite.spaceId,
-            organizationId,
-            userId: input.userId,
-            role: "member",
-            createdAt: now,
-          },
-          // An invite into the default Space finds the trigger's row, which copied the org role.
-          update: { role: "member" },
-        });
-        return { ...result, joined: true };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          return { ...result, joined: true };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
     ),
   );
 }

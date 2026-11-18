@@ -72,10 +72,17 @@ async function assertOwnSpaces(
   actor: Pick<Actor, "userId">,
   spaceIds: string[],
 ): Promise<void> {
-  const members = await tx.spaceMember.findMany({
-    where: { userId: actor.userId, spaceId: { in: spaceIds }, space: { deletingAt: null } },
-    select: { spaceId: true },
-  });
+  // The check spans every Space the item is shared with, not just the current one,
+  // so the membership rows sit outside this transaction's tenant scope.
+  const members = await runAsSystemInTransaction(
+    tx,
+    "check the actor belongs to the spaces an item is shared with",
+    () =>
+      tx.spaceMember.findMany({
+        where: { userId: actor.userId, spaceId: { in: spaceIds }, space: { deletingAt: null } },
+        select: { spaceId: true },
+      }),
+  );
   if (members.length !== new Set(spaceIds).size) throw new ORPCError("NOT_FOUND");
 }
 

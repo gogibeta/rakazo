@@ -38,7 +38,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
   });
   afterAll(async () => {
     if (!db) return;
-    await prisma.cloudAgent.deleteMany({ where: { userId: { in: users } } });
+    await asSystem(prisma).cloudAgent.deleteMany({ where: { userId: { in: users } } });
     await prisma.organization.deleteMany({ where: { id: { in: users } } });
     await prisma.user.deleteMany({ where: { id: { in: users } } });
     await db.prisma.$disconnect();
@@ -134,7 +134,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       return result.id;
     };
     const state = (agentId: string) =>
-      prisma.cloudAgent.findUniqueOrThrow({ where: { id: agentId } });
+      asSystem(prisma).cloudAgent.findUniqueOrThrow({ where: { id: agentId } });
     const poll = (agentId: string) =>
       runAsSystem("cloud agent poll job", () => pollCloudAgent(deps, { agentId }));
     // Clearing a chat is an API request by its owner.
@@ -150,7 +150,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     };
     // Age an ambiguous follow-up past the window in which a late acceptance could appear.
     const settle = (agentId: string) =>
-      prisma.cloudAgent.update({
+      asSystem(prisma).cloudAgent.update({
         where: { id: agentId },
         data: { followupDispatchedAt: new Date(Date.now() - 10 * 60_000) },
       });
