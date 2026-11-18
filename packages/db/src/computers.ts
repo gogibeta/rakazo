@@ -110,14 +110,21 @@ type ComputerDb = Pick<PrismaClient, "computer">;
  * owner's, so the Space has one computer and one browser whoever made the bot.
  */
 export async function teamComputerUserId(
-  db: Pick<PrismaClient, "spaceMember">,
+  db: Pick<PrismaClient, "spaceMember"> & Partial<Pick<PrismaClient, "$queryRaw">>,
   input: { spaceId: string; userId: string },
 ): Promise<string> {
-  const owner = await db.spaceMember.findFirst({
-    where: { spaceId: input.spaceId, role: { contains: "owner" } },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { userId: true },
-  });
+  // The owner is another member of the Space, so the lookup reads as system in
+  // whichever client the caller passed, like the quota count below.
+  const read = () =>
+    db.spaceMember.findFirst({
+      where: { spaceId: input.spaceId, role: { contains: "owner" } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { userId: true },
+    });
+  const reason = "find the owner a Space's team computer is kept for";
+  const owner = db.$queryRaw
+    ? await runAsSystemInTransaction(db as Pick<PrismaClient, "$queryRaw">, reason, read)
+    : await runAsSystem(reason, read);
   return owner?.userId ?? input.userId;
 }
 type ComputerTx = Pick<Prisma.TransactionClient, "computer" | "$queryRaw">;
