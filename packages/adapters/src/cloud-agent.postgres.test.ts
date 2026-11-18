@@ -262,7 +262,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
       nextPollAt: null,
     });
     expect(await h.wakes()).toHaveLength(1);
-    await prisma.cloudAgent.update({ where: { id }, data: { nextPollAt: new Date() } });
+    await asSystem(prisma).cloudAgent.update({ where: { id }, data: { nextPollAt: new Date() } });
     await h.poll(id);
     expect(await h.wakes()).toHaveLength(1);
   });
@@ -330,7 +330,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
         ),
       ),
     ).rejects.toBeInstanceOf(RunHistoryWriteError);
-    expect(await prisma.cloudAgent.count({ where: { userId: h.id } })).toBe(0);
+    expect(await asSystem(prisma).cloudAgent.count({ where: { userId: h.id } })).toBe(0);
     expect(h.wire.requests).toHaveLength(0);
   });
 
@@ -339,7 +339,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     // A chat that is gone by the time the card is written fails the card transaction.
     h.run.threadId = "missing-thread";
     await expect(h.tool("launch", { prompt: "Task" })).rejects.toThrow();
-    expect(await prisma.cloudAgent.count({ where: { userId: h.id } })).toBe(0);
+    expect(await asSystem(prisma).cloudAgent.count({ where: { userId: h.id } })).toBe(0);
     expect(h.wire.requests).toHaveLength(0);
   });
 

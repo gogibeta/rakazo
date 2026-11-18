@@ -884,7 +884,7 @@ describePostgres("organizations (PostgreSQL)", () => {
 
     expect(removed.status).toBe("fulfilled");
     expect(await prisma.organization.findUnique({ where: { id: work.id } })).toBeNull();
-    expect(await prisma.space.count({ where: { organizationId: work.id } })).toBe(0);
+    expect(await system.space.count({ where: { organizationId: work.id } })).toBe(0);
   });
 
   it("never deletes an organization someone else is a member of", async () => {

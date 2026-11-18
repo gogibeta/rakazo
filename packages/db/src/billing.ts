@@ -4,7 +4,7 @@ import { BYOK_TIERS } from "@rakazo/contracts";
 import type { BillingAccount, PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { isUniqueViolation } from "./prisma-errors.js";
-import { runAsSystem } from "./row-security.js";
+import { runAsSystem, runAsSystemInTransaction } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 
 const ACCESS_STATUSES = new Set(["trialing", "active", "past_due"]);
@@ -103,10 +103,22 @@ export async function reserveByokTrialCheckout(
   prisma: PrismaClient | Prisma.TransactionClient,
   organizationId: string,
 ): Promise<ByokTrialCheckoutHold | null> {
-  const owners = await prisma.member.findMany({
-    where: { organizationId, role: { contains: "owner" } },
-    select: { userId: true, role: true },
-  });
+  // The owners belong to the checkout's organization, which is not necessarily
+  // the caller's current one, so the read runs as system inside whatever
+  // client (root or transaction) the caller passed.
+  const readOwners = () =>
+    prisma.member.findMany({
+      where: { organizationId, role: { contains: "owner" } },
+      select: { userId: true, role: true },
+    });
+  const owners =
+    "$transaction" in prisma
+      ? await runAsSystem("read an organization's owners for a trial checkout", readOwners)
+      : await runAsSystemInTransaction(
+          prisma as Prisma.TransactionClient,
+          "read an organization's owners for a trial checkout",
+          readOwners,
+        );
   const ownerIds = owners.filter((owner) => isOwnerRole(owner.role)).map((owner) => owner.userId);
   if (ownerIds.length === 0) return null;
   const expiresAt = new Date(Date.now() + BYOK_TRIAL_CHECKOUT_HOLD_MS);
@@ -593,10 +605,12 @@ export async function organizationOwnerHadTrial(
   organizationId: string,
   plan: "byok" | "managed",
 ): Promise<boolean> {
-  const members = await prisma.member.findMany({
-    where: { organizationId, role: { contains: "owner" } },
-    select: { userId: true, role: true },
-  });
+  const members = await runAsSystem("read an organization's owners for a trial check", () =>
+    prisma.member.findMany({
+      where: { organizationId, role: { contains: "owner" } },
+      select: { userId: true, role: true },
+    }),
+  );
   for (const member of members) {
     if (
       isOwnerRole(member.role) &&

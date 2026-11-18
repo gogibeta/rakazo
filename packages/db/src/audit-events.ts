@@ -144,10 +144,15 @@ export async function auditLogOrganization(
   db: Pick<PrismaClient, "member">,
   actor: { userId: string; spaceId: string },
 ): Promise<string | null> {
-  const member = await db.member.findFirst({
-    where: { userId: actor.userId, ...auditLogReaderWhere(actor.spaceId) },
-    select: { organizationId: true },
-  });
+  // The check joins the actor's membership to the organization through its
+  // Spaces, which the caller's own Space scope cannot always see, so it reads
+  // as system, bound to the actor.
+  const member = await runAsSystem("check who may read an organization's audit log", () =>
+    db.member.findFirst({
+      where: { userId: actor.userId, ...auditLogReaderWhere(actor.spaceId) },
+      select: { organizationId: true },
+    }),
+  );
   return member?.organizationId ?? null;
 }
 
