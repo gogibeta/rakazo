@@ -253,7 +253,7 @@ describePostgres("cloud agent lifecycle and recovery (PostgreSQL + Cursor emulat
     const id = await h.launch();
     expect(h.wire.requests).toHaveLength(0);
     expect(await h.launch()).toBe(id);
-    expect(await prisma.cloudAgent.count({ where: { userId: h.id } })).toBe(1);
+    expect(await asSystem(prisma).cloudAgent.count({ where: { userId: h.id } })).toBe(1);
     await h.poll(id);
     await h.finish(id);
     expect(await h.state(id)).toMatchObject({

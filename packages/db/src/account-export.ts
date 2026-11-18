@@ -1,6 +1,6 @@
 import type { AccountExportManifest, AccountExportRecord } from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "./client.js";
-import { runAsTenant } from "./row-security.js";
+import { runAsSystem, runAsTenant } from "./row-security.js";
 
 const PAGE = 200;
 
@@ -58,11 +58,15 @@ export async function readAccountExport(
       where: { id: userId },
       select: { name: true, email: true, timezone: true },
     }),
-    prisma.spaceMember.findMany({
-      where: { userId, space: { deletingAt: null } },
-      orderBy: [{ space: { createdAt: "asc" } }, { spaceId: "asc" }],
-      select: { role: true, space: { select: { id: true, name: true, createdAt: true } } },
-    }),
+    // The export covers every Space the user belongs to, so the membership list
+    // reads as system, bound to the user being exported.
+    runAsSystem("list the Spaces in an account export", () =>
+      prisma.spaceMember.findMany({
+        where: { userId, space: { deletingAt: null } },
+        orderBy: [{ space: { createdAt: "asc" } }, { spaceId: "asc" }],
+        select: { role: true, space: { select: { id: true, name: true, createdAt: true } } },
+      }),
+    ),
   ]);
   return {
     userId,

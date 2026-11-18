@@ -95,10 +95,14 @@ async function auditRows(
     personId ? db.user.findUnique({ where: { id: personId }, select: { email: true } }) : null,
     !input.spaceId && !input.organizationId && personId
       ? // A guest's own account events are not the business of the organizations that invited them.
-        db.member.findMany({
-          where: { userId: personId, role: { not: GUEST_ROLE } },
-          select: { organizationId: true },
-        })
+        // The person's organizations span every Space they belong to, so the
+        // attribution lookup reads as system, bound to the person.
+        runAsSystem("find the organizations an audit event belongs to", () =>
+          db.member.findMany({
+            where: { userId: personId, role: { not: GUEST_ROLE } },
+            select: { organizationId: true },
+          }),
+        )
       : [],
   ]);
   const organizations = input.organizationId

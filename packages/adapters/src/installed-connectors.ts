@@ -10,7 +10,7 @@ import type {
 import type { McpSourcePreset } from "@rakazo/contracts";
 import { cancelResponseBody } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
-import { availableInSpace, itemSecretIn } from "@rakazo/db";
+import { availableInSpace, itemSecretIn, runAsTenant } from "@rakazo/db";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
@@ -204,13 +204,17 @@ export class InstalledConnectorProvider implements ConnectorProvider {
   }
 
   private async authorizedTools(context: AdapterContext): Promise<ConnectorTool[]> {
-    const installs = await this.prisma.capabilityInstall.findMany({
-      where: {
-        ...availableInSpace(context),
-        kind: { in: ["mcp", "api", "graphql"] },
-      },
-      orderBy: { createdAt: "asc" },
-    });
+    // The provider is handed an explicit context; establish it as the database
+    // tenant so the install rows for that Space are the ones read.
+    const installs = await runAsTenant({ spaceId: context.spaceId, userId: context.userId }, () =>
+      this.prisma.capabilityInstall.findMany({
+        where: {
+          ...availableInSpace(context),
+          kind: { in: ["mcp", "api", "graphql"] },
+        },
+        orderBy: { createdAt: "asc" },
+      }),
+    );
     // Only MCP installs reach the network during discovery.
     const remote = installs.some((install) => install.kind === "mcp")
       ? await this.remoteFor(context)
@@ -316,13 +320,15 @@ export class InstalledConnectorProvider implements ConnectorProvider {
       yield { type: "error", message: "Installed connector route is missing" };
       return;
     }
-    const install = await this.prisma.capabilityInstall.findFirst({
-      where: {
-        id: installId,
-        ...availableInSpace(context),
-        kind: { in: ["mcp", "api", "graphql"] },
-      },
-    });
+    const install = await runAsTenant({ spaceId: context.spaceId, userId: context.userId }, () =>
+      this.prisma.capabilityInstall.findFirst({
+        where: {
+          id: installId,
+          ...availableInSpace(context),
+          kind: { in: ["mcp", "api", "graphql"] },
+        },
+      }),
+    );
     if (!install) {
       yield { type: "error", message: "Installed connector is unavailable" };
       return;

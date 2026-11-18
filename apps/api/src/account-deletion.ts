@@ -154,7 +154,12 @@ export async function deleteOrganization(
     clearInterval(renewal);
     // No Space left means this attempt deleted them, and only its file cleanup and record remain,
     // still under the overall deadline; any left are another attempt's.
-    if (await deps.prisma.space.count({ where: { organizationId } })) loseLease();
+    if (
+      await runAsSystem("count an organization deletion's remaining Spaces", () =>
+        deps.prisma.space.count({ where: { organizationId } }),
+      )
+    )
+      loseLease();
     else clearTimeout(expiry);
   };
   const renewal = setInterval(() => {

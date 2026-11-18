@@ -301,33 +301,40 @@ export async function lockSpaceDeletion(
 
 type ClaimedSpaceDeleteInput = SpaceMemberTargetInput & { claimId: string };
 
-async function loadActorSpace(
-  db: Pick<PrismaClient, "spaceMember">,
-  input: SpaceMemberTargetInput,
-) {
-  const currentMembership = await db.spaceMember.findUnique({
-    where: {
-      spaceId_userId: {
-        spaceId: input.currentSpaceId,
-        userId: input.userId,
-      },
+async function loadActorSpace(db: Prisma.TransactionClient, input: SpaceMemberTargetInput) {
+  // The actor's current Space and the target Space are two different rows, and
+  // the transaction is scoped to one of them, so both membership proofs read as
+  // system inside it; the same-organization check below still applies.
+  const { currentMembership, targetMembership } = await runAsSystemInTransaction(
+    db,
+    "load the actor's current and target memberships",
+    async () => {
+      const currentMembership = await db.spaceMember.findUnique({
+        where: {
+          spaceId_userId: {
+            spaceId: input.currentSpaceId,
+            userId: input.userId,
+          },
+        },
+        select: { organizationId: true },
+      });
+      const targetMembership = await db.spaceMember.findUnique({
+        where: {
+          spaceId_userId: {
+            spaceId: input.spaceId,
+            userId: input.userId,
+          },
+        },
+        select: {
+          organizationId: true,
+          role: true,
+          space: { select: { isDefault: true, deletingAt: true } },
+        },
+      });
+      return { currentMembership, targetMembership };
     },
-    select: { organizationId: true },
-  });
+  );
   if (!currentMembership) throw new IsolationError();
-  const targetMembership = await db.spaceMember.findUnique({
-    where: {
-      spaceId_userId: {
-        spaceId: input.spaceId,
-        userId: input.userId,
-      },
-    },
-    select: {
-      organizationId: true,
-      role: true,
-      space: { select: { isDefault: true, deletingAt: true } },
-    },
-  });
   if (!targetMembership || targetMembership.organizationId !== currentMembership.organizationId) {
     throw new SpaceNotFoundError();
   }

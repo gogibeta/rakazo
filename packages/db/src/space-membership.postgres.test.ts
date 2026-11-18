@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import type { PrismaClient } from "./client.js";
 import { createDb } from "./client.js";
-import { asSystem, runAsTenant } from "./row-security.js";
+import { asSystem, runAsSystem } from "./row-security.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const describePostgres = process.env.VERIFY_DATABASE && databaseUrl ? describe : describe.skip;
@@ -79,10 +79,11 @@ describePostgres("default Space membership trigger (PostgreSQL)", () => {
     });
 
     // The person joining is invited from inside that Space, the way accepting an
-    // invite creates their membership: the trigger has to add them to the default
-    // Space even though the row it inserts is not their own tenant's.
+    // invite creates their membership: acceptance runs as system (the invite
+    // token is the credential), and the trigger has to add them to the default
+    // Space even though the row it inserts is outside the caller's own scope.
     const memberId = `trigger-member-${suffix}`;
-    await runAsTenant({ spaceId, userId: fellowUserId }, () =>
+    await runAsSystem("accept a Space invite", () =>
       prisma.member.create({
         data: { id: memberId, organizationId, userId, role: "member", createdAt },
       }),
