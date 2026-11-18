@@ -9,6 +9,18 @@
 -- read predicates for SELECT and bind every tenant write to the organization of
 -- the Space the caller is scoped to; cross-organization writes stay system-only.
 
+-- The organization the caller's current Space belongs to. The space_members
+-- write checks below resolve it through this definer helper rather than a
+-- policy subquery on "spaces": the spaces policy itself reads space_members,
+-- so a direct subquery makes Postgres report infinite recursion in the
+-- space_members policy even though the chain would terminate.
+CREATE OR REPLACE FUNCTION app_space_organization_id() RETURNS text
+  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+  AS $$
+    SELECT "organizationId" FROM public."spaces"
+    WHERE "id" = NULLIF(current_setting('app.space_id', true), '')
+  $$;
+
 -- space_members: a tenant write must stay inside the current Space, with the
 -- organization the Space actually belongs to.
 DROP POLICY space_members_tenant ON "space_members";
@@ -16,17 +28,11 @@ CREATE POLICY space_members_tenant_select ON "space_members" FOR SELECT
   USING ("spaceId" = NULLIF(current_setting('app.space_id', true), ''));
 CREATE POLICY space_members_tenant_insert ON "space_members" FOR INSERT
   WITH CHECK ("spaceId" = NULLIF(current_setting('app.space_id', true), '')
-    AND "organizationId" = (
-      SELECT s."organizationId" FROM "spaces" s
-      WHERE s."id" = NULLIF(current_setting('app.space_id', true), '')
-    ));
+    AND "organizationId" = (SELECT app_space_organization_id()));
 CREATE POLICY space_members_tenant_update ON "space_members" FOR UPDATE
   USING ("spaceId" = NULLIF(current_setting('app.space_id', true), ''))
   WITH CHECK ("spaceId" = NULLIF(current_setting('app.space_id', true), '')
-    AND "organizationId" = (
-      SELECT s."organizationId" FROM "spaces" s
-      WHERE s."id" = NULLIF(current_setting('app.space_id', true), '')
-    ));
+    AND "organizationId" = (SELECT app_space_organization_id()));
 CREATE POLICY space_members_tenant_delete ON "space_members" FOR DELETE
   USING ("spaceId" = NULLIF(current_setting('app.space_id', true), ''));
 
