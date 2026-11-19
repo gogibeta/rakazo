@@ -304,6 +304,29 @@ export function toolResultTaintsRun(toolName: string): boolean {
 }
 
 /**
+ * Tools that write memory a later run reads back as its own state. `remember` and
+ * `save_shared_memory` write Markdown documents into the prompt; `save_memory` writes a durable
+ * semantic-memory record. All three outlive the run that wrote them.
+ */
+const MEMORY_WRITE_TOOLS = new Set(["remember", "save_memory", "save_shared_memory"]);
+
+/**
+ * A memory save is a standing instruction for every later run, so it goes through the run's
+ * approval mode like any consequential action once the run is tainted: fresh outside input
+ * entered it, or a resuming attempt, or a run the owner did not start. Reads of memory
+ * (`recall_memory`, `search_history`) and derived data add no prompt by themselves.
+ *
+ * Only a memory-write tool name consults the run, so a caller can pass a taint check that costs
+ * a query without paying for it on every unrelated tool call.
+ */
+export async function memoryWriteNeedsApproval(
+  toolName: string,
+  actionTainted: () => Promise<boolean>,
+): Promise<boolean> {
+  return MEMORY_WRITE_TOOLS.has(toolName) && (await actionTainted());
+}
+
+/**
  * A connector read still sends its arguments to the connector's server. Until outside content
  * enters the run, those arguments come from the owner's request. After that, injected text could
  * choose them, so a read skips approval only on a connector this run already used before then or
@@ -632,7 +655,9 @@ export function planActionGate(input: {
     if (input.mode !== "never") return "ask";
     return input.steerable ? "deny" : "allow";
   }
-  if (input.mode === "never") return "allow";
+  // Never ask runs what it is given, except a tool its caller marked steerable: outside content
+  // entered this run, or the owner did not start it, so nothing here may act on it unattended.
+  if (input.mode === "never") return input.steerable ? "deny" : "allow";
   if (input.resolved.decision === "ask") return "ask";
   const review = input.mode === "auto" && input.checkerConfigured ? "judge" : "ask";
   // A rule for the whole tool is not a choice of sites, so it never allows a new one; only a site

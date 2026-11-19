@@ -2043,6 +2043,11 @@ model MemoryDocument {
   path      String
   content   String
   revision  Int              @default(1)
+  /// True when the revision that produced this content was written by a run that had
+  /// already read outside content. Memory is loaded into every later run's prompt as
+  /// trusted background, so a reading run inherits this as taint. Only an owner edit
+  /// (which has no source run) clears it.
+  writtenAfterOutsideContent Boolean @default(false)
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
   revisions MemoryRevision[]
@@ -2060,6 +2065,8 @@ model MemoryRevision {
   content        String
   sourceRunId    String?
   sourceThreadId String?
+  /// Recorded when this revision was written after outside content entered the run.
+  writtenAfterOutsideContent Boolean @default(false)
   createdAt      DateTime       @default(now())
 
   @@unique([documentId, revision])

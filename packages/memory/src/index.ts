@@ -46,6 +46,7 @@ export class MarkdownMemoryStore implements MemoryStore {
         path: doc.path,
         content: doc.content,
         revision: doc.revision,
+        writtenAfterOutsideContent: doc.writtenAfterOutsideContent,
         updatedAt: doc.updatedAt.toISOString(),
       })),
     };
@@ -118,10 +119,17 @@ export class MarkdownMemoryStore implements MemoryStore {
             const live = existing?.revision ?? 0;
             if (live !== request.expectedRevision) throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
           }
+          const writtenAfterOutsideContent = request.writtenAfterOutsideContent ?? false;
           const doc = existing
             ? await tx.memoryDocument.update({
                 where: { id: existing.id },
-                data: { content: request.content, revision: existing.revision + 1 },
+                data: {
+                  content: request.content,
+                  revision: existing.revision + 1,
+                  // Each save replaces the whole document, so the flag describes the content
+                  // that just landed. An owner edit (no taint) clears it.
+                  writtenAfterOutsideContent,
+                },
               })
             : await tx.memoryDocument.create({
                 data: {
@@ -131,6 +139,7 @@ export class MarkdownMemoryStore implements MemoryStore {
                   scope: request.scope,
                   path: request.path,
                   content: request.content,
+                  writtenAfterOutsideContent,
                 },
               });
           await tx.memoryRevision.create({
@@ -140,6 +149,7 @@ export class MarkdownMemoryStore implements MemoryStore {
               content: request.content,
               sourceRunId: request.sourceRunId,
               sourceThreadId: request.sourceThreadId,
+              writtenAfterOutsideContent,
             },
           });
           return { id: doc.id, path: doc.path, revision: doc.revision, content: doc.content };
@@ -190,6 +200,8 @@ export class MarkdownMemoryStore implements MemoryStore {
           scope: "user",
           path: file.path,
           content: new TextDecoder().decode(file.content),
+          // An import is the owner's own content, never a run's. It does not taint.
+          writtenAfterOutsideContent: false,
         },
         context,
       );

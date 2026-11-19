@@ -350,6 +350,12 @@ export interface MemorySnapshot {
     path: string;
     content: string;
     revision: number;
+    /**
+     * True when the current content's revision was written after outside content entered the
+     * writing run. A run that reads such a document inherits the taint: memory is loaded into
+     * its prompt as trusted background.
+     */
+    writtenAfterOutsideContent?: boolean;
     updatedAt?: string;
   }>;
 }
@@ -379,6 +385,12 @@ export interface MemoryCommitRequest {
   expectedRevision?: number;
   sourceRunId?: string;
   sourceThreadId?: string;
+  /**
+   * Whether outside content had entered the writing run before this save. Recorded on the
+   * revision and mirrored on the document, so later runs reading it are tainted. A save with
+   * no source run (the owner's own edit in Settings) is never tainted.
+   */
+  writtenAfterOutsideContent?: boolean;
 }
 
 export interface MemoryRemoveRequest {
@@ -1547,6 +1559,13 @@ export interface AutoReviewRequest {
    * tool results or inbound messages, so injected text cannot argue for the site.
    */
   newSite?: boolean;
+  /**
+   * A memory save the run had already tainted before it was called: outside content entered this
+   * run, so the text saved was not chosen by the owner. The saved document is read back into every
+   * later run, which is what makes it a standing instruction rather than a note. `userTask` is then
+   * only the owner's own words, never tool results or inbound messages.
+   */
+  memoryWrite?: boolean;
 }
 
 export interface AutoReviewResult {

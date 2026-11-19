@@ -16,6 +16,7 @@ import {
   isApprovalAskBlock,
   isOwnerStartedRun,
   isSecretAskBlock,
+  memoryWriteNeedsApproval,
   newSiteOutcome,
   outboundSiteGate,
   outsideRunToolRequiresApproval,
@@ -1021,6 +1022,39 @@ describe("toolResultTaintsRun", () => {
     for (const tool of ["ask_user", "remember", "recall_memory", "skill_read", "write_file"]) {
       expect(toolResultTaintsRun(tool)).toBe(false);
     }
+  });
+});
+
+describe("memoryWriteNeedsApproval", () => {
+  const readOutside = async () => true;
+  const readNothing = async () => false;
+
+  it.each(["remember", "save_memory", "save_shared_memory"])(
+    "gates %s only once outside content entered the run",
+    async (name) => {
+      await expect(memoryWriteNeedsApproval(name, readOutside)).resolves.toBe(true);
+      await expect(memoryWriteNeedsApproval(name, readNothing)).resolves.toBe(false);
+    },
+  );
+
+  it("leaves other tools alone and does not check the run for them", async () => {
+    let checked = false;
+    const check = async () => {
+      checked = true;
+      return true;
+    };
+    for (const name of ["recall_memory", "forget_memory", "write_file", "send_email"]) {
+      await expect(memoryWriteNeedsApproval(name, check)).resolves.toBe(false);
+    }
+    // The taint check costs a query in production, so an unrelated tool must never pay it.
+    expect(checked).toBe(false);
+  });
+
+  it("keeps remember exempt from the static gate, so the new gate stays additive", () => {
+    // A private note is scoped to this bot and its owner, so it stays out of the
+    // static gate; taint is what makes it ask.
+    expect(toolRequiresApproval("remember", false)).toBe(false);
+    expect(toolRequiresExplicitApproval("remember")).toBe(false);
   });
 });
 
