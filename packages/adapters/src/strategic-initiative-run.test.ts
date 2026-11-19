@@ -112,6 +112,26 @@ describe("daily check-in routine execution", () => {
     expect(ctx.state.terminalCheckpointComplete).toBe(true);
   });
 
+  it("records provenance on a scripted memory save, since no tool gate sees it", async () => {
+    const { ctx } = await context();
+    const commit = vi.fn(async () => ({ path: "MEMORY.md", revision: 1 }));
+    // A tainted run: outside content (a web page) entered it before the script wrote memory.
+    ctx.state.tainted = true;
+    // Not a strategic sweep: those skip the script entirely, so this must be an ordinary run.
+    ctx.run.trigger = "chat";
+    ctx.deps.memory = { commit } as never;
+    ctx.script = [
+      { memory: [{ scope: "bot", path: "MEMORY.md", content: "# Memory\n\n- planted\n" }] },
+    ];
+    await completeRun(ctx);
+    // Without the flag the commit defaults it to false, and every later run reads the
+    // planted line back as trusted background.
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "MEMORY.md", writtenAfterOutsideContent: true }),
+      undefined,
+    );
+  });
+
   it("refuses a runtime takeover before starting the computer", async () => {
     const { ctx } = await context();
     await expect(
