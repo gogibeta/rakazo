@@ -14,7 +14,7 @@ import {
   MAX_MODEL_BACKUPS,
   modelRoleChoiceKey,
 } from "@rakazo/contracts";
-import { createModelRoleSettings, modelRoleListPatch } from "@rakazo/core";
+import { createModelRoleSettings, makeDefaultModelPatch, modelRoleListPatch } from "@rakazo/core";
 import {
   Button,
   DropdownMenu,
@@ -252,6 +252,10 @@ export function ModelRoleSettings({
         ? current.backups.filter((item) => !sameChoice(item, choice))
         : current.backups,
     }));
+  // Runs the chosen row first and keeps the chain that takes over when it fails; the model
+  // that ran before steps down to the head of that chain. Null means nothing to save.
+  const makeAsDefault = (choice: ModelRoleChoice) =>
+    save((current) => makeDefaultModelPatch(current, choice) ?? {});
   const move = (index: number, target: number) => {
     if (!canMove(index, target)) return;
     const next = [...rows];
@@ -457,6 +461,14 @@ export function ModelRoleSettings({
                       <DropdownMenuSeparator />
                     </>
                   ) : null}
+                  {isPrimary ? null : (
+                    <>
+                      <DropdownMenuItem onClick={() => void makeAsDefault(choice)}>
+                        <Trans>Make default model</Trans>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
                   {isPrimary && primaryMenuItems ? (
                     <>
                       {primaryMenuItems}

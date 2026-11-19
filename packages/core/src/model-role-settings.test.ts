@@ -1,6 +1,10 @@
 import type { ModelRoleSettings } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { createModelRoleSettings, modelRoleListPatch } from "./model-role-settings.js";
+import {
+  createModelRoleSettings,
+  makeDefaultModelPatch,
+  modelRoleListPatch,
+} from "./model-role-settings.js";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -173,6 +177,47 @@ describe("modelRoleListPatch", () => {
     expect(modelRoleListPatch({ primary, backups: [] }, [])).toEqual({
       primary: null,
       backups: [],
+    });
+  });
+});
+
+describe("makeDefaultModelPatch", () => {
+  const primary = { provider: "openrouter", modelId: "typesafe/jev-1.14", credentialId: "a" };
+  const backup = { provider: "anthropic", modelId: "opus" };
+  const other = { provider: "openai", modelId: "gpt-5" };
+
+  it("runs the chosen model first and keeps the old primary as the first fallback", () => {
+    // Changing the default must not cost the chain that takes over when it fails, so the
+    // model that ran before steps down instead of being dropped.
+    expect(makeDefaultModelPatch({ primary, backups: [backup] }, other)).toEqual({
+      primary: other,
+      backups: [primary, backup],
+    });
+  });
+
+  it("promotes a model that was already a fallback without leaving it in the chain", () => {
+    expect(makeDefaultModelPatch({ primary, backups: [backup, other] }, other)).toEqual({
+      primary: other,
+      backups: [primary, backup],
+    });
+  });
+
+  it("sets a first model when the purpose has none yet", () => {
+    expect(makeDefaultModelPatch({ primary: null, backups: [backup] }, other)).toEqual({
+      primary: other,
+      backups: [backup],
+    });
+  });
+
+  it("saves nothing when the chosen model already runs first", () => {
+    expect(makeDefaultModelPatch({ primary, backups: [backup] }, { ...primary })).toBeNull();
+  });
+
+  it("treats the same model on another connection as a different default", () => {
+    const otherConnection = { ...primary, credentialId: "b" };
+    expect(makeDefaultModelPatch({ primary, backups: [] }, otherConnection)).toEqual({
+      primary: otherConnection,
+      backups: [primary],
     });
   });
 });
