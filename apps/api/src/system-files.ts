@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
-import { lstat, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ORPCError } from "@orpc/server";
 import type {
@@ -186,49 +186,29 @@ async function resolveExisting(rootReal: string, input: string): Promise<string>
  * against `/proc/self/fd`, which names the inode behind the descriptor we hold —
  * whatever the path is renamed to later, this descriptor cannot be redirected.
  *
- * Read-only by default; "verify" opens for read *and* keeps the write right, so a
- * caller can inspect what it is about to replace only after the descriptor is
- * known to be safe. Returns a handle the caller must close.
+ * Returns a handle the caller must close.
  */
 async function openChecked(
   rootReal: string,
   input: string,
-  mode: "read" | "verify",
 ): Promise<{ handle: FileHandle; real: string }> {
-  const opened = await openCheckedAt(
-    path.resolve(rootReal, checkedRelative(input)),
-    rootReal,
-    mode,
-  );
-  // Without `allowMissing` this only returns null if the caller lies about it.
-  if (!opened) throw new ORPCError("NOT_FOUND", { message: "Not found" });
-  return opened;
+  return openCheckedAt(path.resolve(rootReal, checkedRelative(input)), rootReal);
 }
-/** `openChecked` for a path that has already been resolved against the root. */
+/**
+ * `openChecked` for a path that has already been resolved against the root.
+ */
 async function openCheckedAt(
   absolute: string,
   rootReal: string,
-  mode: "read" | "verify",
-  /** In "verify" mode a missing file is not an error: the caller is about to create it. */
-  allowMissing = false,
-): Promise<{ handle: FileHandle; real: string } | null> {
-  const flags =
-    mode === "read"
-      ? fsConstants.O_RDONLY
-      : // "verify" reads the current bytes *and* keeps the write right, so the
-        // caller's own containment check can inspect what it is about to replace.
-        // No O_CREAT: a new file is written beside a checked parent instead.
-        fsConstants.O_RDWR | fsConstants.O_NOFOLLOW;
-  const handle = await open(absolute, flags).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") {
-      if (allowMissing) return null;
-      throw new ORPCError("NOT_FOUND", { message: "Not found" });
-    }
-    if (error.code === "ELOOP" || error.code === "EMLINK") throw outsideRoot();
-    if (error.code === "EISDIR") throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
-    throw error;
-  });
-  if (!handle) return null;
+): Promise<{ handle: FileHandle; real: string }> {
+  const handle = await open(absolute, fsConstants.O_RDONLY).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") throw new ORPCError("NOT_FOUND", { message: "Not found" });
+      if (error.code === "ELOOP" || error.code === "EMLINK") throw outsideRoot();
+      if (error.code === "EISDIR") throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
+      throw error;
+    },
+  );
   let real: string;
   try {
     // `/proc/self/fd` reports the opened inode's own path, so this is not a
@@ -245,36 +225,103 @@ async function openCheckedAt(
   return { handle, real };
 }
 
+/** Where a save actually lands, held open so no later lookup can redirect it. */
+interface WriteTarget {
+  /** The folder the save lands in, held open: renaming that folder by name cannot move this. */
+  parent: FileHandle;
+  /** The file's name within that folder. Never a path: a path here would be resolved again. */
+  name: string;
+  /**
+   * The file being replaced, still open across the rename. Kept open so the inode is
+   * the one that was inspected, and so the save cannot land on a name that was
+   * swapped once the check finished.
+   */
+  existing: FileHandle | null;
+}
+
 /**
- * Resolves where a write may land: the parent folder must already exist
- * inside the root (folders are never created), and an existing target must
- * resolve inside the root too. A symlink that stays inside the root is
- * written through to its target, so the atomic rename never replaces the
- * link itself.
+ * Resolves where a save may land and pins every part of it to an open descriptor.
+ *
+ * The old design validated a target path and then renamed onto it by name. Between
+ * those steps the client can swap the parent folder for a link that points outside
+ * the root, and the rename lands wherever that link now leads: the check was on a
+ * name that no longer meant the same thing. A rename is the dangerous step because it
+ * replaces the directory entry itself, so nothing done to the *file* can prevent it.
+ *
+ * So the folder is opened once and every later operation goes through
+ * `/proc/self/fd/<fd>`: the write, the replace, and the cleanup all act on the inode
+ * that was validated, whatever its name is changed to afterwards. A new file is
+ * legitimate as long as its *parent* is inside the root, so a missing target is
+ * created beside a pinned parent rather than treated as an escape.
+ *
+ * Callers must close both handles.
  */
-async function resolveForWrite(rootReal: string, input: string): Promise<string> {
+async function openWriteTarget(rootReal: string, input: string): Promise<WriteTarget> {
   const relative = checkedRelative(input);
   if (!relative) throw new ORPCError("BAD_REQUEST", { message: "Choose a file to save" });
   const joined = path.resolve(rootReal, relative);
-  let realParent: string;
+  // Pin the folder the client named, before anything else touches the filesystem.
+  const pinned = await openDirectory(path.dirname(joined));
+  let existing: FileHandle | null = null;
   try {
-    realParent = await realpath(path.dirname(joined));
-  } catch {
+    const parentReal = await directoryReal(pinned, rootReal);
+    existing = await open(`${fdPath(pinned)}/${path.basename(joined)}`, fsConstants.O_RDWR).catch(
+      (error: NodeJS.ErrnoException) => {
+        // A missing target is the create case: its folder is already proven, so the
+        // save may add the file there. This is the new-file containment check.
+        if (error.code === "ENOENT") return null;
+        if (error.code === "EISDIR") throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
+        if (error.code === "ELOOP" || error.code === "EMLINK") throw outsideRoot();
+        throw error;
+      },
+    );
+    if (!existing) return { parent: pinned, name: path.basename(joined), existing: null };
+    // Opening followed any link, so this descriptor names the file the save would
+    // replace. Its own folder is what the rename must be anchored to; using the
+    // link's folder would replace the link instead of writing through it.
+    const real = await realpath(fdPath(existing)).catch(() => null);
+    const info = await existing.stat().catch(() => null);
+    if (!real || !info || !isInsideRoot(rootReal, real)) {
+      throw outsideRoot();
+    }
+    if (!info.isFile()) throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
+    assertResolvedNotSecret(rootReal, real);
+    const realDir = path.dirname(real);
+    if (realDir === parentReal) return { parent: pinned, name: path.basename(real), existing };
+    // The link points at another folder inside the root: pin that one instead.
+    const linked = await openDirectory(realDir);
+    try {
+      await directoryReal(linked, rootReal);
+    } catch (error) {
+      await linked.close().catch(() => undefined);
+      throw error;
+    }
+    await pinned.close().catch(() => undefined);
+    return { parent: linked, name: path.basename(real), existing };
+  } catch (error) {
+    // A handle opened here must not outlive a failed resolution.
+    await existing?.close().catch(() => undefined);
+    await pinned.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+/** `/proc/self/fd/<fd>`: the opened inode, by descriptor instead of by name. */
+function fdPath(handle: FileHandle): string {
+  return `/proc/self/fd/${handle.fd}`;
+}
+
+async function openDirectory(dirPath: string): Promise<FileHandle> {
+  return open(dirPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY).catch(() => {
     throw new ORPCError("NOT_FOUND", { message: "That folder does not exist" });
-  }
-  if (!isInsideRoot(rootReal, realParent)) throw outsideRoot();
-  const target = path.join(realParent, path.basename(joined));
-  const existing = await lstat(target).catch(() => null);
-  if (!existing) return target;
-  if (existing.isSymbolicLink()) {
-    const resolved = await realpath(target).catch(() => null);
-    if (!resolved || !isInsideRoot(rootReal, resolved)) throw outsideRoot();
-    const targetInfo = await stat(resolved).catch(() => null);
-    if (!targetInfo?.isFile()) throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
-    return resolved;
-  }
-  if (!existing.isFile()) throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
-  return target;
+  });
+}
+
+/** Proves an open folder is the one we validated, and returns its real path. */
+async function directoryReal(handle: FileHandle, rootReal: string): Promise<string> {
+  const real = await realpath(fdPath(handle)).catch(() => null);
+  if (!real || !isInsideRoot(rootReal, real)) throw outsideRoot();
+  return real;
 }
 
 /** Text decodes as UTF-8 with no NUL bytes; anything else is binary here. */
@@ -378,7 +425,7 @@ export async function readSystemFile(
   assertResolvedNotSecret(rootReal, path.resolve(rootReal, checkedRelative(input.path)));
   // Open first, validate the descriptor, then read from that same descriptor:
   // no window remains in which the path could be swapped for a symlink.
-  const { handle, real } = await openChecked(rootReal, input.path, "read");
+  const { handle, real } = await openChecked(rootReal, input.path);
   try {
     assertResolvedNotSecret(rootReal, real);
     const info = await handle.stat();
@@ -440,46 +487,35 @@ export async function writeSystemFile(
     throw new ORPCError("BAD_REQUEST", { message: "Only text files can be edited here" });
   }
   const rootReal = await realRoot(root);
-  const target = await resolveForWrite(rootReal, input.path);
-  assertResolvedNotSecret(rootReal, target);
-  // Validate the existing file through a descriptor, then write beside it and
-  // rename over it. Re-checking the path by name here would reopen the race the
-  // read path just closed.
-  const opened = await openCheckedAt(target, rootReal, "verify", true);
-  const existing = opened
-    ? await (async () => {
-        const { handle, real } = opened;
-        try {
-          // Never overwrite a binary or oversized file sight unseen from the editor.
-          const info = await handle.stat();
-          if (info.size > SYSTEM_FILES_MAX_BYTES) {
-            throw new ORPCError("BAD_REQUEST", {
-              message: "That file is too large to edit here",
-            });
-          }
-          if (!isText(await handle.readFile())) {
-            throw new ORPCError("BAD_REQUEST", { message: "Only text files can be edited here" });
-          }
-          return real;
-        } finally {
-          await handle.close().catch(() => undefined);
-        }
-      })()
-    : null;
-  // A symlink inside the root is written through to its target, as before.
-  const destination = existing ?? target;
-  // Write beside the target and rename over it, so a reader never sees a
-  // half-written file and a failed write leaves the original in place.
-  const temp = path.join(
-    path.dirname(destination),
-    `.${path.basename(destination)}.tmp-${randomUUID()}`,
-  );
+  const target = await openWriteTarget(rootReal, input.path);
+  // Every operation below goes through the pinned folder descriptor, so renaming
+  // the folder (or replacing the file) after this point cannot redirect the save.
   try {
-    await writeFile(temp, bytes);
-    await rename(temp, destination);
-  } catch (error) {
-    await rm(temp, { force: true }).catch(() => undefined);
-    throw error;
+    if (target.existing) {
+      // Never overwrite a binary or oversized file sight unseen from the editor.
+      const info = await target.existing.stat();
+      if (info.size > SYSTEM_FILES_MAX_BYTES) {
+        throw new ORPCError("BAD_REQUEST", { message: "That file is too large to edit here" });
+      }
+      if (!isText(await target.existing.readFile())) {
+        throw new ORPCError("BAD_REQUEST", { message: "Only text files can be edited here" });
+      }
+    }
+    // Write beside the destination and rename over it, so a reader never sees a
+    // half-written file and a failed write leaves the original in place. Both paths
+    // are descriptor-relative: the temporary file is created in the folder that was
+    // validated, and the rename replaces the entry in that same folder.
+    const temp = `.${target.name}.tmp-${randomUUID()}`;
+    try {
+      await writeFile(`${fdPath(target.parent)}/${temp}`, bytes);
+      await rename(`${fdPath(target.parent)}/${temp}`, `${fdPath(target.parent)}/${target.name}`);
+    } catch (error) {
+      await rm(`${fdPath(target.parent)}/${temp}`, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  } finally {
+    await target.existing?.close().catch(() => undefined);
+    await target.parent.close().catch(() => undefined);
   }
   return { ok: true, size: bytes.byteLength };
 }

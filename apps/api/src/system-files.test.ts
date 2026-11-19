@@ -1,8 +1,66 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The swap windows are a few instructions wide, so a timing loop cannot reach them:
+ * hammering the filesystem passes against both the vulnerable and the fixed code and
+ * proves nothing. These hooks fire at the exact call that used to re-open a path by
+ * name, which forces the interleaving instead of racing it.
+ */
+const fsHooks = vi.hoisted(() => ({
+  beforeReadFile: null as null | ((file: string) => Promise<void>),
+  beforeRename: null as null | ((from: string, to: string) => Promise<void>),
+  beforeWriteFile: null as null | ((file: string) => Promise<void>),
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readFile: async (file: Parameters<typeof actual.readFile>[0], ...rest: unknown[]) => {
+      const hook = fsHooks.beforeReadFile;
+      if (hook) {
+        fsHooks.beforeReadFile = null;
+        await hook(String(file));
+      }
+      return (actual.readFile as (...args: unknown[]) => unknown)(file, ...rest);
+    },
+    writeFile: async (file: Parameters<typeof actual.writeFile>[0], ...rest: unknown[]) => {
+      const hook = fsHooks.beforeWriteFile;
+      if (hook) {
+        fsHooks.beforeWriteFile = null;
+        await hook(String(file));
+      }
+      return (actual.writeFile as (...args: unknown[]) => unknown)(file, ...rest);
+    },
+    rename: async (
+      from: Parameters<typeof actual.rename>[0],
+      to: Parameters<typeof actual.rename>[1],
+    ) => {
+      const hook = fsHooks.beforeRename;
+      if (hook) {
+        fsHooks.beforeRename = null;
+        await hook(String(from), String(to));
+      }
+      return actual.rename(from, to);
+    },
+  };
+});
+
 import {
   getSystemFilesStatus,
   listSystemFiles,
@@ -18,6 +76,9 @@ let root: string;
 let outside: string;
 
 beforeEach(async () => {
+  fsHooks.beforeReadFile = null;
+  fsHooks.beforeRename = null;
+  fsHooks.beforeWriteFile = null;
   base = await mkdtemp(path.join(tmpdir(), "system-files-"));
   root = path.join(base, "root");
   outside = path.join(base, "outside");
@@ -319,48 +380,77 @@ describe("system files", () => {
   });
 
   it("refuses to write through a link that took the file's place", async () => {
-    // The write path opens its existing target with O_NOFOLLOW, so a symlink
-    // standing where the file was is refused rather than followed.
+    // The write path opens its existing target, so a symlink standing where the
+    // file was is followed to wherever it points. Out of the root that is refused;
+    // asserting the reason and the untouched bytes is what makes this fail on a
+    // build that only checked the path by name.
     const deps = makeDeps();
     const target = path.join(root, "hello.txt");
     await rm(target, { force: true });
     await symlink(path.join(outside, "secret.txt"), target);
     await expect(
       writeSystemFile(deps, actor, { path: "hello.txt", content: "overwritten" }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/outside the system files root/i);
     // The file outside the root is untouched.
     expect(await readFile(path.join(outside, "secret.txt"), "utf8")).toBe("outside the root");
+    // And the link is still a link: nothing replaced it.
+    expect((await lstat(target)).isSymbolicLink()).toBe(true);
   });
 
-  it("never reads outside content while the path is being swapped", async () => {
-    // The window this closes is real but narrow: validate the path, then open it
-    // by name. A symlink swapped in between the two is followed by the open and
-    // the containment check never saw it. Hammering the swap while reading is
-    // what exposes that window; a single ordered swap is caught earlier by the
-    // symlink resolution, which is why this has to be concurrent.
+  it("refuses a new file whose folder is a link out of the root", async () => {
+    // The create case had no parent check: a folder that is a link outside the root
+    // was a legitimate place to write a brand-new file. The folder is now proven
+    // inside the root before the save, whether the file exists or not.
+    const deps = makeDeps();
+    await symlink(outside, path.join(root, "linked"));
+    await expect(
+      writeSystemFile(deps, actor, { path: "linked/fresh.txt", content: "x" }),
+    ).rejects.toThrow(/outside the system files root/i);
+    await expect(stat(path.join(outside, "fresh.txt"))).rejects.toThrow();
+  });
+
+  it("reads the file it validated, not one swapped in after the check", async () => {
+    // Forces the exact interleaving the race needs: the path is validated, and only
+    // then does the symlink appear. The old code re-opened by name after checking, so
+    // it read the outside file; opening once and reading the descriptor cannot.
     const deps = makeDeps();
     const target = path.join(root, "hello.txt");
-    const escapePath = path.join(outside, "secret.txt");
-    let stop = false;
-    const swapper = (async () => {
-      while (!stop) {
-        await rm(target, { force: true });
-        await symlink(escapePath, target).catch(() => undefined);
-        await rm(target, { force: true });
-        await writeFile(target, "hello world");
-      }
-    })();
-    let leaked = 0;
-    try {
-      for (let index = 0; index < 300; index += 1) {
-        const result = await readSystemFile(deps, actor, { path: "hello.txt" }).catch(() => null);
-        if (result?.content?.includes("outside the root")) leaked += 1;
-      }
-    } finally {
-      stop = true;
-      await swapper;
+    fsHooks.beforeReadFile = async () => {
+      await rm(target, { force: true });
+      await symlink(path.join(outside, "secret.txt"), target);
+    };
+    const result = await readSystemFile(deps, actor, { path: "hello.txt" });
+    // The original file was already opened, so its bytes are what comes back.
+    expect(result.content).toBe("hello world");
+    expect(result.content).not.toContain("outside the root");
+    await rm(target, { force: true });
+    await writeFile(target, "hello world");
+  });
+
+  it("writes to the folder it validated, not one swapped in after the check", async () => {
+    // Same forcing, on the write path. A rename replaces a directory entry, so the
+    // folder has to be pinned: this drops the symlink into place immediately before
+    // the temporary file is written, which is where the old code re-opened by name.
+    const deps = makeDeps();
+    const folder = path.join(root, "notes");
+    const moved = path.join(base, "notes-moved");
+    fsHooks.beforeWriteFile = async () => {
+      await rename(folder, moved);
+      await symlink(outside, folder).catch(() => undefined);
+    };
+    const saved = await writeSystemFile(deps, actor, {
+      path: "notes/todo.md",
+      content: "written after the swap",
+    }).catch((error: Error) => error);
+    // Nothing may land outside the root, whether it wrote or refused.
+    await expect(stat(path.join(outside, "todo.md"))).rejects.toThrow();
+    if (saved instanceof Error) {
+      expect(saved.message).toMatch(/outside the system files root/i);
+    } else {
+      expect(saved).toEqual({ ok: true, size: 22 });
     }
-    expect(leaked).toBe(0);
+    // It must have written into the folder it validated, not the link's target.
+    expect(await readFile(path.join(moved, "todo.md"), "utf8")).toBe("written after the swap");
   });
 
   it("keeps an ordinary file readable and writable", async () => {
