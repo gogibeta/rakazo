@@ -60,6 +60,37 @@ describe("Wallet Operations skill", () => {
   });
 });
 
+describe("Social Posts skill", () => {
+  const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Social Posts")!;
+
+  it("names the one-link route and the search route that actually exist", () => {
+    expect(skill.content).toContain("/ai/2/post?url=");
+    expect(skill.content).toContain("/ai/2/ask?q=");
+    expect(skill.content).toContain("fixtweet.twapiworker.workers.dev");
+  });
+
+  it("states the User-Agent rule, since a missing one is a 401 for every API call", () => {
+    expect(skill.content).toContain("User-Agent header");
+    expect(skill.content).toContain("401");
+  });
+
+  it("teaches the retryable-500 versus terminal-404 rule instead of a retry loop", () => {
+    expect(skill.content).toMatch(/wait about 30 seconds/i);
+    expect(skill.content).toContain("Only a 404 ends a walk");
+  });
+
+  it("refuses to promise networks the worker does not support", () => {
+    for (const unsupported of ["Reddit", "Facebook", "YouTube"]) {
+      expect(skill.content).toContain(unsupported);
+    }
+    expect(skill.content).toContain("Not supported");
+  });
+
+  it("does not present ?lang= as translation, which is a no-op on this deployment", () => {
+    expect(skill.content).toContain("translation is a no-op");
+  });
+});
+
 describe("Rakazo skill", () => {
   it("links only to published docs pages", () => {
     const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Rakazo")!;
