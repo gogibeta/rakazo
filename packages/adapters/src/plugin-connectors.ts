@@ -237,7 +237,11 @@ export async function fetchGitHubRepo(
   if (url.hostname !== "github.com")
     throw new Error("Only public github.com plugin sources are supported right now");
   const repo = url.pathname;
-  const deadline = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(30_000)]);
+  // A large plugin is many small raw.githubusercontent reads, and the deadline covers all of them:
+  // Figma's guide is 240 tree entries fetched as 95 separate reads, measured at 8-18s here, so a
+  // 30s window failed it intermittently. The deadline abandons a stuck host; it is not a cap on a
+  // healthy download.
+  const deadline = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(120_000)]);
   const commit = JSON.parse(
     await read(
       `https://api.github.com/repos${repo}/commits/${encodeURIComponent(ref.ref ?? "HEAD")}`,
