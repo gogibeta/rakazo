@@ -9,6 +9,7 @@ import {
   ensureComputerRecord,
   resolveMaxComputersPerUser,
   restoreBotUnderComputerQuota,
+  teamComputerUserId,
 } from "./computers.js";
 
 function fakePrisma(count = 0, existing = false) {
@@ -27,8 +28,11 @@ function fakeRestorePrisma(results: { alreadyLive: number; inUse: number }) {
   const count = vi.fn(async (args: { where: { id?: string } }) =>
     args.where.id ? results.alreadyLive : results.inUse,
   );
+  // A transaction client: it has $queryRaw and no $transaction. Both callers in
+  // production (restoreBotUnderComputerQuota's restore step) pass one.
   return {
     computer: { count },
+    $queryRaw: vi.fn(async () => [{ bypass: null, key: null, login: "" }]),
   } as unknown as PrismaClient;
 }
 
@@ -328,6 +332,55 @@ describe("team computer keys", () => {
     const otherMember = await ensureTeam("user-2");
     expect(secondBot.id).toBe(firstBot.id);
     expect(otherMember.id).not.toBe(firstBot.id);
+  });
+});
+
+describe("teamComputerUserId", () => {
+  const owner = { userId: "owner-1" };
+  const rows = [{ userId: owner.userId }];
+
+  /**
+   * A client with `spaceMember.findFirst` and a recording `$queryRaw`.
+   *
+   * `$queryRaw` is on BOTH a root PrismaClient and a TransactionClient, so its
+   * presence cannot tell them apart: picking the transaction path by it sent
+   * every root client down the transaction-local branch. A root client has
+   * `$transaction`; a transaction client does not. The tests below assert which
+   * path actually ran, which is what the discriminator decides.
+   */
+  function client(extra: Record<string, unknown>, found: Array<{ userId: string }> = rows) {
+    const queryRaw = vi.fn(async () => [{ bypass: null, key: null, login: "" }]);
+    return {
+      ...extra,
+      $queryRaw: queryRaw,
+      spaceMember: { findFirst: vi.fn(async () => found[0] ?? null) },
+      queryRaw,
+    };
+  }
+
+  it("returns the Space owner from a root client without touching the transaction path", async () => {
+    const root = client({ $transaction: vi.fn() });
+    await expect(
+      teamComputerUserId(root as never, { spaceId: "space-1", userId: "member-1" }),
+    ).resolves.toBe("owner-1");
+    // The root path runs through runAsSystem, which sets the bypass on the
+    // pooled connection. Reaching the transaction path would call $queryRaw.
+    expect(root.queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("returns the Space owner from a transaction client by switching the bypass inside it", async () => {
+    const tx = client({});
+    await expect(
+      teamComputerUserId(tx as never, { spaceId: "space-1", userId: "member-1" }),
+    ).resolves.toBe("owner-1");
+    expect(tx.queryRaw).toHaveBeenCalled();
+  });
+
+  it("falls back to the caller only when the Space has no owner", async () => {
+    const root = client({ $transaction: vi.fn() }, []);
+    await expect(
+      teamComputerUserId(root as never, { spaceId: "space-1", userId: "member-1" }),
+    ).resolves.toBe("member-1");
   });
 });
 

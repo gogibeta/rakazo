@@ -71,8 +71,11 @@ CREATE POLICY spaces_tenant_delete ON "spaces" FOR DELETE
     LIMIT 1
   ));
 
--- member: a tenant insert is only ever the caller's own row, in the current
--- Space's organization; a tenant update cannot move a row across organizations.
+-- member: every tenant write is bound to the current Space's organization. The
+-- read policy also matches the caller's own row in any organization, which is
+-- right for reads but would let a tenant update or delete its row in another
+-- organization, so the write policies do not carry that branch: a legitimate
+-- cross-organization write of one's own member row runs as system.
 DROP POLICY members_tenant ON "member";
 CREATE POLICY members_tenant_select ON "member" FOR SELECT
   USING ("userId" = NULLIF(current_setting('app.user_id', true), '')
@@ -89,8 +92,7 @@ CREATE POLICY members_tenant_insert ON "member" FOR INSERT
       LIMIT 1
     ));
 CREATE POLICY members_tenant_update ON "member" FOR UPDATE
-  USING ("userId" = NULLIF(current_setting('app.user_id', true), '')
-      OR "organizationId" = (
+  USING ("organizationId" = (
     SELECT sm."organizationId" FROM "space_members" sm
     WHERE sm."spaceId" = NULLIF(current_setting('app.space_id', true), '')
     LIMIT 1
@@ -101,8 +103,7 @@ CREATE POLICY members_tenant_update ON "member" FOR UPDATE
     LIMIT 1
   ));
 CREATE POLICY members_tenant_delete ON "member" FOR DELETE
-  USING ("userId" = NULLIF(current_setting('app.user_id', true), '')
-      OR "organizationId" = (
+  USING ("organizationId" = (
     SELECT sm."organizationId" FROM "space_members" sm
     WHERE sm."spaceId" = NULLIF(current_setting('app.space_id', true), '')
     LIMIT 1
