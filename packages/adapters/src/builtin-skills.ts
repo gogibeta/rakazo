@@ -135,6 +135,49 @@ Report in one line what was saved, updated or proposed, or that nothing durable 
 - Burner wallets only: never suggest storing a wallet that holds real funds, and flag it if the owner tries.`,
   },
   {
+    name: "Social Posts",
+    description: "Read X, Bluesky, TikTok, Instagram and Threads posts by link or handle",
+    body: `Read social posts through the FxEmbed worker: a free HTTP API with no key and no signup. Use it whenever a question starts from a post link, an account, or a keyword search on a supported network.
+
+Base URL: https://fixtweet.twapiworker.workers.dev. A byte-identical clone runs at https://fixtweet-2.twapiworker.workers.dev; if one base answers an empty 404 twice, retry once on the other. Both take the same paths.
+
+Every /api, /blueskyapi, /atmosphere and /ai call requires a User-Agent header. Send a descriptive one such as RakazoBot/1.0. A missing User-Agent is HTTP 401, and bare library defaults can be challenged with 403. Reach the API with web_fetch, which sends its own User-Agent; only set one yourself if the tool allows headers.
+
+Supported: X/Twitter, Bluesky, TikTok, Instagram, Threads, and any Mastodon/ActivityPub instance. Not supported, and do not promise it: Reddit, Facebook, YouTube, TikTok comments or keyword search.
+
+1. One link, one answer. This is the call for a single post or profile on any network:
+   web_fetch https://fixtweet.twapiworker.workers.dev/ai/2/post?url=<urlencoded URL>
+   It returns Markdown: the full untruncated text, author, date, a link to the original, stats, and media links. Recognized shapes include x.com/{handle}/status/{id}, x.com/{handle}, bsky.app/profile/{handle}/post/{rkey}, tiktok.com/@handle/video/{id}, instagram.com/p/{shortcode}, threads.com/@{user}/post/{id}, and {instance}/@{handle}/{id} for Mastodon. Anything else answers HTTP 400 listing what is supported. Prefer this over assembling per-network paths by hand.
+
+2. One post by id, when you already have the numeric id.
+   /ai/2/status/{id} for an X post; /ai/2/thread/{id} for the author's whole thread; /ai/2/status/{id}/quotes for the reactors. Add /2/profile/{handle}/statuses?count=N for an account's recent posts.
+
+3. Keyword search that returns one merged reading pack.
+   /ai/2/ask?q=<terms>&pages=N with N up to 8 walks N search pages server-side and returns a single Markdown pack: author, time, full text, post URL and engagement per post. Use it for "what are people saying about X".
+   For JSON instead, /api/2/search?q=&feed=latest|top&count=25 returns results plus a cursor. X operators work through: from:, lang:, since:, until:, min_faves:.
+
+Paging a list: responses carry cursor.bottom. To continue, call the same path again with &cursor=<that value>. Cursors are opaque; never construct or edit one. count accepts 1-100 (20 default, 30 for search).
+
+Reading what came back:
+- A post's Markdown gives the canonical link as [open](url) or [post](url). Cite that URL when you answer, so the owner can check it.
+- Stats are cached: single posts for about 30 days, timelines about 7 days. For fresh numbers on an account, poll the timeline rather than re-reading one post.
+- Watching an account for new posts: /api/2/profile/{handle}/statuses?count=5&since=<unix seconds>. HTTP 204 with an empty body means nothing new, which is the cheapest possible poll. Do not treat 204 as an error.
+
+Errors mean specific things. Do not conflate them:
+- 404 is a valid answer: nothing matched, or the post is gone. Report "not found" instead of retrying in a loop.
+- HTTP 500 during a search walk means the relay is briefly unavailable. Wait about 30 seconds, then retry the SAME request with the SAME cursor; the walk resumes where it failed and skips nothing. Only a 404 ends a walk.
+- 401 means no User-Agent. 429 on TikTok means the IP is cooling down; it often surfaces as 404. Space those calls out rather than hammering.
+
+Known limits here, so you do not chase them:
+- ?lang= is accepted but translation is a no-op: text returns in its original language. Say so instead of presenting it as translated.
+- Profile media RSS feeds and the profile media route can return 500. Read an account's posts with statuses instead.
+- Conversations are effectively page one; deeper reply paging is unreliable.
+- Instagram answers 500 routinely for logged-out reads. That mirrors the upstream service, not your request.
+- A single empty 404 on one post can be a flake: retry once, or use the other base, before concluding the post is gone.
+
+What to do with it: quote the post text and link it, attribute the author by handle, and give the date. Never invent a post, a link, a stat or a quote that the response did not contain. If the worker answers an "# Error" document, that document is the answer: report it plainly rather than guessing at the content.`,
+  },
+  {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",
     body: `Answer questions about Rakazo itself from its docs. Fetch the matching page with web_fetch before answering, then answer briefly in your own words and link the page. If fetching fails or is unavailable, answer only what this index says and link the page. Never invent menus, buttons, or steps the page doesn't show. Account-specific facts (credit balance, plan, usage) aren't in the docs: point to the screen that shows them.
