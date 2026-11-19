@@ -15,6 +15,12 @@ export interface TerminalUpgradeDeps {
   /** The signed-in user behind a raw upgrade request, from its session cookie. */
   sessionUserId: (request: IncomingMessage) => Promise<string | undefined>;
   isAdmin: (userId: string) => Promise<boolean>;
+  /**
+   * Whether a browser Origin may open a shell. A page on another site can make
+   * the browser attach this API's cookie to a WebSocket, so the Origin has to be
+   * checked here: an upgrade bypasses the HTTP routes that apply CORS.
+   */
+  isTrustedOrigin: (origin: string) => boolean;
   /** Test seam: how a session's shell starts. Defaults to the API process's own shell. */
   spawnShell?: () => ChildProcess;
 }
@@ -106,6 +112,19 @@ export function createTerminalServer(deps: TerminalUpgradeDeps): TerminalServer 
       };
       if (closed) {
         reject(503, "Service Unavailable");
+        return true;
+      }
+      // Absent Origin means a non-browser client, which cannot be tricked into
+      // sending a cookie; a present one must be a site we trust. Repeated
+      // headers arrive as an array, and no browser sends two, so treat that as
+      // untrusted rather than letting the shape slip past the check.
+      const origin = request.headers.origin;
+      if (Array.isArray(origin)) {
+        reject(403, "Forbidden");
+        return true;
+      }
+      if (origin && !deps.isTrustedOrigin(origin)) {
+        reject(403, "Forbidden");
         return true;
       }
       void (async () => {
