@@ -308,12 +308,12 @@ export function PluginDetail({
     }
   }
 
-  // An ignored manifest field loses nothing, so it isn't reported. A skill left out for repeating
-  // a built-in one says why, since the user still has that skill.
+  // An ignored manifest field loses nothing, so it isn't reported. Everything else says why it was
+  // left out: a bare name told the owner nothing about what to change in their repository.
   const notAdded = [
     ...(detail?.skipped ?? [])
       .filter((entry) => entry.kind !== "unsupported_field")
-      .map((entry) => entry.name),
+      .map((entry) => t`${entry.name} (${entry.reason})`),
     ...(detail?.builtinNames ?? []).map((name) => t`${name} (same name as a built-in skill)`),
   ];
   const prefix = `${detail?.name ?? ""}: `;
