@@ -5,6 +5,7 @@ import {
   listAgentSkillRecords,
   skillCreateFromTool,
   skillDeleteFromTool,
+  skillListFromTool,
   skillReadFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
@@ -128,6 +129,43 @@ describe("skill tools", () => {
     expect(await skillReadFromTool(prisma as never, owner, { name: "Daily standup" })).toEqual({
       error: "Skill not found.",
     });
+  });
+
+  it("lists the catalog so a bot can find a skill, and filters on a query", async () => {
+    await skillCreateFromTool(prisma as never, owner, {
+      name: "Daily standup",
+      description: "Prepare standup notes",
+      body: "1. Summarize yesterday.",
+    });
+    await skillCreateFromTool(prisma as never, owner, {
+      name: "Invoice chase",
+      description: "Draft a polite reminder",
+      body: "1. Find overdue invoices.",
+    });
+
+    const all = await skillListFromTool(prisma as never, owner);
+    const names = (all.skills as Array<{ name: string }>).map((skill) => skill.name);
+    expect(names).toContain("Daily standup");
+    expect(names).toContain("Invoice chase");
+    // The catalog names skills but never ships their bodies.
+    expect(all.skills).not.toContainEqual(expect.objectContaining({ content: expect.anything() }));
+    // The two just created are the owner's own, so they are editable.
+    for (const name of ["Daily standup", "Invoice chase"])
+      expect(all.skills).toContainEqual(
+        expect.objectContaining({ name, source: "user", readOnly: false }),
+      );
+
+    const filtered = await skillListFromTool(prisma as never, owner, { query: "standup" });
+    const filteredNames = (filtered.skills as Array<{ name: string }>).map((skill) => skill.name);
+    expect(filteredNames).toContain("Daily standup");
+    expect(filteredNames).not.toContain("Invoice chase");
+    expect(filtered.count).toBe(filteredNames.length);
+
+    // Builtin skills are listed too, and marked read-only.
+    const builtin = await skillListFromTool(prisma as never, owner, { query: "" });
+    expect(
+      (builtin.skills as Array<{ source: string }>).some((skill) => skill.source === "builtin"),
+    ).toBe(true);
   });
 
   it("lists a skill's reference files and reads one by exact path only", async () => {

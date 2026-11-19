@@ -198,6 +198,7 @@ describe("builtin tools", () => {
         "cloud_agent_status",
         "recall_memory",
         "scratchpad_list",
+        "skill_list",
         "skill_read",
         "task_catalog",
         "ticket_get",
