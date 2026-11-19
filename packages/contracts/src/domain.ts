@@ -932,7 +932,7 @@ export const PluginPreviewSkippedSchema = z.object({
   reason: z.string(),
 });
 export const PluginPreviewSchema = z.object({
-  format: z.enum(["agent-plugins", "cursor", "grok"]),
+  format: z.enum(["agent-plugins", "cursor", "grok", "claude"]),
   name: z.string(),
   version: z.string().nullable(),
   description: z.string(),

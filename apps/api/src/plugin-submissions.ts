@@ -30,6 +30,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { readBoundedBody } from "./http-body.js";
 import { assertMcpRemoteEndpoint } from "./mcp-servers.js";
+import { previewRefusal } from "./plugin-preview-error.js";
 import type { RouterDeps } from "./router.js";
 import { throttleKey, windowCounter } from "./window-counter.js";
 
@@ -268,10 +269,8 @@ export async function reviewPluginSubmission(
       source: row.source,
       signal,
       fetcher: deps.pluginRepoFetcher,
-    }).catch(() => {
-      throw new ORPCError("BAD_REQUEST", {
-        message: "Could not preview a supported plugin from this repository",
-      });
+    }).catch((error: unknown) => {
+      throw previewRefusal(error);
     });
     for (const server of preview.mcpServers) await assertMcpRemoteEndpoint(server.endpoint, deps);
     if (preview.skipped.some((part) => part.kind !== "unsupported_field")) {

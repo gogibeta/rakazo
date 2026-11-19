@@ -10,11 +10,39 @@ import { assertNoSensitiveQuery } from "./connector-http.js";
 import { fetchSafeWebText } from "./web-ssrf.js";
 
 export type PluginSourceRef = { gitUrl: string; ref?: string; subdir?: string };
+
+/** Why a repository cannot be installed as a plugin: reasons a person can act on. */
+export type PluginRefusal =
+  | "too_many_files"
+  | "too_large"
+  | "no_manifest"
+  | "unsupported_schema"
+  | "invalid_manifest"
+  | "unreadable";
+
+/**
+ * A plugin the acquirer or parser will not install, named so the API can tell the
+ * person what to change instead of "could not preview".
+ */
+export class PluginRefusedError extends Error {
+  constructor(
+    readonly reason: PluginRefusal,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PluginRefusedError";
+  }
+}
 export type PluginRepoFile = { path: string; content: string };
 export type PluginRepoFetcher = (
   ref: PluginSourceRef,
   signal?: AbortSignal,
-) => Promise<{ files: PluginRepoFile[]; resolvedSha: string }>;
+) => Promise<{
+  files: PluginRepoFile[];
+  resolvedSha: string;
+  /** Skills left out before fetching because they carry too many companion files. */
+  overfullSkills?: string[];
+}>;
 export type PluginSkillEntry = {
   name: string;
   description: string;
@@ -40,7 +68,7 @@ export type PluginSkippedEntry = {
   reason: string;
 };
 export type ParsedPlugin = {
-  format: "agent-plugins" | "cursor" | "grok";
+  format: "agent-plugins" | "cursor" | "grok" | "claude";
   name: string;
   version: string | null;
   description: string;
@@ -58,8 +86,12 @@ export type ParsedPlugin = {
   builtinNames: string[];
 };
 
-/** Fetched component files; other paths are only listed. */
-const MAX_FILES = 200;
+/**
+ * Fetched component files; other paths are only listed. The byte budgets below are the
+ * real guard on what a preview costs, so this only has to keep one pathological
+ * repository from issuing tens of thousands of requests. Real plugins sit well under it.
+ */
+const MAX_FILES = 5_000;
 const MAX_TREE_ENTRIES = 5000;
 const FETCH_CONCURRENCY = 8;
 const MAX_BYTES = 4_000_000;
@@ -69,7 +101,12 @@ const SCHEMAS = new Set([
   "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "https://agent-plugins.org/schemas/1.1.0/plugin.schema.json",
 ]);
-const MANIFESTS = ["plugin.json", ".cursor-plugin/plugin.json", ".grok-plugin/plugin.json"];
+const MANIFESTS = [
+  "plugin.json",
+  ".cursor-plugin/plugin.json",
+  ".grok-plugin/plugin.json",
+  ".claude-plugin/plugin.json",
+];
 /** Parts that only run inside an editor or execute the plugin's own code on the host. */
 const UNSUPPORTED_DIRS = new Set(["rules", "hooks", "automations"]);
 const UNSUPPORTED_FILES = new Set([".lsp.json"]);
@@ -225,7 +262,7 @@ export async function fetchGitHubRepo(
     tree?: Array<{ path: string; type: string; mode: string; size?: number }>;
   };
   if (tree.truncated || !Array.isArray(tree.tree))
-    throw new Error("Plugin repository tree is incomplete");
+    throw new PluginRefusedError("too_many_files", "Plugin repository tree is incomplete");
   const prefix = ref.subdir ? `${ref.subdir}/` : "";
   const selected = tree.tree.filter((entry) => entry.path.startsWith(prefix));
   const files: PluginRepoFile[] = [];
@@ -237,9 +274,20 @@ export async function fetchGitHubRepo(
     }
     return entry.type === "blob";
   });
-  if (entries.length > MAX_TREE_ENTRIES) throw new Error("Plugin directory has too many files");
+  if (entries.length > MAX_TREE_ENTRIES)
+    throw new PluginRefusedError("too_many_files", "Plugin directory has too many files");
   let total = 0;
   let fetched = 0;
+  // Companion files are counted per skill before anything is fetched, so one skill
+  // with hundreds of references cannot exhaust the budget the other skills share.
+  const companionsPerSkill = new Map<string, number>();
+  for (const entry of entries) {
+    const skill = /^skills\/([^/]+)\/(?!SKILL\.md$).+/.exec(entry.path.slice(prefix.length));
+    if (skill) companionsPerSkill.set(skill[1]!, (companionsPerSkill.get(skill[1]!) ?? 0) + 1);
+  }
+  const overfullSkills = new Set(
+    [...companionsPerSkill].filter(([, count]) => count > MAX_SKILL_FILES).map(([name]) => name),
+  );
   const wanted: string[] = [];
   for (const entry of entries) {
     const path = entry.path.slice(prefix.length);
@@ -248,13 +296,20 @@ export async function fetchGitHubRepo(
       files.push({ path: entry.path, content: "" });
       continue;
     }
+    // A skill that already has too many companions is refused as a whole, and its
+    // files are not fetched at all: the reason is stated by the skill's own
+    // refusal, so the plugin installs without it instead of refusing everything.
+    const overfull = /^skills\/([^/]+)\//.exec(path);
+    if (overfull && overfullSkills.has(overfull[1]!)) continue;
     // An oversized reference refuses only its own skill, not the whole plugin.
     if (SKILL_COMPANION.test(path) && (entry.size ?? 0) > MAX_FILE_BYTES) {
       files.push({ path: entry.path, content: OVERSIZED_FILE });
       continue;
     }
-    if ((entry.size ?? 0) > MAX_FILE_BYTES) throw new Error("Plugin file is too large");
-    if (++fetched > MAX_FILES) throw new Error("Plugin directory has too many files");
+    if ((entry.size ?? 0) > MAX_FILE_BYTES)
+      throw new PluginRefusedError("too_large", "Plugin file is too large");
+    if (++fetched > MAX_FILES)
+      throw new PluginRefusedError("too_many_files", "Plugin directory has too many files");
     wanted.push(entry.path);
   }
   const queue = [...wanted];
@@ -267,14 +322,19 @@ export async function fetchGitHubRepo(
           deadline,
         );
         total += Buffer.byteLength(body);
-        if (total > MAX_BYTES) throw new Error("Plugin content is too large");
+        if (total > MAX_BYTES)
+          throw new PluginRefusedError("too_large", "Plugin content is too large");
         files.push({ path, content: body });
       }
     }),
   );
   // Parallel downloads finish in any order; parsing must not depend on it.
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { files, resolvedSha: sha };
+  return {
+    files,
+    resolvedSha: sha,
+    ...(overfullSkills.size ? { overfullSkills: [...overfullSkills] } : {}),
+  };
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -297,8 +357,16 @@ function collectSkills(
   files: Map<string, string>,
   skipped: PluginSkippedEntry[],
   names: Set<string>,
+  overfullSkills: string[] = [],
 ): PluginSkillEntry[] {
   const skills: PluginSkillEntry[] = [];
+  // A skill the fetcher left out whole: say so by its folder, since nothing was read.
+  for (const folder of overfullSkills)
+    skipped.push({
+      kind: "skill_invalid",
+      name: `skills/${folder}`,
+      reason: "Skill has too many files",
+    });
   for (const [path, content] of files) {
     const match = /^skills\/([^/]+)\/SKILL\.md$/.exec(path);
     if (!match) continue;
@@ -522,35 +590,46 @@ function collectMcpServers(
 export function parsePluginDirectory(input: {
   files: PluginRepoFile[];
   resolvedSha: string;
+  /** Skills the fetcher left out whole, with the reason its own refusal states. */
+  overfullSkills?: string[];
 }): ParsedPlugin {
   if (!FULL_SHA.test(input.resolvedSha))
     throw new Error("Plugin requires a full resolved commit SHA");
-  if (input.files.length > MAX_TREE_ENTRIES) throw new Error("Plugin directory has too many files");
+  if (input.files.length > MAX_TREE_ENTRIES)
+    throw new PluginRefusedError("too_many_files", "Plugin directory has too many files");
   const files = new Map<string, string>();
   let bytes = 0;
   for (const file of input.files) {
     const path = safePath(file.path);
     bytes += Buffer.byteLength(file.content);
     if (Buffer.byteLength(file.content) > MAX_FILE_BYTES || bytes > MAX_BYTES)
-      throw new Error("Plugin content is too large");
-    if (files.has(path)) throw new Error("Plugin contains duplicate file paths");
+      throw new PluginRefusedError("too_large", "Plugin content is too large");
+    if (files.has(path))
+      throw new PluginRefusedError("invalid_manifest", "Plugin contains duplicate file paths");
     files.set(path, file.content);
   }
   const manifestPath = MANIFESTS.find((path) => files.has(path));
-  if (!manifestPath) throw new Error("No plugin manifest found");
+  if (!manifestPath) throw new PluginRefusedError("no_manifest", "No plugin manifest found");
   const raw: unknown = JSON.parse(files.get(manifestPath) ?? "");
-  if (!object(raw)) throw new Error("Plugin manifest must be an object");
+  if (!object(raw))
+    throw new PluginRefusedError("invalid_manifest", "Plugin manifest must be an object");
   const format =
     manifestPath === "plugin.json"
       ? "agent-plugins"
       : manifestPath.startsWith(".cursor")
         ? "cursor"
-        : "grok";
+        : manifestPath.startsWith(".claude")
+          ? "claude"
+          : "grok";
   const schema = format === "agent-plugins" ? raw.$schema : undefined;
   if (format === "agent-plugins" && (typeof schema !== "string" || !SCHEMAS.has(schema)))
-    throw new Error("Unsupported Agent Plugins schema");
+    throw new PluginRefusedError("unsupported_schema", "Unsupported Agent Plugins schema");
   const parsed = manifestSchema.safeParse(raw);
-  if (!parsed.success) throw new Error("Plugin manifest has invalid metadata or name");
+  if (!parsed.success)
+    throw new PluginRefusedError(
+      "invalid_manifest",
+      "Plugin manifest has invalid metadata or name",
+    );
   const manifest = parsed.data;
   const skipped: PluginSkippedEntry[] = [];
   if (schema) {
@@ -577,7 +656,7 @@ export function parsePluginDirectory(input: {
   const skills: PluginSkillEntry[] = [];
   const builtinNames: string[] = [];
   for (const skill of [
-    ...collectSkills(files, skipped, names),
+    ...collectSkills(files, skipped, names, input.overfullSkills),
     ...collectAgents(files, skipped, names),
     ...collectCommands(files, names, skipped),
   ]) {
@@ -657,8 +736,10 @@ export function classifyPluginFiles(
   for (const [dir, files] of skillDirs) {
     if (!files.includes("SKILL.md")) return "incomplete";
     const companions = files.filter((file) => file !== "SKILL.md");
-    if (companions.length > MAX_SKILL_FILES || companions.some((f) => !SKILL_TEXT_FILE.test(f)))
-      return "incomplete";
+    // A skill over the companion limit is left out of the install whole, so it
+    // neither disqualifies the plugin nor counts as one of its skills.
+    if (companions.length > MAX_SKILL_FILES) continue;
+    if (companions.some((f) => !SKILL_TEXT_FILE.test(f))) return "incomplete";
     const bytes = companions.map((file) => sizes?.get(`skills/${dir}/${file}`) ?? 0);
     if (
       bytes.some((size) => size > MAX_FILE_BYTES) ||
@@ -698,7 +779,16 @@ export async function previewPluginInstall(options: {
     }));
   if (source.subdir && !files.length)
     throw new Error(`Plugin subdirectory "${source.subdir}" not found`);
-  return { ...parsePluginDirectory({ files, resolvedSha: repo.resolvedSha }), source };
+  // The fetcher names an overfull skill by its folder, already relative to the root the
+  // parser sees; dropping it here would silently lose a skip the person must be told about.
+  return {
+    ...parsePluginDirectory({
+      files,
+      resolvedSha: repo.resolvedSha,
+      ...(repo.overfullSkills ? { overfullSkills: repo.overfullSkills } : {}),
+    }),
+    source,
+  };
 }
 
 /** Public preview deliberately excludes skill bodies and all header values. */
