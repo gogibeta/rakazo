@@ -1,5 +1,5 @@
 import { ORPCError } from "@orpc/server";
-import { BUILTIN_AGENT_SKILLS } from "@rakazo/adapters";
+import { BUILTIN_AGENT_SKILLS, skillFiles } from "@rakazo/adapters";
 import type { Actor, AgentSkill, AgentSkillSource } from "@rakazo/contracts";
 import type { SkillSource } from "@rakazo/core";
 import {
@@ -28,6 +28,7 @@ type AgentSkillRow = {
   description: string;
   content: string;
   source: string;
+  files?: unknown;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -39,6 +40,8 @@ function asSource(value: string): AgentSkillSource {
 
 export function mapAgentSkill(row: AgentSkillRow): AgentSkill {
   const source = asSource(row.source);
+  // The catalog lists the paths only; a reader fetches one body at a time through skill_read.
+  const paths = Object.keys(skillFiles(row.files)).sort();
   return {
     id: row.id,
     name: row.name,
@@ -46,6 +49,7 @@ export function mapAgentSkill(row: AgentSkillRow): AgentSkill {
     content: row.content,
     source,
     readOnly: isSkillReadOnly(source as SkillSource),
+    ...(paths.length ? { files: paths } : {}),
     availability: spaceAvailability(row),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -187,7 +191,13 @@ export function createAgentSkillsService(prisma: PrismaClient) {
 
     async create(
       actor: Actor,
-      input: { content?: string; name?: string; description?: string; body?: string },
+      input: {
+        content?: string;
+        name?: string;
+        description?: string;
+        body?: string;
+        files?: Record<string, string>;
+      },
     ): Promise<AgentSkill> {
       const resolved = resolveSkillContent(input);
       if (builtinCatalog().some((s) => s.name.toLowerCase() === resolved.name.toLowerCase())) {
@@ -210,6 +220,7 @@ export function createAgentSkillsService(prisma: PrismaClient) {
               description: resolved.description,
               content: resolved.content,
               source: "user",
+              ...(input.files && Object.keys(input.files).length ? { files: input.files } : {}),
               allSpaces: true,
             },
           });
@@ -231,6 +242,7 @@ export function createAgentSkillsService(prisma: PrismaClient) {
         name?: string;
         description?: string;
         body?: string;
+        files?: Record<string, string>;
       },
     ): Promise<AgentSkill> {
       const existing = await owned(actor, input.skillId);
@@ -263,6 +275,8 @@ export function createAgentSkillsService(prisma: PrismaClient) {
               name: resolved.name,
               description: resolved.description,
               content: resolved.content,
+              // Omitted means "leave the stored files alone", so a rename keeps them.
+              ...(input.files === undefined ? {} : { files: input.files }),
             },
           });
         });

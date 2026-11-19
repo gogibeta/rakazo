@@ -1,7 +1,7 @@
 import { Trans, useLingui } from "@lingui/react/macro";
 import { ORPCError } from "@orpc/client";
 import type { AgentSkill, AgentSkillCatalogEntry, MemoryDocument } from "@rakazo/contracts";
-import { isDeletableMemoryDocument, isEmptyBotMemory } from "@rakazo/contracts";
+import { isDeletableMemoryDocument, isEmptyBotMemory, skillFilesIssue } from "@rakazo/contracts";
 import { fetchFresh, writeSaved } from "@rakazo/core/query";
 import { Badge, Button, SectionHeading, Skeleton, Textarea } from "@rakazo/ui-web";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@rakazo/ui-web/components/ui/tooltip";
@@ -351,6 +351,9 @@ export function AgentSkills() {
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  // Companion files attached here, keyed by their path relative to the skill folder.
+  const [files, setFiles] = useState<Record<string, string>>({});
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const [actionError, setError] = useState<string | null>(null);
   const error = actionError ?? (listQuery.isError ? t`Could not load` : null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -380,10 +383,30 @@ export function AgentSkills() {
       if (current !== selection.current) return;
       setOpen(skill);
       setDraft(skill.content);
+      // Attachments are per edit: an untouched skill keeps whatever it already stores.
+      setFiles({});
     } catch {
       if (current !== selection.current) return;
       setError(t`Could not load skill`);
     }
+  }
+
+  /** Attach text files from the picker; a bad path or type refuses the whole set. */
+  async function attachFiles(picked: FileList | null) {
+    if (!picked?.length) return;
+    setError(null);
+    const next = { ...files };
+    for (const file of picked) {
+      // Browsers give a bare name; a path keeps the "references/x.md" shape a skill expects.
+      const path = (file.webkitRelativePath || file.name).replace(/^\.\//, "");
+      next[path] = await file.text();
+    }
+    const issue = skillFilesIssue(next);
+    if (issue) {
+      setError(issue);
+      return;
+    }
+    setFiles(next);
   }
 
   async function save() {
@@ -392,13 +415,22 @@ export function AgentSkills() {
     setError(null);
     try {
       if (creating) {
-        await rpc.agentSkills.create({ content: draft });
+        await rpc.agentSkills.create({
+          content: draft,
+          ...(Object.keys(files).length ? { files } : {}),
+        });
       } else if (open) {
-        await rpc.agentSkills.update({ skillId: open.id, content: draft });
+        // Only send files when the person attached some, so an untouched edit keeps them.
+        await rpc.agentSkills.update({
+          skillId: open.id,
+          content: draft,
+          ...(Object.keys(files).length ? { files } : {}),
+        });
       }
       setOpen(null);
       setCreating(false);
       setConfirmingDelete(false);
+      setFiles({});
       try {
         await refresh();
       } catch {
@@ -517,6 +549,36 @@ export function AgentSkills() {
             dir="auto"
           />
           <div className="mt-2 flex items-center gap-2">
+            {!open?.readOnly && !creating ? (
+              <>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  multiple
+                  data-testid="skill-file-input"
+                  className="hidden"
+                  onChange={(event) => void attachFiles(event.target.files)}
+                />
+                <Button
+                  variant="ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => fileInput.current?.click()}
+                  className="px-3 py-1.5 text-body-sm text-muted-foreground"
+                >
+                  <Trans>Attach files</Trans> ({Object.keys(files).length})
+                </Button>
+                {open?.files?.length ? (
+                  <span
+                    className="min-w-0 truncate text-body-sm text-muted-foreground"
+                    data-testid="skill-stored-files"
+                    dir="auto"
+                  >
+                    <Trans>Stored: {open.files.join(", ")}</Trans>
+                  </span>
+                ) : null}
+              </>
+            ) : null}
             {!open?.readOnly ? (
               <Button
                 variant="ghost"
@@ -537,6 +599,7 @@ export function AgentSkills() {
                 setOpen(null);
                 setCreating(false);
                 setConfirmingDelete(false);
+                setFiles({});
               }}
               className="px-3 py-1.5 text-body-sm text-muted-foreground"
             >
