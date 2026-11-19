@@ -621,6 +621,31 @@ describe("GitHub acquisition", () => {
     expect(preview.skipped).toEqual([]);
   });
 
+  it("keeps an overfull skill's stated reason on the preview the API returns", async () => {
+    // previewPluginInstall is the path the routes use; a reason dropped here would never
+    // reach the panel, which is the whole point of stating why a skill was left out.
+    const preview = await previewPluginInstall({
+      source: "https://github.com/example/plugin",
+      fetcher: async () => ({
+        resolvedSha: SHA,
+        files: [
+          { path: "plugin.json", content: JSON.stringify(manifest) },
+          { path: "skills/guide/SKILL.md", content: "" },
+          { path: "skills/example-skill/SKILL.md", content: skill },
+        ],
+        overfullSkills: ["guide"],
+      }),
+    });
+    expect(preview.skills.map((entry) => entry.name)).toEqual(["example-skill"]);
+    expect(preview.skipped).toContainEqual(
+      expect.objectContaining({
+        kind: "skill_invalid",
+        name: "skills/guide",
+        reason: "Skill has too many files",
+      }),
+    );
+  });
+
   it("recognizes a .claude-plugin manifest the same way as the other formats", () => {
     const preview = parse([
       { path: ".claude-plugin/plugin.json", content: JSON.stringify(manifest) },

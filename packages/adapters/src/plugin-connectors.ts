@@ -779,7 +779,16 @@ export async function previewPluginInstall(options: {
     }));
   if (source.subdir && !files.length)
     throw new Error(`Plugin subdirectory "${source.subdir}" not found`);
-  return { ...parsePluginDirectory({ files, resolvedSha: repo.resolvedSha }), source };
+  // The fetcher names an overfull skill by its folder, already relative to the root the
+  // parser sees; dropping it here would silently lose a skip the person must be told about.
+  return {
+    ...parsePluginDirectory({
+      files,
+      resolvedSha: repo.resolvedSha,
+      ...(repo.overfullSkills ? { overfullSkills: repo.overfullSkills } : {}),
+    }),
+    source,
+  };
 }
 
 /** Public preview deliberately excludes skill bodies and all header values. */
