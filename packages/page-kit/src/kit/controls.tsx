@@ -30,6 +30,22 @@ const COPIED_MESSAGE = "rakazo-page:copied";
 const COPY_MAX_LENGTH = 20_000;
 let copies = 0;
 
+/** Loopback names: browsers treat plain http there as a secure context. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+/**
+ * Whether the app may copy for a page: https or a loopback address, the same rule the app's own
+ * clipboard writes use. A page served over an insecure origin must not reach further than the app
+ * itself, so it never gets to ask the host to copy.
+ */
+function clipboardAllowed(): boolean {
+  if (typeof window === "undefined") return false;
+  // The platform's verdict when it has one; jsdom does not, so fall back to the URL rule.
+  if (typeof window.isSecureContext === "boolean") return window.isSecureContext;
+  const { protocol, hostname } = window.location;
+  return protocol === "https:" || LOOPBACK_HOSTS.has(hostname) || hostname.endsWith(".localhost");
+}
+
 /**
  * Copies text for the reader and resolves whether it worked. Pages have no clipboard of their
  * own: the app copies, one copy per click in the page, and says whether it could.
@@ -37,6 +53,7 @@ let copies = 0;
 export function copyText(value: unknown): Promise<boolean> {
   const content = text(value);
   if (!content || content.length > COPY_MAX_LENGTH) return Promise.resolve(false);
+  if (!clipboardAllowed()) return Promise.resolve(false);
   copies += 1;
   const id = `copy-${copies}`;
   return new Promise((resolve) => {

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * Copies by selecting the text in a hidden field, which works in the click that asked for it
- * where the Clipboard API does not exist: a self-hosted server on plain http, for one.
+ * Copies by selecting the text in a hidden field. Only reached on a secure page where the
+ * Clipboard API is present but refused the write; an insecure page never gets here.
  */
 function copyBySelection(text: string): boolean {
   const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -25,12 +25,30 @@ function copyBySelection(text: string): boolean {
   return copied;
 }
 
+/** Names that resolve to this machine, where browsers treat plain http as secure anyway. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
 /**
- * Puts text on the clipboard; true once there. Browsers expose the Clipboard API only to secure
- * pages, so its absence is the insecure case. `isCurrent` lets a caller stop a superseded write
- * from falling back to selection over newer text.
+ * Whether this page may write the clipboard at all: https, or a loopback address.
+ *
+ * Browsers grant the Clipboard API only to a secure context, and that refusal is the rule to
+ * enforce here rather than a hint to fall back from — `execCommand("copy")` still works on an
+ * insecure page, so a document inside a bot's page could otherwise write the reader's clipboard
+ * from it. We serve only http and https, where protocol plus hostname fully decides the answer, so
+ * no platform probe is needed and none is possible under jsdom.
+ */
+export function clipboardAllowed(): boolean {
+  const { protocol, hostname } = window.location;
+  return protocol === "https:" || LOOPBACK_HOSTS.has(hostname) || hostname.endsWith(".localhost");
+}
+
+/**
+ * Puts text on the clipboard; true once there. Refuses on a page that is not a secure context — see
+ * `clipboardAllowed`. `isCurrent` lets a caller stop a superseded write from reporting success
+ * over newer text.
  */
 export function writeClipboard(text: string, isCurrent = () => true): Promise<boolean> {
+  if (!clipboardAllowed()) return Promise.resolve(false);
   if (navigator.clipboard?.writeText) {
     return navigator.clipboard.writeText(text).then(
       () => true,

@@ -238,3 +238,24 @@ describe("controls", () => {
     expect(q('[aria-pressed="true"]')!.textContent).toBe("o240");
   });
 });
+
+it("refuses to ask the host to copy from an insecure origin", async () => {
+  // The app will not write the clipboard for an insecure page, so the page must not even ask:
+  // a copy button there resolves false and shows the text for the reader to select by hand.
+  const original = window.location.href;
+  Reflect.defineProperty(window, "location", {
+    value: new URL("http://rakazo.lan:3000/"),
+    configurable: true,
+    writable: true,
+  });
+  try {
+    await expect(copyText("secret")).resolves.toBe(false);
+    expect(posted).toEqual([]);
+  } finally {
+    Reflect.defineProperty(window, "location", {
+      value: new URL(original),
+      configurable: true,
+      writable: true,
+    });
+  }
+});
