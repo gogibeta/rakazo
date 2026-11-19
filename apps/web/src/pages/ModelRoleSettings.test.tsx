@@ -219,6 +219,32 @@ describe("shared role editor", () => {
       expect.anything(),
     );
   });
+  it("makes a fallback the default model and keeps the old one as the first fallback", async () => {
+    saved = { primary: chat, backups: [jev, mini] };
+    await render();
+    await menu("Mini", "Make default model");
+    expect(api.setRole).toHaveBeenCalledTimes(1);
+    // Changing the default must not cost the chain that takes over when it fails.
+    expect(api.setRole).toHaveBeenLastCalledWith(
+      expect.objectContaining({ primary: mini, backups: [chat, jev] }),
+      expect.anything(),
+    );
+    expect(rows().map((row) => row?.replace(/OpenRouter$/, ""))).toEqual([
+      "Mini",
+      "Chat",
+      "Jev 1.14",
+    ]);
+  });
+  it("does not offer to make the model running first the default again", async () => {
+    saved = { primary: chat, backups: [mini] };
+    await render();
+    await click(trigger("Chat options"));
+    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].map(
+      (entry) => entry.textContent,
+    );
+    expect(items).not.toContain("Make default model");
+    expect(api.setRole).not.toHaveBeenCalled();
+  });
   it("lets any fallback lead the main model, including a deployment-managed one", async () => {
     const managed = { provider: "anthropic", modelId: "claude" };
     api.forRole.mockResolvedValue([

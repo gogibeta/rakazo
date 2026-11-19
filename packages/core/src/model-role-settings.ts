@@ -130,3 +130,31 @@ export function modelRoleListPatch(
     ? { backups: list.slice(1) }
     : { primary, backups: list.slice(1) };
 }
+
+/**
+ * The save that makes `choice` the model running first, keeping the chain that takes over when
+ * it fails. The model that ran before steps down to the head of that chain instead of being
+ * dropped, so asking for a new default never costs the old one. A choice already first returns
+ * null: there is nothing to save.
+ */
+export function makeDefaultModelPatch(
+  current: ModelRoleSettings,
+  choice: ModelRoleChoice,
+): Partial<ModelRoleSettings> | null {
+  const key = modelRoleChoiceKey(choice);
+  if (current.primary && modelRoleChoiceKey(current.primary) === key) return null;
+  // The promoted model leaves the chain it sat in; the old primary leads the rest.
+  const rest = current.backups.filter((backup) => modelRoleChoiceKey(backup) !== key);
+  const backups = current.primary ? [current.primary, ...rest] : rest;
+  // The promotion can put a model next to itself; a model is never tried twice.
+  const seen = new Set<string>([key]);
+  return {
+    primary: choice,
+    backups: backups.filter((backup) => {
+      const backupKey = modelRoleChoiceKey(backup);
+      if (seen.has(backupKey)) return false;
+      seen.add(backupKey);
+      return true;
+    }),
+  };
+}
