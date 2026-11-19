@@ -16,10 +16,11 @@ export type CombinedWebOptions = {
 };
 
 /**
- * Combined web backend: with a primary configured, search merges primary and
- * fallback hits (primary first, duplicates removed) and fetch prefers the
- * primary, falling back on error. Without a primary it behaves exactly like
- * the fallback alone.
+ * Combined web backend: with a primary configured, search runs both sides and
+ * merges their hits (primary first, duplicates removed), keeping up to twice
+ * the requested count so a full primary page cannot crowd out fallback
+ * uniques. Fetch prefers the primary, falling back on error. Without a primary
+ * it behaves exactly like the fallback alone.
  */
 export class CombinedWebProvider implements WebProvider {
   private readonly primary?: WebProvider;
@@ -48,13 +49,19 @@ export class CombinedWebProvider implements WebProvider {
   async search(request: WebSearchRequest, context: AdapterContext): Promise<WebSearchHit[]> {
     if (!this.primary) return this.fallback.search(request, context);
     const maxResults = clampMaxResults(request.maxResults);
+    // Each side answers for the count alone, then the merge keeps room for both. A primary page
+    // that fills the request must not hide the fallback's unique hits, which is what the research
+    // step sees. The limit is doubled, not unbounded, so the model still gets a readable list.
+    const sideRequest = { ...request, maxResults };
     const [primary, fallback] = await Promise.allSettled([
-      this.primary.search(request, context),
-      this.fallback.search(request, context),
+      this.primary.search(sideRequest, context),
+      this.fallback.search(sideRequest, context),
     ]);
     if (primary.status === "rejected" && fallback.status === "rejected") throw fallback.reason;
     const merged: WebSearchHit[] = [];
     const seen = new Set<string>();
+    // Both sides are read in full before the cap applies, so uniques are never cut short by where
+    // a hit happened to sit in its own list.
     for (const result of [primary, fallback]) {
       if (result.status !== "fulfilled") continue;
       for (const hit of result.value) {
@@ -62,10 +69,9 @@ export class CombinedWebProvider implements WebProvider {
         if (seen.has(key)) continue;
         seen.add(key);
         merged.push(hit);
-        if (merged.length >= maxResults) return merged;
       }
     }
-    return merged;
+    return merged.slice(0, maxResults * 2);
   }
 
   async fetch(request: WebFetchRequest, context: AdapterContext): Promise<WebFetchResult> {
