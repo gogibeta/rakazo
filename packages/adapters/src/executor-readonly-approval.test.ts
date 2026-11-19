@@ -395,7 +395,7 @@ function fixture({
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
     // The thread's earlier tool record, read when a clean run's memory save is judged.
-    toolEvent: { findMany: vi.fn(async () => []) },
+    toolEvent: { findFirst: vi.fn(async () => null) },
     thread: {
       findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })),
       update: vi.fn(async () => ({ nextMessageSeq: 2, nextEventSeq: 2 })),

@@ -304,17 +304,22 @@ async function runOnce(calls: ToolCall[], options: HarnessOptions) {
       ),
     },
     toolEvent: {
-      findMany: vi.fn(
+      // Honors the status and notIn filters the real query uses, so a test's own-state-only case
+      // exercises the same rule the database applies rather than passing on a stub that ignores it.
+      findFirst: vi.fn(
         async ({
           where,
         }: {
-          where?: { status?: string };
-        } = {}): Promise<Array<{ toolName: string }>> =>
-          (options.priorToolEvents ?? [])
-            .filter((event) =>
-              where?.status ? (event.status ?? "succeeded") === where.status : true,
-            )
-            .map((event) => ({ toolName: event.toolName })),
+          where?: { status?: string; toolName?: { notIn?: string[] } };
+        } = {}): Promise<{ id: string } | null> => {
+          const excluded = new Set(where?.toolName?.notIn ?? []);
+          const hit = (options.priorToolEvents ?? []).find(
+            (event) =>
+              (where?.status ? (event.status ?? "succeeded") === where.status : true) &&
+              !excluded.has(event.toolName),
+          );
+          return hit ? { id: "event-1" } : null;
+        },
       ),
     },
     artifact: { findMany: vi.fn(async () => []) },

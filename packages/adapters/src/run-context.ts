@@ -12,7 +12,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { ComputerMode, MessageBlock, ReplyMode } from "@rakazo/contracts";
 import type { ToolStepOutcome } from "@rakazo/core";
-import { createStreamingRedactor, toolResultTaintsRun } from "@rakazo/core";
+import { createStreamingRedactor, OWN_STATE_RESULT_TOOLS } from "@rakazo/core";
 import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { Bot, Computer, effectiveMemoryScope, Run, Task, Thread } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
@@ -418,11 +418,20 @@ export async function isRunTainted(ctx: RunContext) {
  * page read in an earlier message is still a note the page wrote.
  */
 async function loadThreadOutsideContent(ctx: RunContext): Promise<boolean> {
+  // Filtered where the rows are, not here: a long-lived thread records many tool events, and the
+  // useful ones are only ever the reads. Bringing every name back to test it would grow with the
+  // conversation, so ask for one row matching the inverse of the own-state list — which is the
+  // same test `toolResultTaintsRun` makes, since anything unknown taints — and let the index
+  // answer it. One row is enough: the question is whether any such read happened.
   const [tools, steered] = await Promise.all([
-    ctx.deps.prisma.toolEvent.findMany({
-      where: { threadId: ctx.thread.id, runId: { not: ctx.runId }, status: "succeeded" },
-      select: { toolName: true },
-      distinct: ["toolName"],
+    ctx.deps.prisma.toolEvent.findFirst({
+      where: {
+        threadId: ctx.thread.id,
+        runId: { not: ctx.runId },
+        status: "succeeded",
+        toolName: { notIn: [...OWN_STATE_RESULT_TOOLS] },
+      },
+      select: { id: true },
     }),
     ctx.deps.prisma.steeringMessage.findFirst({
       where: {
@@ -436,7 +445,7 @@ async function loadThreadOutsideContent(ctx: RunContext): Promise<boolean> {
       select: { id: true },
     }),
   ]);
-  return tools.some((event) => toolResultTaintsRun(event.toolName)) || steered !== null;
+  return tools !== null || steered !== null;
 }
 
 /**

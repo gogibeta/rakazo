@@ -39,10 +39,21 @@ describe("memory provenance on save", () => {
         // isRunTainted reads this only when the run is not already tainted.
         prisma: {
           attempt: { count: vi.fn(async () => 1) },
-          // The thread's earlier tool record, read only when the run itself is clean.
+          // The thread's earlier tool record, read only when the run itself is clean. Honors the
+          // notIn filter the real query uses, so the own-state test exercises the same rule.
           toolEvent: {
-            findMany: vi.fn(async () =>
-              (options.priorToolEvents ?? []).map((event) => ({ toolName: event.toolName })),
+            findFirst: vi.fn(
+              async ({
+                where,
+              }: {
+                where?: { toolName?: { notIn?: string[] } };
+              } = {}): Promise<{ id: string } | null> => {
+                const excluded = new Set(where?.toolName?.notIn ?? []);
+                const hit = (options.priorToolEvents ?? []).some(
+                  (event) => !excluded.has(event.toolName),
+                );
+                return hit ? { id: "event-1" } : null;
+              },
             ),
           },
           steeringMessage: { findFirst: vi.fn(async () => null) },

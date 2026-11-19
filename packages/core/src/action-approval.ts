@@ -258,7 +258,7 @@ export function isOwnerStartedRun(trigger: string, followUpFromUser: boolean): b
  * (pages, search hits, files, connector data, the screen, shell output, other bots) can carry text
  * an attacker wrote, and taints the run. New tools taint by default.
  */
-const OWN_STATE_RESULT_TOOLS = new Set([
+export const OWN_STATE_RESULT_TOOLS: ReadonlySet<string> = new Set([
   "ask_user",
   // Only confirms what the bot itself sent.
   "send_email",

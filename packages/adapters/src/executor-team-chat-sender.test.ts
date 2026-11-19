@@ -175,6 +175,8 @@ async function teamChatRun(input: {
       findUnique: vi.fn(async () => null),
     },
     steeringMessage: { findFirst: vi.fn(async () => null) },
+    // The thread's earlier tool record, read when a clean run's memory save is judged.
+    toolEvent: { findFirst: vi.fn(async () => null) },
     externalConversation: {
       findUnique: vi.fn(async () => ({
         provider: "slack",
