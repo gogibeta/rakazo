@@ -317,4 +317,71 @@ describe("system files", () => {
     expect(listed.entries).toHaveLength(1000);
     expect(listed.truncated).toBe(true);
   });
+
+  it("refuses to write through a link that took the file's place", async () => {
+    // The write path opens its existing target with O_NOFOLLOW, so a symlink
+    // standing where the file was is refused rather than followed.
+    const deps = makeDeps();
+    const target = path.join(root, "hello.txt");
+    await rm(target, { force: true });
+    await symlink(path.join(outside, "secret.txt"), target);
+    await expect(
+      writeSystemFile(deps, actor, { path: "hello.txt", content: "overwritten" }),
+    ).rejects.toThrow();
+    // The file outside the root is untouched.
+    expect(await readFile(path.join(outside, "secret.txt"), "utf8")).toBe("outside the root");
+  });
+
+  it("never reads outside content while the path is being swapped", async () => {
+    // The window this closes is real but narrow: validate the path, then open it
+    // by name. A symlink swapped in between the two is followed by the open and
+    // the containment check never saw it. Hammering the swap while reading is
+    // what exposes that window; a single ordered swap is caught earlier by the
+    // symlink resolution, which is why this has to be concurrent.
+    const deps = makeDeps();
+    const target = path.join(root, "hello.txt");
+    const escapePath = path.join(outside, "secret.txt");
+    let stop = false;
+    const swapper = (async () => {
+      while (!stop) {
+        await rm(target, { force: true });
+        await symlink(escapePath, target).catch(() => undefined);
+        await rm(target, { force: true });
+        await writeFile(target, "hello world");
+      }
+    })();
+    let leaked = 0;
+    try {
+      for (let index = 0; index < 300; index += 1) {
+        const result = await readSystemFile(deps, actor, { path: "hello.txt" }).catch(() => null);
+        if (result?.content?.includes("outside the root")) leaked += 1;
+      }
+    } finally {
+      stop = true;
+      await swapper;
+    }
+    expect(leaked).toBe(0);
+  });
+
+  it("keeps an ordinary file readable and writable", async () => {
+    // Guard against the checks being so strict that normal use breaks.
+    const deps = makeDeps();
+    expect((await readSystemFile(deps, actor, { path: "hello.txt" })).content).toBe("hello world");
+    await expect(
+      writeSystemFile(deps, actor, { path: "hello.txt", content: "hello again" }),
+    ).resolves.toEqual({ ok: true, size: 11 });
+  });
+
+  it("still writes through a symlink that stays inside the root", async () => {
+    // Documented behaviour: an inside-root link is written through to its target
+    // rather than replaced. The new open checks must not turn that into an error.
+    const deps = makeDeps();
+    await symlink(path.join(root, "hello.txt"), path.join(root, "alias.txt"));
+    await expect(
+      writeSystemFile(deps, actor, { path: "alias.txt", content: "through the link" }),
+    ).resolves.toEqual({ ok: true, size: 16 });
+    // The target changed and the link is still a link.
+    expect(await readFile(path.join(root, "hello.txt"), "utf8")).toBe("through the link");
+    expect((await stat(path.join(root, "alias.txt"))).isFile()).toBe(true);
+  });
 });

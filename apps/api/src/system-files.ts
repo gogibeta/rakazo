@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { lstat, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { lstat, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ORPCError } from "@orpc/server";
 import type {
@@ -176,6 +178,74 @@ async function resolveExisting(rootReal: string, input: string): Promise<string>
 }
 
 /**
+ * Opens a file and proves the thing actually opened is inside the root.
+ *
+ * Checking a path and then reading it by name is a race: a symlink swapped in
+ * between the two steps is followed by the second call, and the containment
+ * check never saw it. So the file is opened once and the containment check runs
+ * against `/proc/self/fd`, which names the inode behind the descriptor we hold —
+ * whatever the path is renamed to later, this descriptor cannot be redirected.
+ *
+ * Read-only by default; "verify" opens for read *and* keeps the write right, so a
+ * caller can inspect what it is about to replace only after the descriptor is
+ * known to be safe. Returns a handle the caller must close.
+ */
+async function openChecked(
+  rootReal: string,
+  input: string,
+  mode: "read" | "verify",
+): Promise<{ handle: FileHandle; real: string }> {
+  const opened = await openCheckedAt(
+    path.resolve(rootReal, checkedRelative(input)),
+    rootReal,
+    mode,
+  );
+  // Without `allowMissing` this only returns null if the caller lies about it.
+  if (!opened) throw new ORPCError("NOT_FOUND", { message: "Not found" });
+  return opened;
+}
+/** `openChecked` for a path that has already been resolved against the root. */
+async function openCheckedAt(
+  absolute: string,
+  rootReal: string,
+  mode: "read" | "verify",
+  /** In "verify" mode a missing file is not an error: the caller is about to create it. */
+  allowMissing = false,
+): Promise<{ handle: FileHandle; real: string } | null> {
+  const flags =
+    mode === "read"
+      ? fsConstants.O_RDONLY
+      : // "verify" reads the current bytes *and* keeps the write right, so the
+        // caller's own containment check can inspect what it is about to replace.
+        // No O_CREAT: a new file is written beside a checked parent instead.
+        fsConstants.O_RDWR | fsConstants.O_NOFOLLOW;
+  const handle = await open(absolute, flags).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") {
+      if (allowMissing) return null;
+      throw new ORPCError("NOT_FOUND", { message: "Not found" });
+    }
+    if (error.code === "ELOOP" || error.code === "EMLINK") throw outsideRoot();
+    if (error.code === "EISDIR") throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
+    throw error;
+  });
+  if (!handle) return null;
+  let real: string;
+  try {
+    // `/proc/self/fd` reports the opened inode's own path, so this is not a
+    // second lookup by name: it cannot be raced by swapping the path.
+    real = await realpath(`/proc/self/fd/${handle.fd}`);
+  } catch {
+    await handle.close().catch(() => undefined);
+    throw outsideRoot();
+  }
+  if (!isInsideRoot(rootReal, real)) {
+    await handle.close().catch(() => undefined);
+    throw outsideRoot();
+  }
+  return { handle, real };
+}
+
+/**
  * Resolves where a write may land: the parent folder must already exist
  * inside the root (folders are never created), and an existing target must
  * resolve inside the root too. A symlink that stays inside the root is
@@ -305,39 +375,46 @@ export async function readSystemFile(
   }
   const rootReal = await realRoot(root);
   assertNoSecretSegments(input.path);
-  const file = await resolveExisting(rootReal, input.path);
-  assertResolvedNotSecret(rootReal, file);
-  const info = await stat(file).catch(() => null);
-  if (!info?.isFile()) throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
-  if (info.size > SYSTEM_FILES_MAX_BYTES) {
+  assertResolvedNotSecret(rootReal, path.resolve(rootReal, checkedRelative(input.path)));
+  // Open first, validate the descriptor, then read from that same descriptor:
+  // no window remains in which the path could be swapped for a symlink.
+  const { handle, real } = await openChecked(rootReal, input.path, "read");
+  try {
+    assertResolvedNotSecret(rootReal, real);
+    const info = await handle.stat();
+    if (!info.isFile()) throw new ORPCError("BAD_REQUEST", { message: "Not a file" });
+    if (info.size > SYSTEM_FILES_MAX_BYTES) {
+      return {
+        enabled: true,
+        path: input.path,
+        content: null,
+        size: info.size,
+        editable: false,
+        reason: "too-large",
+      };
+    }
+    const bytes = await handle.readFile();
+    if (hasBinaryExtension(real) || !isText(bytes)) {
+      return {
+        enabled: true,
+        path: input.path,
+        content: null,
+        size: info.size,
+        editable: false,
+        reason: "binary",
+      };
+    }
     return {
       enabled: true,
       path: input.path,
-      content: null,
+      content: bytes.toString("utf8"),
       size: info.size,
-      editable: false,
-      reason: "too-large",
+      editable: true,
+      reason: null,
     };
+  } finally {
+    await handle.close().catch(() => undefined);
   }
-  const bytes = await readFile(file);
-  if (hasBinaryExtension(file) || !isText(bytes)) {
-    return {
-      enabled: true,
-      path: input.path,
-      content: null,
-      size: info.size,
-      editable: false,
-      reason: "binary",
-    };
-  }
-  return {
-    enabled: true,
-    path: input.path,
-    content: bytes.toString("utf8"),
-    size: info.size,
-    editable: true,
-    reason: null,
-  };
 }
 
 export async function writeSystemFile(
@@ -365,25 +442,41 @@ export async function writeSystemFile(
   const rootReal = await realRoot(root);
   const target = await resolveForWrite(rootReal, input.path);
   assertResolvedNotSecret(rootReal, target);
-  const existing = await stat(target).catch(() => null);
-  if (existing) {
-    // Never overwrite a binary or oversized file sight unseen from the editor.
-    if (existing.size > SYSTEM_FILES_MAX_BYTES) {
-      throw new ORPCError("BAD_REQUEST", {
-        message: "That file is too large to edit here",
-      });
-    }
-    const current = await readFile(target);
-    if (!isText(current)) {
-      throw new ORPCError("BAD_REQUEST", { message: "Only text files can be edited here" });
-    }
-  }
+  // Validate the existing file through a descriptor, then write beside it and
+  // rename over it. Re-checking the path by name here would reopen the race the
+  // read path just closed.
+  const opened = await openCheckedAt(target, rootReal, "verify", true);
+  const existing = opened
+    ? await (async () => {
+        const { handle, real } = opened;
+        try {
+          // Never overwrite a binary or oversized file sight unseen from the editor.
+          const info = await handle.stat();
+          if (info.size > SYSTEM_FILES_MAX_BYTES) {
+            throw new ORPCError("BAD_REQUEST", {
+              message: "That file is too large to edit here",
+            });
+          }
+          if (!isText(await handle.readFile())) {
+            throw new ORPCError("BAD_REQUEST", { message: "Only text files can be edited here" });
+          }
+          return real;
+        } finally {
+          await handle.close().catch(() => undefined);
+        }
+      })()
+    : null;
+  // A symlink inside the root is written through to its target, as before.
+  const destination = existing ?? target;
   // Write beside the target and rename over it, so a reader never sees a
   // half-written file and a failed write leaves the original in place.
-  const temp = path.join(path.dirname(target), `.${path.basename(target)}.tmp-${randomUUID()}`);
+  const temp = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}.tmp-${randomUUID()}`,
+  );
   try {
     await writeFile(temp, bytes);
-    await rename(temp, target);
+    await rename(temp, destination);
   } catch (error) {
     await rm(temp, { force: true }).catch(() => undefined);
     throw error;
