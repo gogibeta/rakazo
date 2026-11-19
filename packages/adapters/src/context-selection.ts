@@ -720,6 +720,9 @@ export function selectContext<T extends ContextMessage>(
   const currentStart = options.earlier?.before ?? 0;
   let earlierTokens = 0;
   // Retain a contiguous recent suffix. Skip no holes inside a retained tool group.
+  // A group too large for the remaining room must not end the walk: everything older would go
+  // with it, including results that still fit. Skip it and keep looking, so the surfaced window
+  // is the recent suffix of what fits, not of what happens to be adjacent.
   for (let index = groups.length - 1; index >= 0; index--) {
     const group = groups[index]!;
     if (group.indexes.some((i) => messages[i]!.role === "user")) exchanges += 1;
@@ -730,7 +733,7 @@ export function selectContext<T extends ContextMessage>(
       (!earlier || earlierTokens + group.tokens > (options.earlier?.tokens ?? 0))
     )
       break;
-    if (used + group.tokens > available) break;
+    if (used + group.tokens > available) continue;
     selected.add(group);
     used += group.tokens;
     if (earlier) earlierTokens += group.tokens;
