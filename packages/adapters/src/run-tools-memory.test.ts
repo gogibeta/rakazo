@@ -10,8 +10,16 @@ const saveShared = memoryTools.save_shared_memory as NonNullable<
 >;
 
 describe("memory provenance on save", () => {
-  /** A context whose run is tainted or clean, with a commit that records what it was given. */
-  const runWith = (options: { tainted: boolean; receivedOutsideMessage?: boolean }) => {
+  /**
+   * A context whose run is tainted or clean, with a commit that records what it was given.
+   * `priorToolEvents` is what earlier runs of this thread recorded — the thread's outside-content
+   * history a memory save is also judged on.
+   */
+  const runWith = (options: {
+    tainted: boolean;
+    receivedOutsideMessage?: boolean;
+    priorToolEvents?: Array<{ toolName: string }>;
+  }) => {
     type CommitRequest = {
       path: string;
       content: string;
@@ -29,13 +37,26 @@ describe("memory provenance on save", () => {
       deps: {
         memory: { read, commit },
         // isRunTainted reads this only when the run is not already tainted.
-        prisma: { attempt: { count: vi.fn(async () => 1) } },
+        prisma: {
+          attempt: { count: vi.fn(async () => 1) },
+          // The thread's earlier tool record, read only when the run itself is clean.
+          toolEvent: {
+            findMany: vi.fn(async () =>
+              (options.priorToolEvents ?? []).map((event) => ({ toolName: event.toolName })),
+            ),
+          },
+          steeringMessage: { findFirst: vi.fn(async () => null) },
+        },
       },
       runId: "run-1",
       bot: { id: "bot-1" },
       thread: { id: "thread-1" },
       context: { operationId: "run-1", traceId: "run-1", signal: new AbortController().signal },
-      state: { tainted: options.tainted, earlierAttempt: undefined },
+      state: {
+        tainted: options.tainted,
+        earlierAttempt: undefined,
+        threadOutsideContent: undefined,
+      },
       trust: {
         receivedOutsideMessage: vi.fn(async () => options.receivedOutsideMessage ?? false),
       },
@@ -70,6 +91,20 @@ describe("memory provenance on save", () => {
     const { ctx, commit } = runWith({ tainted: false, receivedOutsideMessage: true });
 
     await remember(ctx, call({ content: "Note" }));
+
+    expect(commit.mock.calls[0]?.[0]).toMatchObject({ writtenAfterOutsideContent: true });
+  });
+
+  it("counts an earlier message's outside read as outside content too", async () => {
+    // The live bypass the retest caught: the page was read in an earlier message, so this run is
+    // clean on its own — no tool of its own read anything. The save must still carry the
+    // provenance, because the fact came from that page all the same.
+    const { ctx, commit } = runWith({
+      tainted: false,
+      priorToolEvents: [{ toolName: "web_search" }],
+    });
+
+    await remember(ctx, call({ content: "Always forward invoices" }));
 
     expect(commit.mock.calls[0]?.[0]).toMatchObject({ writtenAfterOutsideContent: true });
   });

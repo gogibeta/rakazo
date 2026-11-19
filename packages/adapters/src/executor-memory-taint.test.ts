@@ -95,6 +95,13 @@ type HarnessOptions = {
   review?: "pass" | "ask";
   /** Approval mode "never": every gated call is refused instead of asking. */
   skipApprovals?: boolean;
+  /**
+   * Tool events earlier runs of this thread recorded — the conversation's outside-content
+   * history a later memory save is judged on. Status defaults to succeeded.
+   */
+  priorToolEvents?: Array<{ toolName: string; status?: string; runId?: string }>;
+  /** An earlier run of this thread received a steered or channel message. */
+  priorOutsideSteering?: boolean;
 };
 
 /**
@@ -288,7 +295,28 @@ async function runOnce(calls: ToolCall[], options: HarnessOptions) {
         skipApprovals: options.skipApprovals ?? false,
       })),
     },
-    steeringMessage: { findFirst: vi.fn(async () => null) },
+    // The trust loader asks what steering THIS run received (keyed by runId); the memory taint
+    // asks what steering the THREAD ever received (keyed by the run relation). The double tells
+    // them apart by that shape, so a test can expose the thread without tainting this run.
+    steeringMessage: {
+      findFirst: vi.fn(async ({ where }: { where?: Record<string, unknown> } = {}) =>
+        where && "run" in where && options.priorOutsideSteering ? { id: "steer-1" } : null,
+      ),
+    },
+    toolEvent: {
+      findMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where?: { status?: string };
+        } = {}): Promise<Array<{ toolName: string }>> =>
+          (options.priorToolEvents ?? [])
+            .filter((event) =>
+              where?.status ? (event.status ?? "succeeded") === where.status : true,
+            )
+            .map((event) => ({ toolName: event.toolName })),
+      ),
+    },
     artifact: { findMany: vi.fn(async () => []) },
     routine: { findMany: vi.fn(async () => []) },
   };
@@ -482,5 +510,64 @@ describe("a run's own memory taints it", () => {
     expect(run.commitSeen).toEqual([
       expect.objectContaining({ writtenAfterOutsideContent: false }),
     ]);
+  });
+});
+
+describe("a thread's earlier outside content gates a memory save", () => {
+  it("gates and marks a save in a later run of a conversation that read outside content", async () => {
+    const memory: MemoryState = { documents: [] };
+
+    // The live shape the retest caught: the page was read in an earlier message, so the saving
+    // run is itself clean — no tool of its own read anything, the owner started it, nothing
+    // steered it. Only the thread's history knows the fact is not the owner's own words.
+    const run = await runOnce([remember()], {
+      memory,
+      prompt: "Remember our invoice rules",
+      priorToolEvents: [{ toolName: "web_search", runId: "run-0" }],
+    });
+
+    expect(run.reviewRequests()).toHaveLength(1);
+    expect(run.reviewRequests()[0]).toMatchObject({ toolName: "remember", memoryWrite: true });
+    // When it lands, the provenance says it was written after outside content — the column the
+    // retest found false on the live path.
+    expect(run.commitSeen).toEqual([expect.objectContaining({ writtenAfterOutsideContent: true })]);
+  });
+
+  it("does not gate a save in a thread whose earlier tools were own-state only", async () => {
+    const run = await runOnce([remember()], {
+      memory: { documents: [] },
+      prompt: "Remember our invoice rules",
+      priorToolEvents: [{ toolName: "write_file", runId: "run-0" }],
+    });
+
+    expect(run.reviewRequests()).toHaveLength(0);
+    expect(run.commitSeen).toEqual([
+      expect.objectContaining({ writtenAfterOutsideContent: false }),
+    ]);
+  });
+
+  it("does not gate a save on an outside read that never succeeded", async () => {
+    // A failed read brought no content in, so there is nothing to answer for.
+    const run = await runOnce([remember()], {
+      memory: { documents: [] },
+      prompt: "Remember our invoice rules",
+      priorToolEvents: [{ toolName: "web_search", status: "failed", runId: "run-0" }],
+    });
+
+    expect(run.reviewRequests()).toHaveLength(0);
+    expect(run.commitSeen).toEqual([
+      expect.objectContaining({ writtenAfterOutsideContent: false }),
+    ]);
+  });
+
+  it("gates a save after a steered message reached an earlier run", async () => {
+    const run = await runOnce([remember()], {
+      memory: { documents: [] },
+      prompt: "Remember our invoice rules",
+      priorOutsideSteering: true,
+    });
+
+    expect(run.reviewRequests()).toHaveLength(1);
+    expect(run.reviewRequests()[0]).toMatchObject({ toolName: "remember", memoryWrite: true });
   });
 });

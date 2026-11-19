@@ -308,7 +308,7 @@ export function toolResultTaintsRun(toolName: string): boolean {
  * `save_shared_memory` write Markdown documents into the prompt; `save_memory` writes a durable
  * semantic-memory record. All three outlive the run that wrote them.
  */
-const MEMORY_WRITE_TOOLS = new Set(["remember", "save_memory", "save_shared_memory"]);
+export const MEMORY_WRITE_TOOLS = new Set(["remember", "save_memory", "save_shared_memory"]);
 
 /**
  * A memory save is a standing instruction for every later run, so it goes through the run's

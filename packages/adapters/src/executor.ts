@@ -1448,6 +1448,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           // A resumed turn replaces this with the baseline its saved prompt was built from.
           ownInstructionsBaseline: bot.instructions ?? "",
           earlierAttempt: undefined,
+          threadOutsideContent: undefined,
           walletHosts: new Set(),
           handedOff: false,
           terminalCheckpointComplete: false,

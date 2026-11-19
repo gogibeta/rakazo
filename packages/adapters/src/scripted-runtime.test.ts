@@ -185,7 +185,9 @@ describe("inferScript replies with quoted context", () => {
       "remember the plan",
     );
     expect(inferScript(crm)[0]?.assistant).toBe(inferScript("remember the plan")[0]?.assistant);
-    expect(inferScript(crm)[0]?.toolCalls).toBeUndefined();
+    // The reply took the remember journey, not the connector one the id's "crm" could have
+    // claimed: the call is the gated memory save, not a destination write.
+    expect(inferScript(crm)[0]?.toolCalls?.[0]?.name).toBe("remember");
 
     const login = replyPrompt(
       { messageId: "clogin9f3k2wx4tq8", role: "user", content: "unrelated words" },
@@ -201,6 +203,15 @@ describe("inferScript replies with quoted context", () => {
       "please sign in",
     );
     expect(inferScript(prompt)).toEqual(inferScript("please sign in"));
+  });
+
+  it("saves a remembered fact through the gated tool, never a scripted memory write", () => {
+    // A scripted memory write would land without the approval gate and without the provenance
+    // the gate records, so the inference has to ask for the real tool.
+    const [turn] = inferScript("remember the plan");
+    expect(turn?.assistant).toBe("noted — i will keep that in memory.");
+    expect(turn?.toolCalls).toEqual([{ name: "remember", args: { content: "remember the plan" } }]);
+    expect(turn?.memory).toBeUndefined();
   });
 });
 
