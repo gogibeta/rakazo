@@ -905,6 +905,40 @@ const tokenizedSamples = [
     most: 227,
   },
 ];
+describe("tool results that fit the window", () => {
+  // An earlier tool result the model never read is progress, not noise: dropping it makes the
+  // model repeat work it already did. The recent-suffix walk stops at the first group that does
+  // not fit, so one oversized group in the middle takes every older group with it — including
+  // results with room to spare.
+  const call = (id: string) => ({
+    role: "assistant" as const,
+    content: [{ type: "toolCall" as const, id, name: "search", arguments: { q: id } }],
+    timestamp: 1,
+  });
+  const result = (id: string, text: string) => ({
+    role: "toolResult" as const,
+    toolCallId: id,
+    toolName: "search",
+    content: [{ type: "text" as const, text }],
+    timestamp: 1,
+  });
+  const say = (content: string) => ({ role: "assistant" as const, content, timestamp: 1 });
+  it("keeps an older unread result that fits when a later group does not", () => {
+    const small = "the answer is 42 ".repeat(6);
+    const messages = [
+      user("first question"),
+      call("t0"),
+      result("t0", small),
+      user("second question"),
+      call("t1"),
+      result("t1", "noise ".repeat(2000)),
+      say("some prose reply"),
+      user("current question"),
+    ];
+    const selected = selectContext(messages, { budget, strategy: "current" });
+    expect(selected.messages).toContainEqual(result("t0", small));
+  });
+});
 describe("text token estimate", () => {
   it.each(tokenizedSamples)(
     "stays near the least efficient tokenizer for $name",
