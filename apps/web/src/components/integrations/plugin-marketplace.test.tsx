@@ -244,7 +244,7 @@ describe("plugin detail", () => {
     });
     await render();
     expect(() => button("Add skills")).toThrow();
-    expect(container.textContent).toContain("Not added: hooks/");
+    expect(container.textContent).toContain("Not added: hooks/ (Runs only inside an editor)");
     await click("Add");
     expect(api.install).toHaveBeenCalledWith(expect.objectContaining({ pluginParts: ["skills"] }));
   });
@@ -257,7 +257,26 @@ describe("plugin detail", () => {
     });
     await render();
     expect(container.textContent).toContain(
-      "Not added: hooks/, interrogate (same name as a built-in skill)",
+      "Not added: hooks/ (Runs only inside an editor), interrogate (same name as a built-in skill)",
+    );
+  });
+
+  it("gives the reason for every part it could not add, not just its name", async () => {
+    // A bare name told the owner nothing about what to change in their repository.
+    api.preview.mockResolvedValue({
+      ...preview,
+      skipped: [
+        { kind: "skill_invalid", name: "rules", reason: "Skills with scripts are not supported" },
+        {
+          kind: "mcp_invalid",
+          name: "mcp.json",
+          reason: "Invalid or mismatched MCP configuration",
+        },
+      ],
+    });
+    await render();
+    expect(container.textContent).toContain(
+      "Not added: rules (Skills with scripts are not supported), mcp.json (Invalid or mismatched MCP configuration)",
     );
   });
 
