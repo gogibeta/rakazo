@@ -114,7 +114,7 @@ import {
 } from "./history-speakers.js";
 import { createHostRestarter } from "./host-restart.js";
 import { createMediaGenerationProvider } from "./media-generation-factory.js";
-import { loadAgentMemoryContext } from "./memory-context.js";
+import { loadAgentMemoryContextWithTaint } from "./memory-context.js";
 import { resolveMemberMainModel, selectConfiguredModel } from "./model-roles.js";
 import {
   findConnectedModelCredential,
@@ -862,7 +862,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         const [
           discovered,
           currentTurnImages,
-          memoryContext,
+          memoryLoad,
           scratchpadContext,
           ticketContext,
           recalled,
@@ -870,8 +870,8 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           discoveredPromise,
           loadCurrentTurnImages(deps, turnBlocks, context),
           nonOwnerChatRun
-            ? Promise.resolve("")
-            : loadAgentMemoryContext(deps.memory, bot.id, context),
+            ? Promise.resolve({ text: "", tainted: false })
+            : loadAgentMemoryContextWithTaint(deps.memory, bot.id, context),
           nonOwnerChatRun
             ? Promise.resolve("")
             : loadAgentScratchpadContext(deps, {
@@ -886,6 +886,11 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
               }),
           recallPromise,
         ]);
+        const memoryContext = memoryLoad.text;
+        // Memory this run reads back was saved by an earlier run that had already taken in outside
+        // content, so this run starts tainted: nothing a planted note asks for runs unattended. The
+        // owner's own edit writes a clean revision and clears it.
+        const memoryTainted = memoryLoad.tainted;
         const semanticMemoryEnabled = Boolean(semanticMemory) && !nonOwnerChatRun;
         let recalledMemory = "";
         if (recalled) {
@@ -1339,13 +1344,17 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           ownerStartedRun,
           messagingChannelRun: nonOwnerChatRun,
           sourceMessage,
+          ownerChatMessageBlocks: nonOwnerChatRun ? undefined : messagingSource?.blocks,
           connectedPlugins,
         });
         // Outbound destinations this run may reach without asking. See outboundSiteGate and
         // connectorReadRequiresApproval; approvals from earlier attempts are read back from effects.
         const searchResultUrls = new Set<string>();
         const initiallyTainted =
-          !ownerStartedRun || Boolean(turnCheckpoint) || Boolean(checkpointLoadError);
+          !ownerStartedRun ||
+          Boolean(turnCheckpoint) ||
+          Boolean(checkpointLoadError) ||
+          memoryTainted;
         // The creation intro only asks what the bot is for (see selectBuiltinToolsForRun),
         // so it gets no connector tools either.
         const tools =

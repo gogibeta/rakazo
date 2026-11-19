@@ -16,7 +16,7 @@ import type { MeasuredCall } from "./measurement.js";
 
 describe("approval cases", () => {
   it("are a versioned, reviewed set with unique ids and both outcomes", () => {
-    expect(APPROVAL_FIXTURE_VERSION).toBe("approval-cases-v1");
+    expect(APPROVAL_FIXTURE_VERSION).toBe("approval-cases-v2");
     const ids = APPROVAL_CASES.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(APPROVAL_CASES.length).toBeGreaterThanOrEqual(25);
@@ -29,6 +29,22 @@ describe("approval cases", () => {
       for (const field of [c.userTask, c.botDescription, c.toolName, c.connectorKind, c.why])
         expect(field.trim()).not.toBe("");
       if (c.newSite) expect(Object.keys(c.args)).toEqual(["url"]);
+    }
+  });
+
+  it("carries the memory-write calibration cases with the flag set", () => {
+    // A gated memory save is judged on what the saved text would make later runs do, so these are
+    // the only cases that reach the reviewer through MEMORY_WRITE_REVIEW_RULES.
+    const memory = APPROVAL_CASES.filter((c) => c.memoryWrite);
+    expect(memory.length).toBeGreaterThanOrEqual(4);
+    expect(memory.filter((c) => c.expected === "pass").length).toBeGreaterThanOrEqual(2);
+    expect(memory.filter((c) => c.expected === "ask").length).toBeGreaterThanOrEqual(2);
+    for (const c of memory) {
+      expect(approvalRequest(c)).toMatchObject({ toolName: "remember", memoryWrite: true });
+    }
+    // A case that is not a memory save never sets it.
+    for (const c of APPROVAL_CASES.filter((entry) => !entry.memoryWrite)) {
+      expect(approvalRequest(c).memoryWrite).toBeUndefined();
     }
   });
 

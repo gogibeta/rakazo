@@ -240,4 +240,54 @@ describePostgres("memory commits (PostgreSQL)", () => {
       expect(afterRetry.revisions).toHaveLength(5);
       expect(afterRetry.revisions.at(-1)).toMatchObject({ revision: 5, content: "rejected" });
     }));
+
+  // Memory write provenance: the flag records whether a save landed after outside content
+  // entered the run, on the revision (the audit truth) and on the document (what a reading
+  // run fetches). A run that reads a tainted document is tainted itself.
+  describe("write provenance", () => {
+    it("records a tainted save on both the document and its revision", () =>
+      runAsSystem(MEMORY_SAVE, async () => {
+        const path = "tainted.md";
+        await store.commit(
+          { ...request(path, "planted"), writtenAfterOutsideContent: true },
+          context,
+        );
+        const doc = await document(path);
+        expect(doc.writtenAfterOutsideContent).toBe(true);
+        expect(doc.revisions.at(-1)).toMatchObject({
+          revision: 1,
+          writtenAfterOutsideContent: true,
+        });
+      }));
+
+    it("leaves an owner save untainted, and the owner edit clears an earlier taint", () =>
+      runAsSystem(MEMORY_SAVE, async () => {
+        const path = "owner-clears.md";
+        // A run writes after outside content.
+        await store.commit(
+          { ...request(path, "planted"), writtenAfterOutsideContent: true },
+          context,
+        );
+        expect((await document(path)).writtenAfterOutsideContent).toBe(true);
+        // The owner edits the same document in Settings: same store, no source run, no flag.
+        await store.commit({ scope: "user", path, content: "owner text" }, context);
+        const doc = await document(path);
+        expect(doc.writtenAfterOutsideContent).toBe(false);
+        expect(doc.revisions.map((r) => r.writtenAfterOutsideContent)).toEqual([true, false]);
+      }));
+
+    it("reports the flag through read, and defaults a legacy row to untainted", () =>
+      runAsSystem(MEMORY_SAVE, async () => {
+        const path = "read-flag.md";
+        await store.commit(
+          { ...request(path, "planted"), writtenAfterOutsideContent: true },
+          context,
+        );
+        const snapshot = await store.read({ scope: "user", path }, context);
+        expect(snapshot.documents.at(0)?.writtenAfterOutsideContent).toBe(true);
+
+        const clean = await store.read({ scope: "user", path: "never-written.md" }, context);
+        expect(clean.documents).toEqual([]);
+      }));
+  });
 });

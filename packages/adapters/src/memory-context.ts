@@ -13,6 +13,8 @@ export type MemoryPromptDocument = {
   revision: number;
   updatedAt?: string;
   content: string;
+  /** Set when this document was last saved by a run that had already read outside content. */
+  writtenAfterOutsideContent?: boolean;
 };
 
 const PREAMBLE =
@@ -122,6 +124,27 @@ export async function loadAgentMemoryContext(
 ): Promise<string | undefined> {
   const documents = await readAgentMemory(memory, botId, context);
   return buildAgentMemoryPrompt(documents, maxBytes).text;
+}
+
+/**
+ * The same prompt plus whether the memory it carries was written after outside content. A run that
+ * reads such a document starts tainted, so an instruction planted in one earlier run cannot steer
+ * this one before a single tool call. The model is not told: the flag only decides what asks.
+ */
+export async function loadAgentMemoryContextWithTaint(
+  memory: MemoryStore,
+  botId: string,
+  context: AdapterContext,
+  maxBytes = AGENT_MEMORY_MAX_BYTES,
+): Promise<{ text?: string; tainted: boolean }> {
+  const documents = await readAgentMemory(memory, botId, context);
+  const { text } = buildAgentMemoryPrompt(documents, maxBytes);
+  return { ...(text === undefined ? {} : { text }), tainted: memoryContextTaintsRun(documents) };
+}
+
+/** Whether anything this run would read back as its own memory was saved after outside content. */
+export function memoryContextTaintsRun(documents: readonly MemoryPromptDocument[]): boolean {
+  return documents.some((document) => document.writtenAfterOutsideContent === true);
 }
 
 /** The bot's own memory plus the user's, in the shape the prompt builder reads. */

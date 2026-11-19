@@ -16,6 +16,7 @@ import {
   decisiveActionApprovalRules,
   displayName,
   humanizeToolName,
+  memoryWriteNeedsApproval,
   newSiteOutcome,
   outboundSiteGate,
   outsideRunToolRequiresApproval,
@@ -131,6 +132,8 @@ type ToolReview = {
   args: Record<string, unknown>;
   connectorKind: ReturnType<typeof connectorKindFromToolName>;
   newSite: boolean;
+  /** A memory save gated because the run had already read outside content. */
+  memoryWrite: boolean;
   fetchUrl: string | undefined;
   matchingRules: ReturnType<typeof resolveActionApprovalForTools>["matchingRules"];
   gated: boolean;
@@ -276,12 +279,18 @@ export async function gateToolCall(
   const paying = Boolean(purchase) || Boolean(cardUse);
   // Typing a wallet's secret is approved the same way: every time, by a person.
   const walletAsk = Boolean(walletUse);
+  // A memory save is a standing instruction for every later run, so once this run has taken in
+  // outside content the save goes through the approval mode like any other consequential action.
+  // A clean run saves without asking: a private note is not a message to anyone else. The
+  // predicate only consults the run for a memory-write tool, so unrelated calls pay nothing.
+  const memoryWriteGated = await memoryWriteNeedsApproval(name, () => isRunTainted(ctx));
   const requiresApprovalByDefault =
     request.heldForApproval ||
     paying ||
     walletAsk ||
     commandWatch ||
     siteGate === "new" ||
+    memoryWriteGated ||
     unidentifiedAction ||
     (!catalogControlRead &&
       approvalToolNames.some(
@@ -312,12 +321,15 @@ export async function gateToolCall(
   // outside text could have steered must not reach it without the owner's approval either.
   // Writing durable memory is guarded too: a shared memory document is loaded into every later
   // run of every bot in the space, so a run that read outside text could plant instructions there
-  // once and have them read back as trusted background by everything that follows.
+  // once and have them read back as trusted background by everything that follows. `remember`
+  // joins them for the same reason once the run is tainted: the bot's own memory document is read
+  // back into every later run of that bot.
   const guardedInNeverAsk =
     name === "respond_agent_connection" ||
     name === "restart_host" ||
     name === "save_shared_memory" ||
-    name === "save_memory";
+    name === "save_memory" ||
+    (name === "remember" && memoryWriteGated);
   const resolvedRules = resolveActionApprovalForTools({
     tools: approvalToolNames.map((toolName) => ({
       name: toolName,
@@ -554,6 +566,7 @@ export async function gateToolCall(
       args,
       connectorKind,
       newSite: siteGate === "new",
+      memoryWrite: memoryWriteGated,
       fetchUrl,
       matchingRules: approvalResolved.matchingRules,
       gated,
@@ -961,27 +974,29 @@ async function reviewToolCall(
     const ownerWords = outsideRun ? await ctx.trust.loadOwnerWords() : "";
     if (outsideRun && !ownerWords.trim())
       return { reason: undefined, decision: "ask", judgeDecision: "ask", reviewModel: undefined };
-    // A new site is judged on the full URL and the owner's own words only: the task
-    // prompt of a webhook or bot-started run carries text someone else wrote.
-    const reviewRequest: AutoReviewRequest =
-      review.newSite && fetchUrl
-        ? {
-            toolName: name,
-            connectorKind,
-            args: { url: redactSecrets(fetchUrl, ctx.secrets) },
-            userTask: redactSecrets(await ctx.trust.loadOwnerWords(), ctx.secrets),
-            botDescription,
-            matchingRules: review.matchingRules,
-            newSite: true,
-          }
-        : {
-            toolName: name,
-            connectorKind,
-            args: redactToolArgsForReview(args, ctx.secrets),
-            userTask: redactSecrets(outsideRun ? ownerWords : ctx.task.prompt, ctx.secrets),
-            botDescription,
-            matchingRules: review.matchingRules,
-          };
+    // A new site or a memory save after outside content is judged on the owner's own words only:
+    // the task prompt of a webhook or bot-started run carries text someone else wrote.
+    const ownerWordsOnly = (review.newSite && fetchUrl) || review.memoryWrite;
+    const reviewRequest: AutoReviewRequest = {
+      toolName: name,
+      connectorKind,
+      args:
+        review.newSite && fetchUrl
+          ? { url: redactSecrets(fetchUrl, ctx.secrets) }
+          : redactToolArgsForReview(args, ctx.secrets),
+      userTask: redactSecrets(
+        outsideRun
+          ? ownerWords
+          : ownerWordsOnly
+            ? await ctx.trust.loadOwnerWords()
+            : ctx.task.prompt,
+        ctx.secrets,
+      ),
+      botDescription,
+      matchingRules: review.matchingRules,
+      ...(review.newSite && fetchUrl ? { newSite: true } : {}),
+      ...(review.memoryWrite ? { memoryWrite: true } : {}),
+    };
     const reviewContext: AdapterContext = {
       operationId: `auto-review:${runId}`,
       traceId: `auto-review:${runId}`,
