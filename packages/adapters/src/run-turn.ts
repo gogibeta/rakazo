@@ -46,7 +46,7 @@ import {
   modelAccountRefusal,
 } from "./routine-backoff.js";
 import type { RunContext, RunState } from "./run-context.js";
-import { isRunTainted, persistTurnCheckpoint } from "./run-context.js";
+import { isMemoryWriteTainted, persistTurnCheckpoint } from "./run-context.js";
 import { enqueueSteeringContinuation, renewRunLease, requeueComputerRun } from "./run-lifecycle.js";
 import { publishMessage, redactBlocks } from "./run-messages.js";
 import {
@@ -858,8 +858,10 @@ export async function completeRun(ctx: RunContext) {
           sourceThreadId: thread.id,
           // A script writes memory without a tool call, so it never reaches the approval gate.
           // It must still record provenance: without this the commit defaults the flag to false
-          // and the content reads back as trusted in every later run of this bot.
-          writtenAfterOutsideContent: await isRunTainted(ctx),
+          // and the content reads back as trusted in every later run of this bot. The signal is
+          // the memory-write one, so a page this conversation read in an earlier message still
+          // marks what the script saves now.
+          writtenAfterOutsideContent: await isMemoryWriteTainted(ctx),
         },
         context,
       );

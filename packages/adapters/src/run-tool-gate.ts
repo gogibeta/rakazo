@@ -16,6 +16,7 @@ import {
   decisiveActionApprovalRules,
   displayName,
   humanizeToolName,
+  MEMORY_WRITE_TOOLS,
   memoryWriteNeedsApproval,
   newSiteOutcome,
   outboundSiteGate,
@@ -58,6 +59,7 @@ import { PURCHASE_CHECKED_TOOLS, purchaseApprovalOf } from "./purchase-gate.js";
 import { autoReviewCheckerProvider } from "./run-auto-review.js";
 import type { RunContext, RunTrust } from "./run-context.js";
 import {
+  isMemoryWriteTainted,
   isRunTainted,
   nextMutatingEffectOccurrence,
   pauseForApproval,
@@ -279,11 +281,12 @@ export async function gateToolCall(
   const paying = Boolean(purchase) || Boolean(cardUse);
   // Typing a wallet's secret is approved the same way: every time, by a person.
   const walletAsk = Boolean(walletUse);
-  // A memory save is a standing instruction for every later run, so once this run has taken in
-  // outside content the save goes through the approval mode like any other consequential action.
-  // A clean run saves without asking: a private note is not a message to anyone else. The
-  // predicate only consults the run for a memory-write tool, so unrelated calls pay nothing.
-  const memoryWriteGated = await memoryWriteNeedsApproval(name, () => isRunTainted(ctx));
+  // A memory save is a standing instruction for every later run, so once outside content is in
+  // play — this run's own reads, or an earlier read in the same conversation — the save goes
+  // through the approval mode like any other consequential action. A clean conversation saves
+  // without asking: a private note is not a message to anyone else. The predicate only consults
+  // the run for a memory-write tool, so unrelated calls pay nothing.
+  const memoryWriteGated = await memoryWriteNeedsApproval(name, () => isMemoryWriteTainted(ctx));
   const requiresApprovalByDefault =
     request.heldForApproval ||
     paying ||
@@ -389,7 +392,10 @@ export async function gateToolCall(
         mandatory: mandatoryInAnyRun,
         steerable:
           guardedInNeverAsk && mode === "never"
-            ? !ctx.source.ownerStartedRun || (await isRunTainted(ctx))
+            ? !ctx.source.ownerStartedRun ||
+              (MEMORY_WRITE_TOOLS.has(name)
+                ? await isMemoryWriteTainted(ctx)
+                : await isRunTainted(ctx))
             : undefined,
         consequential: requiresApprovalByDefault,
         reviewOnly: connectorReadGated,

@@ -841,10 +841,13 @@ code-b
     ];
   }
   if (lower.includes("remember")) {
+    // A remembered fact goes through the real tool, not a scripted memory write: the write is
+    // gated like any other memory save (so outside content that reached this conversation still
+    // cannot land as trusted background unasked), and it carries the provenance the gate records.
     return [
       {
         assistant: "noted — i will keep that in memory.",
-        memory: [{ scope: "bot", path: "MEMORY.md", content: `# Memory\n\n- ${prompt}\n` }],
+        toolCalls: [{ name: "remember", args: { content: prompt } }],
         complete: true,
       },
     ];

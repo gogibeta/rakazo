@@ -188,6 +188,8 @@ function fixture(runId = "run-1") {
     steeringMessage: {
       findFirst: vi.fn(async () => null),
     },
+    // The thread's earlier tool record, read when a clean run's memory save is judged.
+    toolEvent: { findFirst: vi.fn(async () => null) },
     thread: {
       findUniqueOrThrow: vi.fn(async () => ({ id: run.threadId, groupId: null })),
       update: vi.fn(async () => ({ nextMessageSeq: 2, nextEventSeq: 2 })),

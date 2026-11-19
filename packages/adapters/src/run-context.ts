@@ -12,7 +12,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { ComputerMode, MessageBlock, ReplyMode } from "@rakazo/contracts";
 import type { ToolStepOutcome } from "@rakazo/core";
-import { createStreamingRedactor } from "@rakazo/core";
+import { createStreamingRedactor, OWN_STATE_RESULT_TOOLS } from "@rakazo/core";
 import { toolEffectIdempotencyKey } from "@rakazo/core/node/approval-effect-key";
 import type { Bot, Computer, effectiveMemoryScope, Run, Task, Thread } from "@rakazo/db";
 import { dropRunTurnCheckpoint, saveRunTurnCheckpoint } from "@rakazo/db";
@@ -208,6 +208,12 @@ export interface RunState {
   ownInstructionsBaseline: string | undefined;
   earlierAttempt: Promise<boolean> | undefined;
   /**
+   * The thread's earlier outside-content exposure, loaded once per attempt. A memory write
+   * consults it, because a save in a later run must still carry the provenance of what this
+   * conversation read before. See `isMemoryWriteTainted`.
+   */
+  threadOutsideContent: Promise<boolean> | undefined;
+  /**
    * Hosts of the sites this run typed an approved wallet purchase into (fill_card, fill_pay_token):
    * the wallet owner approved paying there, so the pay click there asks nothing more.
    */
@@ -402,6 +408,56 @@ export async function isRunTainted(ctx: RunContext) {
   if ((await state.earlierAttempt) || (await ctx.trust.receivedOutsideMessage()))
     state.tainted = true;
   return state.tainted;
+}
+
+/**
+ * Whether outside content entered this thread in an earlier run: a previous run here succeeded
+ * at a tool whose result is not the bot's own state, or a steered or channel message arrived.
+ * A run's own taint dies with the run; this is the conversation's memory of having taken in
+ * other people's text, which is what a memory save has to answer for — a note written after a
+ * page read in an earlier message is still a note the page wrote.
+ */
+async function loadThreadOutsideContent(ctx: RunContext): Promise<boolean> {
+  // Filtered where the rows are, not here: a long-lived thread records many tool events, and the
+  // useful ones are only ever the reads. Bringing every name back to test it would grow with the
+  // conversation, so ask for one row matching the inverse of the own-state list — which is the
+  // same test `toolResultTaintsRun` makes, since anything unknown taints — and let the index
+  // answer it. One row is enough: the question is whether any such read happened.
+  const [tools, steered] = await Promise.all([
+    ctx.deps.prisma.toolEvent.findFirst({
+      where: {
+        threadId: ctx.thread.id,
+        runId: { not: ctx.runId },
+        status: "succeeded",
+        toolName: { notIn: [...OWN_STATE_RESULT_TOOLS] },
+      },
+      select: { id: true },
+    }),
+    ctx.deps.prisma.steeringMessage.findFirst({
+      where: {
+        run: { threadId: ctx.thread.id },
+        claimedAt: { not: null },
+        OR: [
+          { originTrigger: { not: null } },
+          { message: { blocks: { array_contains: [{ kind: "channel_message" }] } } },
+        ],
+      },
+      select: { id: true },
+    }),
+  ]);
+  return tools !== null || steered !== null;
+}
+
+/**
+ * The taint signal a memory write is judged on: this run's taint, or outside content the thread
+ * took in earlier. The per-run flag alone misses the live planting path — read a page in one
+ * message, save it to memory in the next — where the saving run is itself clean and the write
+ * would land as if the owner had written it.
+ */
+export async function isMemoryWriteTainted(ctx: RunContext): Promise<boolean> {
+  if (await isRunTainted(ctx)) return true;
+  ctx.state.threadOutsideContent ??= loadThreadOutsideContent(ctx);
+  return ctx.state.threadOutsideContent;
 }
 
 /** A change landed after this attempt's snapshot; only a fresh run can apply the rewrite. */

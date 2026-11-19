@@ -10,7 +10,7 @@ import { redactConnectorPayload } from "./connector-safety.js";
 import { MAX_RECALLED_MEMORIES } from "./history-compaction.js";
 import { editMemory } from "./memory-tools.js";
 import type { RunContext } from "./run-context.js";
-import { isRunTainted } from "./run-context.js";
+import { isMemoryWriteTainted } from "./run-context.js";
 import type { ToolCall, ToolHandlers } from "./run-tool-gate.js";
 import { argsError } from "./tool-args.js";
 
@@ -102,9 +102,10 @@ export const memoryTools: ToolHandlers = {
     // One document per bot keeps the size cap meaningful.
     const path = MEMORY_INDEX_PATH;
     // Recorded on the revision and the document, so the run that reads this back knows the note
-    // was written after outside content entered the run that saved it. The owner's own edits
-    // never set it, so editing the document is how a bot's memory becomes trusted again.
-    const writtenAfterOutsideContent = await isRunTainted(ctx);
+    // was written after outside content entered the conversation that saved it — this run's own
+    // reads, or an earlier message's. The owner's own edits never set it, so editing the
+    // document is how a bot's memory becomes trusted again.
+    const writtenAfterOutsideContent = await isMemoryWriteTainted(ctx);
     // A concurrent save changes the revision, so re-read and apply the edit again.
     for (let attempt = 1; ; attempt += 1) {
       const snapshot = await deps.memory.read({ scope: "bot", botId: bot.id, path }, context);
@@ -149,8 +150,8 @@ export const memoryTools: ToolHandlers = {
     const snapshot = await deps.memory.read({ scope: "user", path }, context);
     const expectedRevision = snapshot.documents[0]?.revision ?? 0;
     // Shared memory is read back into every later run of every bot in the space, so how this was
-    // written has to travel with it.
-    const writtenAfterOutsideContent = await isRunTainted(ctx);
+    // written has to travel with it — including outside content an earlier message brought in.
+    const writtenAfterOutsideContent = await isMemoryWriteTainted(ctx);
     try {
       const saved = await deps.memory.commit(
         {
