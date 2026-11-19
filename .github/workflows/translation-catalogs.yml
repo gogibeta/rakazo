@@ -77,6 +77,19 @@ jobs:
         with:
           name: translation-catalogs
           path: ${{ runner.temp }}/translation-catalogs
+      - name: Check the publishing credential
+        env:
+          # The workflow token can neither open PRs nor start CI on what it pushes, so the push
+          # needs a fine-grained token with contents:write and pull-requests:write.
+          GH_TOKEN: ${{ secrets.GH_DEPENDENCY_UPDATES_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_DEPENDENCY_UPDATES_PAT is not set on this repository."
+            echo "::error::Add a fine-grained token with contents:write and pull-requests:write,"
+            echo "::error::or turn off this workflow. Catalog sync cannot open its PR without it."
+            exit 1
+          fi
       - name: Push branch and open, or close, the PR
         env:
           # The workflow token can neither open PRs nor start CI on what it pushes.
@@ -120,7 +133,12 @@ jobs:
           [ "${#files[@]}" -eq 1 ]
           [ "${files[0]}" = "$PATCH_DIR/catalogs.patch" ]
           [ -f "$PATCH_DIR/catalogs.patch" ] && [ ! -L "$PATCH_DIR/catalogs.patch" ]
-          git apply --index --include='packages/i18n/locales/*' "$PATCH_DIR/catalogs.patch"
+          # A rejected patch means the artifact was built from another main; report it as such
+          # instead of failing later on an unexplained empty index.
+          if ! git apply --index --include='packages/i18n/locales/*' "$PATCH_DIR/catalogs.patch"; then
+            echo "::error::The catalog patch does not apply to $GITHUB_SHA; main moved on while it ran."
+            exit 1
+          fi
           # Only edits to catalogs that already exist may be published: no renames, additions,
           # deletions, mode changes or other paths. Rename detection is off so every path a
           # change touches is listed, and paths are NUL-delimited so none can be forged.
