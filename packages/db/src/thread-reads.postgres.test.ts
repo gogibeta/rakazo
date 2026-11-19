@@ -281,7 +281,9 @@ describePostgres("each member's own read state (PostgreSQL)", () => {
   it("deletes a member's read state when they leave, and stops marking chats for them", async () => {
     await post(ada, { role: "bot", text: "Shopping list is ready." });
     expect(await unread(bea)).toBe(true);
-    await leaveSpace(prisma, { spaceId: space, userId: bea });
+    await runAsTenant({ spaceId: space, userId: bea }, () =>
+      leaveSpace(prisma, { spaceId: space, userId: bea }),
+    );
     await expect(asSystem(prisma).threadRead.count({ where: { userId: bea } })).resolves.toBe(0);
     expect(await unread(ada)).toBe(true);
 

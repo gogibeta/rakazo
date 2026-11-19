@@ -154,7 +154,12 @@ export async function deleteOrganization(
     clearInterval(renewal);
     // No Space left means this attempt deleted them, and only its file cleanup and record remain,
     // still under the overall deadline; any left are another attempt's.
-    if (await deps.prisma.space.count({ where: { organizationId } })) loseLease();
+    if (
+      await runAsSystem("count an organization deletion's remaining Spaces", () =>
+        deps.prisma.space.count({ where: { organizationId } }),
+      )
+    )
+      loseLease();
     else clearTimeout(expiry);
   };
   const renewal = setInterval(() => {
@@ -261,6 +266,28 @@ export function finishStalledOrganizationDeletions(
 
 /** Tears down the bots and computers matched, then deletes the claimed Spaces and their files. */
 async function deleteClaimedSpaces(
+  deps: SpaceDeletionDeps,
+  input: {
+    userId: string;
+    operationId: string;
+    claimId: string;
+    spaceIds: string[];
+    soleMemberId?: string;
+    /** Deletes the organization with its last Space. */
+    organizationId?: string;
+    bots: Prisma.BotWhereInput;
+    computers: Prisma.ComputerWhereInput;
+    signal?: AbortSignal;
+  },
+): Promise<void> {
+  // The claimed Spaces span organizations, outside any one Space's request
+  // scope, so the teardown runs as system, bound to the claim's Space list.
+  return runAsSystem("tear down the Spaces a deletion claimed", () =>
+    deleteClaimedSpacesScoped(deps, input),
+  );
+}
+
+async function deleteClaimedSpacesScoped(
   deps: SpaceDeletionDeps,
   input: {
     userId: string;

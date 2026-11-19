@@ -4,6 +4,7 @@ import { GUEST_ROLE, LIVE_ORGANIZATION as LIVE } from "./billing.js";
 import { createOrganizationWithDefaultSpace } from "./bootstrap-user.js";
 import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
+import { runAsSystem } from "./row-security.js";
 import { IsolationError } from "./scope.js";
 import {
   claimSpaceForDeletion,
@@ -79,6 +80,17 @@ export async function listMemberOrganizations(
   prisma: PrismaClient,
   actor: Pick<Actor, "userId" | "spaceId">,
 ): Promise<OrganizationList> {
+  // The list spans every organization the user belongs to, so it reads as
+  // system, bound to the signed-in user.
+  return runAsSystem("list the organizations the signed-in user belongs to", () =>
+    listMemberOrganizationsScoped(prisma, actor),
+  );
+}
+
+async function listMemberOrganizationsScoped(
+  prisma: PrismaClient,
+  actor: Pick<Actor, "userId" | "spaceId">,
+): Promise<OrganizationList> {
   const [activeOrganizationId, organizations, memberships] = await Promise.all([
     homeOrganizationId(prisma, actor),
     prisma.organization.findMany({
@@ -126,17 +138,21 @@ export async function renameOrganization(
   input: { userId: string; organizationId: string; name: string },
 ): Promise<{ id: string; name: string }> {
   const name = normalizeSpaceName(input.name);
-  const { count } = await prisma.organization.updateMany({
-    where: {
-      id: input.organizationId,
-      members: {
-        some: { userId: input.userId, role: OWNER },
-        every: { OR: [{ userId: input.userId }, { role: GUEST_ROLE }] },
+  // The membership filter is evaluated against the target organization, which
+  // is not necessarily the caller's current one, so the rename runs as system.
+  const { count } = await runAsSystem("rename an organization", () =>
+    prisma.organization.updateMany({
+      where: {
+        id: input.organizationId,
+        members: {
+          some: { userId: input.userId, role: OWNER },
+          every: { OR: [{ userId: input.userId }, { role: GUEST_ROLE }] },
+        },
+        ...LIVE,
       },
-      ...LIVE,
-    },
-    data: { name },
-  });
+      data: { name },
+    }),
+  );
   if (count === 0) throw new IsolationError();
   return { id: input.organizationId, name };
 }
@@ -149,6 +165,17 @@ export async function renameOrganization(
  * earlier one can no longer release the claim a later one is tearing down under.
  */
 export async function claimOrganizationForDeletion(
+  prisma: PrismaClient,
+  input: { userId: string; organizationId: string },
+): Promise<{ claimId: string; spaceIds: string[]; fresh: boolean }> {
+  // The checks span the owner's other organizations as well as this one, so the
+  // claim runs as system, bound to the owner and the organization being deleted.
+  return runAsSystem("claim an organization for deletion", () =>
+    claimOrganizationForDeletionScoped(prisma, input),
+  );
+}
+
+async function claimOrganizationForDeletionScoped(
   prisma: PrismaClient,
   input: { userId: string; organizationId: string },
 ): Promise<{ claimId: string; spaceIds: string[]; fresh: boolean }> {
@@ -227,10 +254,12 @@ export async function releaseOrganizationDeletionClaim(
   prisma: PrismaClient,
   input: { organizationId: string; claimId: string },
 ): Promise<void> {
-  await prisma.space.updateMany({
-    where: { organizationId: input.organizationId, deletionClaimId: input.claimId },
-    data: { deletingAt: null, deletionClaimId: null },
-  });
+  await runAsSystem("release an organization deletion claim", () =>
+    prisma.space.updateMany({
+      where: { organizationId: input.organizationId, deletionClaimId: input.claimId },
+      data: { deletingAt: null, deletionClaimId: null },
+    }),
+  );
 }
 
 /**
@@ -241,10 +270,12 @@ export async function setOrganizationDeletionLease(
   prisma: PrismaClient,
   input: { organizationId: string; claimId: string; at: Date },
 ): Promise<boolean> {
-  const { count } = await prisma.space.updateMany({
-    where: { organizationId: input.organizationId, deletionClaimId: input.claimId },
-    data: { deletingAt: input.at },
-  });
+  const { count } = await runAsSystem("set an organization deletion lease", () =>
+    prisma.space.updateMany({
+      where: { organizationId: input.organizationId, deletionClaimId: input.claimId },
+      data: { deletingAt: input.at },
+    }),
+  );
   return count > 0;
 }
 
@@ -252,20 +283,22 @@ export async function setOrganizationDeletionLease(
 export async function listStalledOrganizationDeletions(
   prisma: PrismaClient,
 ): Promise<{ id: string; ownerId: string }[]> {
-  const spaces = await prisma.space.findMany({
-    where: {
-      deletionClaimId: { startsWith: "organization-deletion:" },
-      deletingAt: { lt: new Date(Date.now() - SPACE_DELETION_CLAIM_TIMEOUT_MS) },
-      organization: { members: { some: { role: OWNER } } },
-    },
-    distinct: ["organizationId"],
-    select: {
-      organizationId: true,
-      organization: {
-        select: { members: { where: { role: OWNER }, select: { userId: true }, take: 1 } },
+  const spaces = await runAsSystem("list stalled organization deletions", () =>
+    prisma.space.findMany({
+      where: {
+        deletionClaimId: { startsWith: "organization-deletion:" },
+        deletingAt: { lt: new Date(Date.now() - SPACE_DELETION_CLAIM_TIMEOUT_MS) },
+        organization: { members: { some: { role: OWNER } } },
       },
-    },
-  });
+      distinct: ["organizationId"],
+      select: {
+        organizationId: true,
+        organization: {
+          select: { members: { where: { role: OWNER }, select: { userId: true }, take: 1 } },
+        },
+      },
+    }),
+  );
   return spaces.map((space) => ({
     id: space.organizationId,
     ownerId: space.organization.members[0]!.userId,
@@ -277,9 +310,13 @@ export async function deleteEmptyOrganization(
   prisma: PrismaClient,
   organizationId: string,
 ): Promise<void> {
-  const { count } = await prisma.organization.deleteMany({
-    where: { id: organizationId, spaces: { none: {} } },
-  });
+  // The no-Spaces check must see the organization's Spaces whatever Space the
+  // caller is scoped to, so the delete runs as system.
+  const { count } = await runAsSystem("delete an emptied organization", () =>
+    prisma.organization.deleteMany({
+      where: { id: organizationId, spaces: { none: {} } },
+    }),
+  );
   // A Space created after the claim; deleting again claims and tears it down.
   if (count === 0 && (await prisma.organization.findUnique({ where: { id: organizationId } })))
     throw new SpaceDeletionInProgressError();
@@ -287,15 +324,17 @@ export async function deleteEmptyOrganization(
 
 /** The default Space of the user's oldest organization. */
 export async function firstOrganizationSpace(prisma: PrismaClient, userId: string) {
-  const space = await prisma.space.findFirst({
-    where: {
-      isDefault: true,
-      deletingAt: null,
-      organization: { members: { some: { userId, role: OWNER } } },
-    },
-    orderBy: [{ organization: { createdAt: "asc" } }, { organizationId: "asc" }],
-    select: { id: true },
-  });
+  const space = await runAsSystem("find the user's first organization Space", () =>
+    prisma.space.findFirst({
+      where: {
+        isDefault: true,
+        deletingAt: null,
+        organization: { members: { some: { userId, role: OWNER } } },
+      },
+      orderBy: [{ organization: { createdAt: "asc" } }, { organizationId: "asc" }],
+      select: { id: true },
+    }),
+  );
   if (!space) throw new IsolationError();
   return space.id;
 }

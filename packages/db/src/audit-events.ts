@@ -95,10 +95,14 @@ async function auditRows(
     personId ? db.user.findUnique({ where: { id: personId }, select: { email: true } }) : null,
     !input.spaceId && !input.organizationId && personId
       ? // A guest's own account events are not the business of the organizations that invited them.
-        db.member.findMany({
-          where: { userId: personId, role: { not: GUEST_ROLE } },
-          select: { organizationId: true },
-        })
+        // The person's organizations span every Space they belong to, so the
+        // attribution lookup reads as system, bound to the person.
+        runAsSystem("find the organizations an audit event belongs to", () =>
+          db.member.findMany({
+            where: { userId: personId, role: { not: GUEST_ROLE } },
+            select: { organizationId: true },
+          }),
+        )
       : [],
   ]);
   const organizations = input.organizationId
@@ -140,10 +144,15 @@ export async function auditLogOrganization(
   db: Pick<PrismaClient, "member">,
   actor: { userId: string; spaceId: string },
 ): Promise<string | null> {
-  const member = await db.member.findFirst({
-    where: { userId: actor.userId, ...auditLogReaderWhere(actor.spaceId) },
-    select: { organizationId: true },
-  });
+  // The check joins the actor's membership to the organization through its
+  // Spaces, which the caller's own Space scope cannot always see, so it reads
+  // as system, bound to the actor.
+  const member = await runAsSystem("check who may read an organization's audit log", () =>
+    db.member.findFirst({
+      where: { userId: actor.userId, ...auditLogReaderWhere(actor.spaceId) },
+      select: { organizationId: true },
+    }),
+  );
   return member?.organizationId ?? null;
 }
 

@@ -209,38 +209,49 @@ const ROW_CONTEXT: Record<SpaceSource, string> = {
  * Runs on its own small pool, outside any caller transaction: keys commit
  * immediately, so a rolled-back caller never leaves rows encrypted under a key
  * that does not exist, and key lookups cannot starve the main pool.
+ *
+ * Every method runs as system: the ring resolves and creates keys for a Space
+ * that may not be the caller's (a bot writing into a Space it was invited to),
+ * and key rows carry no user content, so the Space that owns a row decides its
+ * key rather than the caller's own tenant scope.
  */
 export class PgSpaceKeyStore implements SpaceKeyStore {
   constructor(private readonly db: Queryable) {}
 
   async forSpace(spaceId: string) {
-    const { rows } = await this.db.query<SpaceKeyRecord>(
-      `SELECT ${COLUMNS} FROM space_keys WHERE "spaceId" = $1 ORDER BY version`,
-      [spaceId],
-    );
-    return rows;
+    return runAsSystem("read the keys of the Space that owns a row", async () => {
+      const { rows } = await this.db.query<SpaceKeyRecord>(
+        `SELECT ${COLUMNS} FROM space_keys WHERE "spaceId" = $1 ORDER BY version`,
+        [spaceId],
+      );
+      return rows;
+    });
   }
 
   async byId(id: string) {
-    const { rows } = await this.db.query<SpaceKeyRecord>(
-      `SELECT ${COLUMNS} FROM space_keys WHERE id = $1`,
-      [id],
-    );
-    return rows[0];
+    return runAsSystem("unseal content with the key it names", async () => {
+      const { rows } = await this.db.query<SpaceKeyRecord>(
+        `SELECT ${COLUMNS} FROM space_keys WHERE id = $1`,
+        [id],
+      );
+      return rows[0];
+    });
   }
 
   async insert(record: SpaceKeyRecord) {
-    const { rows } = await this.db.query<SpaceKeyRecord>(
-      `INSERT INTO space_keys (${COLUMNS}) VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT ("spaceId", version) DO NOTHING RETURNING ${COLUMNS}`,
-      [record.id, record.spaceId, record.version, record.masterKeyId, record.wrappedKey],
-    );
-    if (rows[0]) return rows[0];
-    const existing = (await this.forSpace(record.spaceId)).find(
-      (row) => row.version === record.version,
-    );
-    if (!existing) throw new Error("Space key insert lost a race to a deleted key");
-    return existing;
+    return runAsSystem("create a key for the Space that owns a row", async () => {
+      const { rows } = await this.db.query<SpaceKeyRecord>(
+        `INSERT INTO space_keys (${COLUMNS}) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT ("spaceId", version) DO NOTHING RETURNING ${COLUMNS}`,
+        [record.id, record.spaceId, record.version, record.masterKeyId, record.wrappedKey],
+      );
+      if (rows[0]) return rows[0];
+      const existing = (await this.forSpace(record.spaceId)).find(
+        (row) => row.version === record.version,
+      );
+      if (!existing) throw new Error("Space key insert lost a race to a deleted key");
+      return existing;
+    });
   }
 
   // Which Space owns a row decides its key, not who may read it: the caller's own
@@ -253,10 +264,12 @@ export class PgSpaceKeyStore implements SpaceKeyStore {
   }
 
   async sampleByMasterKey() {
-    const { rows } = await this.db.query<SpaceKeyRecord>(
-      `SELECT DISTINCT ON ("masterKeyId") ${COLUMNS} FROM space_keys ORDER BY "masterKeyId", id`,
-    );
-    return rows;
+    return runAsSystem("inspect the master keys in use", async () => {
+      const { rows } = await this.db.query<SpaceKeyRecord>(
+        `SELECT DISTINCT ON ("masterKeyId") ${COLUMNS} FROM space_keys ORDER BY "masterKeyId", id`,
+      );
+      return rows;
+    });
   }
 }
 

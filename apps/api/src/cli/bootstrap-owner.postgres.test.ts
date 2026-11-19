@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { createAuth } from "@rakazo/auth";
-import { createDb, createPool } from "@rakazo/db";
+import { asSystem, createDb, createPool } from "@rakazo/db";
 import { expect, it } from "vitest";
 
 const run = promisify(execFile);
@@ -47,7 +47,7 @@ it.skipIf(!testDatabase)(
       ).toMatchObject({ ownerUserId: null, signupsEnabled: false });
       expect(await prisma.session.count()).toBe(0);
       expect(owner.emailVerified).toBe(true);
-      const memberships = await prisma.spaceMember.count({ where: { userId: owner.id } });
+      const memberships = await asSystem(prisma).spaceMember.count({ where: { userId: owner.id } });
       expect(memberships).toBeGreaterThan(0);
       await prisma.user.update({ where: { id: owner.id }, data: { emailVerified: false } });
       await expect(boot("wrong-recovery-password")).rejects.toThrow();
@@ -58,7 +58,9 @@ it.skipIf(!testDatabase)(
       expect(
         await prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
       ).toMatchObject({ ownerUserId: null, signupsEnabled: false });
-      expect(await prisma.spaceMember.count({ where: { userId: owner.id } })).toBe(memberships);
+      expect(await asSystem(prisma).spaceMember.count({ where: { userId: owner.id } })).toBe(
+        memberships,
+      );
       await boot("a-different-password-on-restart");
       expect(await prisma.user.count()).toBe(1);
       const auth = createAuth(prisma, {

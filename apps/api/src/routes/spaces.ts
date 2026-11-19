@@ -78,10 +78,14 @@ async function asMemberOf<T>(
   spaceId: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const member = await prisma.spaceMember.findFirst({
-    where: { spaceId, userId: actor.userId },
-    select: { id: true },
-  });
+  // The Space being opened is not the actor's current one, so its membership row sits
+  // outside the request's tenant scope; this check is what admits the actor to it.
+  const member = await runAsSystem("check membership of the Space being opened", () =>
+    prisma.spaceMember.findFirst({
+      where: { spaceId, userId: actor.userId },
+      select: { id: true },
+    }),
+  );
   if (!member) throw new ORPCError("NOT_FOUND", { message: new SpaceNotFoundError().message });
   return runAsTenant({ spaceId, userId: actor.userId }, fn);
 }
@@ -391,25 +395,29 @@ async function memberSpaceNavigation(
 ): Promise<SpaceNavigation> {
   // The member's own organization, plus every Space shared with them from someone else's.
   const organizationId = await homeOrganizationId(deps.prisma, actor);
-  const memberships = await deps.prisma.spaceMember.findMany({
-    where: {
-      userId: actor.userId,
-      OR: [{ organizationId }, { member: { role: GUEST_ROLE } }],
-    },
-    select: {
-      spaceId: true,
-      role: true,
-      space: {
-        select: {
-          name: true,
-          isDefault: true,
-          deletingAt: true,
-          _count: { select: { memberships: true } },
+  // The memberships span every Space the user belongs to, most of them outside the
+  // current one, so the list reads as system, bound to the signed-in user.
+  const memberships = await runAsSystem("list the Spaces the signed-in user belongs to", () =>
+    deps.prisma.spaceMember.findMany({
+      where: {
+        userId: actor.userId,
+        OR: [{ organizationId }, { member: { role: GUEST_ROLE } }],
+      },
+      select: {
+        spaceId: true,
+        role: true,
+        space: {
+          select: {
+            name: true,
+            isDefault: true,
+            deletingAt: true,
+            _count: { select: { memberships: true } },
+          },
         },
       },
-    },
-    orderBy: { createdAt: "asc" },
-  });
+      orderBy: { createdAt: "asc" },
+    }),
+  );
   const spaceIds = memberships.map((membership) => membership.spaceId);
   const inactiveSpaceIds = spaceIds.filter((spaceId) => spaceId !== actor.spaceId);
   const [

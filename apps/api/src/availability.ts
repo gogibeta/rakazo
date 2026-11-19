@@ -72,10 +72,17 @@ async function assertOwnSpaces(
   actor: Pick<Actor, "userId">,
   spaceIds: string[],
 ): Promise<void> {
-  const members = await tx.spaceMember.findMany({
-    where: { userId: actor.userId, spaceId: { in: spaceIds }, space: { deletingAt: null } },
-    select: { spaceId: true },
-  });
+  // The check spans every Space the item is shared with, not just the current one,
+  // so the membership rows sit outside this transaction's tenant scope.
+  const members = await runAsSystemInTransaction(
+    tx,
+    "check the actor belongs to the spaces an item is shared with",
+    () =>
+      tx.spaceMember.findMany({
+        where: { userId: actor.userId, spaceId: { in: spaceIds }, space: { deletingAt: null } },
+        select: { spaceId: true },
+      }),
+  );
   if (members.length !== new Set(spaceIds).size) throw new ORPCError("NOT_FOUND");
 }
 
@@ -297,10 +304,17 @@ export async function chooseForSpace(
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await assertOwnSpaces(tx, actor, [input.spaceId]);
-    const memberships = await tx.spaceMember.findMany({
-      where: { userId: actor.userId, space: { deletingAt: null } },
-      select: { spaceId: true },
-    });
+    // The owner's other Spaces decide where an item left out here stays, so the
+    // membership list reads as system inside this transaction.
+    const memberships = await runAsSystemInTransaction(
+      tx,
+      "owner's spaces when choosing availability",
+      () =>
+        tx.spaceMember.findMany({
+          where: { userId: actor.userId, space: { deletingAt: null } },
+          select: { spaceId: true },
+        }),
+    );
     const others = memberships.map((m) => m.spaceId).filter((id) => id !== input.spaceId);
     const chosen = new Set(input.items.map((entry) => `${entry.kind}:${entry.id}`));
     for (const item of await ownItems(tx, actor)) {

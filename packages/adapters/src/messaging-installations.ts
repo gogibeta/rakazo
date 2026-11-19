@@ -8,7 +8,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import type { Actor, MessagingInstallationSummary } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { IsolationError, runAsSystem } from "@rakazo/db";
+import { IsolationError, runAsSystem, runAsTenant } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 import { credentialDigest } from "./credential-digest.js";
 import { installationSenderAddress } from "./installed-messaging-surface.js";
@@ -88,9 +88,11 @@ export class MessagingInstallations implements MessagingInstallationStore {
           archivedAt: null,
         },
       });
-      const member = await this.prisma.spaceMember.findFirst({
-        where: { spaceId: session.spaceId, userId: session.userId },
-      });
+      const member = await runAsTenant({ spaceId: session.spaceId, userId: session.userId }, () =>
+        this.prisma.spaceMember.findFirst({
+          where: { spaceId: session.spaceId, userId: session.userId },
+        }),
+      );
       if (!bot || !member) throw new Error("Installation owner is no longer available");
       const external = await this.provider.exchange(code);
       const where = {
@@ -332,10 +334,12 @@ export class MessagingInstallations implements MessagingInstallationStore {
         where: { id: row.botId, spaceId: row.spaceId, userId: row.userId, archivedAt: null },
         select: { id: true },
       }),
-      this.prisma.spaceMember.findFirst({
-        where: { spaceId: row.spaceId, userId: row.userId },
-        select: { id: true },
-      }),
+      runAsTenant({ spaceId: row.spaceId, userId: row.userId }, () =>
+        this.prisma.spaceMember.findFirst({
+          where: { spaceId: row.spaceId, userId: row.userId },
+          select: { id: true },
+        }),
+      ),
     ]);
     return bot && member ? row : null;
   }

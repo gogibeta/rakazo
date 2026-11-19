@@ -180,7 +180,24 @@ export const ROW_SECURITY_MODELS: ReadonlySet<string> = new Set([
   "AuditEvent",
   "Page",
   "PageVersion",
+  "SpaceMember",
+  "Space",
+  "Member",
+  "ExternalEffect",
+  "CapabilityInstall",
+  "CloudAgent",
+  "Attempt",
+  "SpaceKey",
 ]);
+
+/**
+ * Tables the Better Auth adapter reads and writes before a request has a Space:
+ * sign-in, session lookup and account creation all precede tenant context, so a
+ * tenant policy on them would break authentication. The missing-context tripwire
+ * still fires for them, so an unscoped path shows up in the log and in test runs
+ * without being blocked.
+ */
+export const LOG_ONLY_MODELS: ReadonlySet<string> = new Set(["Account", "Session", "User"]);
 
 /**
  * Proves a system context to the database. The policies honour app.rls_bypass only
@@ -319,11 +336,14 @@ function uniqueAsFilter(where: Where, fields: Set<string>): Where | undefined {
 }
 
 const reportedMissing = new Set<string>();
+// Call sites on the log-only tables, kept apart so they never fail a test run:
+// those reads are correct by design, and logging them is only an audit trail.
+const reportedLogOnly = new Set<string>();
 const MAX_REPORTED = 500;
 
 // The database already returns nothing here, so log once per call site to point
 // at the missing runAsTenant / runAsSystem instead of an empty result.
-function missingContext(model: string, operation: string): void {
+function missingContext(model: string, operation: string, blocking = true): void {
   const error = new Error(`${model}.${operation} ran outside runAsTenant/runAsSystem`);
   const callSite = (error.stack ?? "")
     .split("\n")
@@ -332,11 +352,13 @@ function missingContext(model: string, operation: string): void {
     .slice(0, 3)
     .join("\n");
   const key = `${model}.${operation}\n${callSite}`;
-  if (reportedMissing.has(key) || reportedMissing.size >= MAX_REPORTED) return;
-  reportedMissing.add(key);
+  const seen = blocking ? reportedMissing : reportedLogOnly;
+  if (seen.has(key) || seen.size >= MAX_REPORTED) return;
+  seen.add(key);
   getLogger().error("database access without a tenant or system context", error, {
     model,
     operation,
+    logOnly: !blocking,
   });
 }
 
@@ -384,6 +406,7 @@ export function withRowLevelSecurity(prisma: PrismaClient, bypassKey = ""): Pris
         const context = storage.getStore();
         if (!context) {
           if (model && ROW_SECURITY_MODELS.has(model)) missingContext(model, operation);
+          else if (model && LOG_ONLY_MODELS.has(model)) missingContext(model, operation, false);
           return run();
         }
         if (transaction?.kind === "batch") {

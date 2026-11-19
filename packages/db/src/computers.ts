@@ -110,14 +110,32 @@ type ComputerDb = Pick<PrismaClient, "computer">;
  * owner's, so the Space has one computer and one browser whoever made the bot.
  */
 export async function teamComputerUserId(
-  db: Pick<PrismaClient, "spaceMember">,
+  db: Pick<PrismaClient, "spaceMember"> & Partial<Pick<PrismaClient, "$transaction">>,
   input: { spaceId: string; userId: string },
 ): Promise<string> {
-  const owner = await db.spaceMember.findFirst({
-    where: { spaceId: input.spaceId, role: { contains: "owner" } },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { userId: true },
-  });
+  // The owner is another member of the Space, so the lookup reads as system in
+  // whichever client the caller passed, like the quota count below.
+  const read = () =>
+    db.spaceMember.findFirst({
+      where: { spaceId: input.spaceId, role: { contains: "owner" } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      select: { userId: true },
+    });
+  const reason = "find the owner a Space's team computer is kept for";
+  // A root client can open its own scope; a transaction client already holds a
+  // connection, so the bypass is switched on inside it. Presence of
+  // $transaction is what tells the two apart: $queryRaw is on both.
+  // SAFETY: only reached without "$transaction", so db is a Prisma.TransactionClient,
+  // whose $queryRaw is what runAsSystemInTransaction needs; the declared type cannot
+  // say so because it omits $transaction rather than naming the transaction client.
+  const owner =
+    "$transaction" in db
+      ? await runAsSystem(reason, read)
+      : await runAsSystemInTransaction(
+          db as unknown as Pick<PrismaClient, "$queryRaw">,
+          reason,
+          read,
+        );
   return owner?.userId ?? input.userId;
 }
 type ComputerTx = Pick<Prisma.TransactionClient, "computer" | "$queryRaw">;
@@ -161,7 +179,7 @@ export class ComputerLimitError extends Error {
  * intermediate reference must not count against the final live set.
  */
 async function countInUseComputersForUser(
-  prisma: ComputerDb & Partial<Pick<PrismaClient, "$queryRaw">>,
+  prisma: ComputerDb & Partial<Pick<PrismaClient, "$transaction">>,
   userId: string,
   excludeBotId?: string,
 ): Promise<number> {
@@ -177,10 +195,13 @@ async function countInUseComputersForUser(
       },
     });
   // The quota is per person, so it counts the computers of all their Spaces.
+  // $queryRaw is on both clients; only a root one lacks $transaction.
   const reason = "computer quota across the user's Spaces";
-  return prisma.$queryRaw
-    ? runAsSystemInTransaction(prisma as Pick<PrismaClient, "$queryRaw">, reason, count)
-    : runAsSystem(reason, count);
+  // SAFETY: only reached without "$transaction", so prisma is a Prisma.TransactionClient,
+  // which carries the $queryRaw runAsSystemInTransaction needs.
+  return "$transaction" in prisma
+    ? runAsSystem(reason, count)
+    : runAsSystemInTransaction(prisma as unknown as Pick<PrismaClient, "$queryRaw">, reason, count);
 }
 
 /**

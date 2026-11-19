@@ -14,6 +14,8 @@ vi.mock("@rakazo/db", () => ({
   bootstrapUserSpace: vi.fn(async () => ({ spaceId: "space-1" })),
   leaveInvitedSpaces: vi.fn(async () => ({ ownedOrganizationIds: [] })),
   recordSecurityEvent: vi.fn(async () => undefined),
+  runAsSystem: vi.fn(async (_reason: string, fn: () => unknown) => fn()),
+  runAsSystemInTransaction: vi.fn(async (_tx: unknown, _reason: string, fn: () => unknown) => fn()),
 }));
 
 const baseURL = "http://auth.example.test";

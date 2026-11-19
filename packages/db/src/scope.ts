@@ -28,6 +28,19 @@ export async function requireMembership(
   requestedSpaceId?: string | null,
   sessionId?: string,
 ): Promise<Actor> {
+  // This runs before there is a Space to scope to: it decides which Space the
+  // request is, so it cannot run in that Space's tenant context.
+  return runAsSystem("resolve the Space a request runs in", () =>
+    resolveMembership(prisma, userId, requestedSpaceId, sessionId),
+  );
+}
+
+async function resolveMembership(
+  prisma: PrismaClient,
+  userId: string,
+  requestedSpaceId?: string | null,
+  sessionId?: string,
+): Promise<Actor> {
   const organizationId = requestedSpaceId
     ? null
     : await sessionOrganizationId(prisma, userId, sessionId);

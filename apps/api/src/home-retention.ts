@@ -263,11 +263,13 @@ async function warn(deps: HomeRetentionDeps, group: Warning) {
     }
     await prisma.homeDeletionNotice.deleteMany({ where: { claimId, computerId: { notIn: due } } });
     const owner = due.length
-      ? await prisma.member.findFirst({
-          where: { organizationId: group.organizationId, role: { contains: "owner" } },
-          orderBy: { createdAt: "asc" },
-          select: { user: { select: { email: true, name: true, locale: true } } },
-        })
+      ? await runAsSystem("find an organization's owner for a retention warning", () =>
+          prisma.member.findFirst({
+            where: { organizationId: group.organizationId, role: { contains: "owner" } },
+            orderBy: { createdAt: "asc" },
+            select: { user: { select: { email: true, name: true, locale: true } } },
+          }),
+        )
       : null;
     const user = owner?.user;
     if (!user) {

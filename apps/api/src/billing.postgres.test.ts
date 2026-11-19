@@ -2,7 +2,12 @@ import type { ProductAnalytics } from "@rakazo/adapter-kit";
 import { BillingEmulator } from "@rakazo/adapters";
 import type { Actor, AnalyticsEvent } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
-import { billingAccountForOrganization, createBillingAccount, createDb } from "@rakazo/db";
+import {
+  asSystem,
+  billingAccountForOrganization,
+  createBillingAccount,
+  createDb,
+} from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   BILLING_RETURN_PATH,
@@ -47,18 +52,19 @@ describePostgres("billing service (PostgreSQL)", () => {
     };
     billing = createBillingService({ prisma, provider: emulator, webOrigin, analytics });
     const createdAt = new Date();
+    const system = asSystem(prisma);
     for (const id of [ownerId, memberId]) {
-      await prisma.user.create({
+      await system.user.create({
         data: { id, name: id, email: `${id}@rakazo.test`, emailVerified: false },
       });
     }
-    await prisma.organization.create({
+    await system.organization.create({
       data: { id: organizationId, name: "Billing Org", slug: organizationId, createdAt },
     });
-    await prisma.space.create({
+    await system.space.create({
       data: { id: spaceId, organizationId, name: "General", isDefault: true },
     });
-    await prisma.member.create({
+    await system.member.create({
       data: { id: `m-${ownerId}`, organizationId, userId: ownerId, role: "owner", createdAt },
     });
   });
@@ -122,7 +128,7 @@ describePostgres("billing service (PostgreSQL)", () => {
   });
 
   it("only lets owners manage billing", async () => {
-    await prisma.member.create({
+    await asSystem(prisma).member.create({
       data: {
         id: `m-${memberId}`,
         organizationId,
@@ -277,10 +283,10 @@ describePostgres("billing service (PostgreSQL)", () => {
     for (const id of [invited, referrer])
       await prisma.organization.create({ data: { id, name: id, slug: id, createdAt } });
     try {
-      await prisma.space.create({
+      await asSystem(prisma).space.create({
         data: { id: invited, organizationId: invited, name: "General", isDefault: true },
       });
-      await prisma.member.create({
+      await asSystem(prisma).member.create({
         data: { id: invited, organizationId: invited, userId: inviteeId, role: "owner", createdAt },
       });
       await prisma.referralCode.create({

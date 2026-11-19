@@ -51,6 +51,7 @@ import {
   renewCheckoutLease,
   replaceBillingCustomer,
   reserveByokTrialCheckout,
+  runAsSystem,
   syncBillingSnapshot,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
@@ -205,10 +206,14 @@ export function createBillingService(deps: {
   }
 
   async function organizationBeingDeleted(organizationId: string) {
-    const deleting = await prisma.space.findFirst({
-      where: { organizationId, isDefault: true, deletingAt: { not: null } },
-      select: { id: true },
-    });
+    // The organization's default Space is not necessarily the caller's current
+    // one, so the deletion check reads as system, bound to the organization.
+    const deleting = await runAsSystem("check whether an organization is being deleted", () =>
+      prisma.space.findFirst({
+        where: { organizationId, isDefault: true, deletingAt: { not: null } },
+        select: { id: true },
+      }),
+    );
     return deleting !== null;
   }
 
@@ -283,11 +288,13 @@ export function createBillingService(deps: {
         live.cancellationComment === (previous.cancellationComment ?? undefined))
     )
       return;
-    const owner = await prisma.member.findFirst({
-      where: { organizationId: previous.organizationId, role: { contains: "owner" } },
-      orderBy: { createdAt: "asc" },
-      select: { userId: true },
-    });
+    const owner = await runAsSystem("find an organization's owner for analytics", () =>
+      prisma.member.findFirst({
+        where: { organizationId: previous.organizationId, role: { contains: "owner" } },
+        orderBy: { createdAt: "asc" },
+        select: { userId: true },
+      }),
+    );
     if (!owner) return;
     analytics.capture(owner.userId, {
       name: "subscription_cancel_feedback",

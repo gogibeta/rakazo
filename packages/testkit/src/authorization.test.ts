@@ -904,7 +904,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       connectionId: ownerConnection.connectionId,
     });
     expect(
-      await handles.prisma.capabilityInstall.findUnique({ where: { id: ownerCapability.id } }),
+      await db.capabilityInstall.findUnique({ where: { id: ownerCapability.id } }),
     ).not.toBeNull();
     expect(
       await asSystem(handles.prisma).connection.findUniqueOrThrow({
@@ -1208,8 +1208,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const ownerActor = await rpc<Actor>(app, owner, "me");
     const memberActor = await rpc<Actor>(app, member, "me");
 
-    await handles.prisma.member.deleteMany({ where: { userId: memberActor.userId } });
-    await handles.prisma.member.create({
+    await db.member.deleteMany({ where: { userId: memberActor.userId } });
+    await db.member.create({
       data: {
         id: `approval-member-${stamp}`,
         organizationId: ownerActor.spaceId,
@@ -1252,7 +1252,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const support = await rpc<Space>(app, cookie, "spaces/create", {
       name: "Customer support",
     });
-    const storedSpaces = await handles.prisma.space.findMany({
+    const storedSpaces = await db.space.findMany({
       where: { id: { in: [original.spaceId, support.id] } },
       select: { id: true, organizationId: true },
     });
@@ -1261,42 +1261,44 @@ describeWithDatabase("API authorization and resource isolation", () => {
     );
     const otherOrganizationId = `spaces-other-org-${stamp}`;
     const otherWorkspaceId = `spaces-other-workspace-${stamp}`;
-    await handles.prisma.$transaction([
-      handles.prisma.organization.create({
-        data: {
-          id: otherOrganizationId,
-          name: "Other company",
-          slug: otherOrganizationId,
-          createdAt: new Date(),
-        },
+    await runAsSystem("test fixture", () =>
+      handles.prisma.$transaction(async (tx) => {
+        await tx.organization.create({
+          data: {
+            id: otherOrganizationId,
+            name: "Other company",
+            slug: otherOrganizationId,
+            createdAt: new Date(),
+          },
+        });
+        await tx.member.create({
+          data: {
+            id: `spaces-other-member-${stamp}`,
+            organizationId: otherOrganizationId,
+            userId: original.userId,
+            role: "owner",
+            createdAt: new Date(),
+          },
+        });
+        await tx.space.create({
+          data: {
+            id: otherWorkspaceId,
+            organizationId: otherOrganizationId,
+            name: "Other company space",
+          },
+        });
+        await tx.spaceMember.create({
+          data: {
+            id: `spaces-other-space-member-${stamp}`,
+            spaceId: otherWorkspaceId,
+            organizationId: otherOrganizationId,
+            userId: original.userId,
+            role: "owner",
+            createdAt: new Date(),
+          },
+        });
       }),
-      handles.prisma.member.create({
-        data: {
-          id: `spaces-other-member-${stamp}`,
-          organizationId: otherOrganizationId,
-          userId: original.userId,
-          role: "owner",
-          createdAt: new Date(),
-        },
-      }),
-      handles.prisma.space.create({
-        data: {
-          id: otherWorkspaceId,
-          organizationId: otherOrganizationId,
-          name: "Other company space",
-        },
-      }),
-      handles.prisma.spaceMember.create({
-        data: {
-          id: `spaces-other-space-member-${stamp}`,
-          spaceId: otherWorkspaceId,
-          organizationId: otherOrganizationId,
-          userId: original.userId,
-          role: "owner",
-          createdAt: new Date(),
-        },
-      }),
-    ]);
+    );
 
     // Owning a target in a different organization does not authorize a rename
     // from the active organization.
@@ -1304,7 +1306,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       raw(app, cookie, "spaces/rename", { spaceId: otherWorkspaceId, name: "Wrong organization" }),
     ).resolves.toMatchObject({ status: 404 });
     await expect(
-      handles.prisma.space.findUniqueOrThrow({
+      db.space.findUniqueOrThrow({
         where: { id: otherWorkspaceId },
         select: { name: true },
       }),
@@ -1385,7 +1387,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
   it("enforces the space limit across concurrent creation requests", async () => {
     const cookie = await signup(app, `space-limit-${stamp}@rakazo.test`, "Space Limit");
     const actor = await rpc<Actor>(app, cookie, "me");
-    const currentSpace = await handles.prisma.space.findUniqueOrThrow({
+    const currentSpace = await db.space.findUniqueOrThrow({
       where: { id: actor.spaceId },
       select: { organizationId: true },
     });
@@ -1395,8 +1397,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       name: `Limit space ${index}`,
       createdAt: new Date(),
     }));
-    await handles.prisma.space.createMany({ data: extraSpaces });
-    await handles.prisma.spaceMember.createMany({
+    await db.space.createMany({ data: extraSpaces });
+    await db.spaceMember.createMany({
       data: extraSpaces.map((space, index) => ({
         id: `limit-member-${stamp}-${index}`,
         spaceId: space.id,
@@ -1414,7 +1416,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
     await expect(
-      handles.prisma.spaceMember.count({
+      db.spaceMember.count({
         where: { userId: actor.userId, organizationId: currentSpace.organizationId },
       }),
     ).resolves.toBe(32);
@@ -1750,7 +1752,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     const cookie = await signup(app, `space-shared-${stamp}@rakazo.test`, "Space Owner");
     const shared = await rpc<Space>(app, cookie, "spaces/create", { name: "Shared" });
     const ownerBot = await rpc<Bot>(app, cookie, "bots/create", botInput("Shared bot"), shared.id);
-    const sharedRow = await handles.prisma.space.findUniqueOrThrow({
+    const sharedRow = await db.space.findUniqueOrThrow({
       where: { id: shared.id },
       select: { organizationId: true },
     });
@@ -1760,8 +1762,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       "Space Member",
     );
     const memberActor = await rpc<Actor>(app, memberCookie, "me");
-    await handles.prisma.member.deleteMany({ where: { userId: memberActor.userId } });
-    await handles.prisma.member.create({
+    await db.member.deleteMany({ where: { userId: memberActor.userId } });
+    await db.member.create({
       data: {
         id: `space-shared-org-member-${stamp}`,
         organizationId: sharedRow.organizationId,
@@ -1770,7 +1772,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
         createdAt: new Date(),
       },
     });
-    await handles.prisma.spaceMember.create({
+    await db.spaceMember.create({
       data: {
         id: `space-shared-space-member-${stamp}`,
         spaceId: shared.id,
@@ -1799,15 +1801,15 @@ describeWithDatabase("API authorization and resource isolation", () => {
       raw(app, memberCookie, "spaces/rename", { spaceId: shared.id, name: "Stolen" }, shared.id),
     ).resolves.toMatchObject({ status: 403 });
     await expect(
-      handles.prisma.space.findUnique({ where: { id: shared.id }, select: { name: true } }),
+      db.space.findUnique({ where: { id: shared.id }, select: { name: true } }),
     ).resolves.toEqual({ name: "Shared" });
     await expect(db.bot.findUnique({ where: { id: ownerBot.id } })).resolves.not.toBeNull();
 
     // A member's only space stays even when they own it.
-    await handles.prisma.spaceMember.deleteMany({
+    await db.spaceMember.deleteMany({
       where: { userId: memberActor.userId, spaceId: { not: shared.id } },
     });
-    await handles.prisma.spaceMember.update({
+    await db.spaceMember.update({
       where: { id: `space-shared-space-member-${stamp}` },
       data: { role: "owner" },
     });
@@ -1833,7 +1835,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       { spaceId: shared.id },
     );
     expect(ownerRemoved.ok).toBe(true);
-    await expect(handles.prisma.space.findUnique({ where: { id: shared.id } })).resolves.toBeNull();
+    await expect(db.space.findUnique({ where: { id: shared.id } })).resolves.toBeNull();
     await expect(db.bot.findUnique({ where: { id: ownerBot.id } })).resolves.toBeNull();
     await expect(
       db.spaceMember.count({ where: { userId: memberActor.userId, spaceId: shared.id } }),
@@ -1915,7 +1917,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     });
     await expect(db.bot.findUnique({ where: { id: bot.id } })).resolves.not.toBeNull();
 
-    await handles.prisma.space.update({
+    await db.space.update({
       where: { id: space.id },
       data: { deletingAt: new Date(Date.now() - 6 * 60_000) },
     });
@@ -1923,7 +1925,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       spaceId: space.id,
     });
     expect(removed).toEqual({ ok: true, activeSpaceId: actor.spaceId });
-    await expect(handles.prisma.space.findUnique({ where: { id: space.id } })).resolves.toBeNull();
+    await expect(db.space.findUnique({ where: { id: space.id } })).resolves.toBeNull();
     await expect(db.bot.findUnique({ where: { id: bot.id } })).resolves.toBeNull();
   });
 
@@ -1949,14 +1951,12 @@ describeWithDatabase("API authorization and resource isolation", () => {
     }
 
     await expect(
-      handles.prisma.space.findMany({
+      db.space.findMany({
         where: { id: { in: [actor.spaceId, marker.id] } },
         select: { id: true },
       }),
     ).resolves.toHaveLength(2);
-    await expect(
-      handles.prisma.member.count({ where: { userId: actor.userId } }),
-    ).resolves.toBeGreaterThan(0);
+    await expect(db.member.count({ where: { userId: actor.userId } })).resolves.toBeGreaterThan(0);
     expect((await raw(app, cookie, "me")).status).toBe(200);
   });
 
@@ -2016,7 +2016,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       }),
     ).toEqual({ providerRef: `space-race-provider-${stamp}` });
 
-    await handles.prisma.space.update({
+    await db.space.update({
       where: { id: space.id },
       data: { deletingAt: new Date(Date.now() - 6 * 60_000) },
     });
@@ -2029,7 +2029,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       raw(app, cookie, "spaces/rename", { spaceId: space.id, name: "Still blocked" }, space.id),
     ).resolves.toMatchObject({ status: 409 });
     await expect(
-      handles.prisma.space.findUniqueOrThrow({ where: { id: space.id }, select: { name: true } }),
+      db.space.findUniqueOrThrow({ where: { id: space.id }, select: { name: true } }),
     ).resolves.toEqual({ name: "Concurrent" });
     const replacementClaim = await asMember(() =>
       claimSpaceDeletionForMember(handles.prisma, deleteInput),
@@ -2047,7 +2047,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       releaseSpaceDeletionClaim(handles.prisma, { ...deleteInput, claimId: firstClaim.claimId }),
     );
     expect(
-      await handles.prisma.space.findUnique({
+      await db.space.findUnique({
         where: { id: space.id },
         select: { deletionClaimId: true },
       }),
@@ -2083,7 +2083,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     try {
       const removed = await raw(app, cookie, "spaces/remove", { spaceId: space.id }, space.id);
       expect(removed.status).toBe(500);
-      const lifecycle = await handles.prisma.space.findUnique({
+      const lifecycle = await db.space.findUnique({
         where: { id: space.id },
         select: { deletingAt: true, deletionClaimId: true },
       });
@@ -2105,7 +2105,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
       expect(blockedCreate.ok).toBe(false);
     } finally {
       destroy.mockRestore();
-      const lifecycle = await handles.prisma.space.findUnique({
+      const lifecycle = await db.space.findUnique({
         where: { id: space.id },
         select: { deletionClaimId: true },
       });
@@ -2142,7 +2142,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     try {
       const removed = await raw(app, cookie, "spaces/remove", { spaceId: space.id }, space.id);
       expect(removed.status).toBe(500);
-      const lifecycle = await handles.prisma.space.findUnique({
+      const lifecycle = await db.space.findUnique({
         where: { id: space.id },
         select: { deletingAt: true, deletionClaimId: true },
       });
@@ -2159,7 +2159,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     } finally {
       destroy.mockRestore();
       delete process.env.SPACE_TEARDOWN_TIMEOUT_MS;
-      const lifecycle = await handles.prisma.space.findUnique({
+      const lifecycle = await db.space.findUnique({
         where: { id: space.id },
         select: { deletionClaimId: true },
       });

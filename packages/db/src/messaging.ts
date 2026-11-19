@@ -6,6 +6,7 @@ import type { PrismaClient } from "./client.js";
 import { Prisma } from "./client.js";
 import { isUniqueViolation } from "./prisma-errors.js";
 import { createRepos } from "./repos.js";
+import { runAsSystem } from "./row-security.js";
 import { getPrimaryThread } from "./thread-sessions.js";
 
 export interface MessagingIdentityRequest {
@@ -94,10 +95,14 @@ export async function provisionMessagingIdentity(
       });
   }
 
-  const membership = await prisma.spaceMember.findFirst({
-    where: { userId: user.id, space: { deletingAt: null } },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
+  // Messaging identities are provisioned outside any request's Space scope, so
+  // finding the user's first Space reads as system, bound to the user.
+  const membership = await runAsSystem("find a messaging user's first Space", () =>
+    prisma.spaceMember.findFirst({
+      where: { userId: user.id, space: { deletingAt: null } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+  );
   const spaceId = membership?.spaceId ?? (await bootstrapUserSpace(prisma, user, env)).spaceId;
 
   // A previous attempt may have died between createBot and the identity row;

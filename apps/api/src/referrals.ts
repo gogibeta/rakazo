@@ -10,6 +10,7 @@ import {
   hasBillingAccess,
   isUniqueViolation,
   reconcileCreditPurchase,
+  runAsSystem,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
 
@@ -110,9 +111,13 @@ export function createReferrals(deps: {
       if (!referrer || referrer.organizationId === organizationId || account?.subscribedAt) return;
       // The friend's longer trial is a gift between people, so a code from an organization the
       // claiming owner also belongs to earns nothing. Teammates two companies share do not count.
-      const self = await prisma.member.count({
-        where: { organizationId: referrer.organizationId, userId },
-      });
+      // The referrer's organization is not the caller's current one, so the check
+      // reads as system, bound to the claiming user and the referrer's organization.
+      const self = await runAsSystem("check a referral claim for shared membership", () =>
+        prisma.member.count({
+          where: { organizationId: referrer.organizationId, userId },
+        }),
+      );
       if (self > 0) return;
       await prisma.referral.createMany({
         data: [{ organizationId, referrerOrganizationId: referrer.organizationId }],
