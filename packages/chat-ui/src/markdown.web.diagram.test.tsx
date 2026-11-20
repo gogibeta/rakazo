@@ -4,7 +4,7 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatMarkdown } from "./markdown.web";
+import { ChatMarkdown, CLOSING_FENCE_LINE } from "./markdown.web";
 
 // jsdom cannot lay out SVG, so Mermaid itself is replaced. The browser spec draws real diagrams.
 const mermaid = vi.hoisted(() => ({
@@ -131,6 +131,49 @@ describe("web markdown diagrams", () => {
     await render("```ts\nconst a = 1;\n```\n\n```mermaid\n\n```");
     expect(container.querySelectorAll("pre")).toHaveLength(2);
     expect(mermaid.parse).not.toHaveBeenCalled();
+  });
+
+  it("rejects a long run of quoted markers without backtracking", () => {
+    // The closing-fence check had an optional space that overlapped the next repetition, so a line
+    // of repeated " >" backtracked exponentially: 28 copies took 6 seconds to reject. Tested
+    // against the expression itself: through the renderer a line starting with ">" parses as a
+    // blockquote, so the fence path is never reached and the test would prove nothing.
+    //
+    // 26 copies is deliberate. The expression is quadratic-to-exponential here, and at 28+ the old
+    // one blocks the event loop for longer than vitest's timeout, so a revert HANGS the suite
+    // instead of failing it. At 26 the old expression finishes in ~1.6s and fails this assertion,
+    // while the fixed one stays at ~0ms.
+    const markers = `${" >".repeat(26)}x`;
+    const started = performance.now();
+    expect(markers.match(CLOSING_FENCE_LINE)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  it("accepts exactly the lines the old expression did", () => {
+    // The rewrite only dropped the optional space after `>`; comparing against the old expression
+    // is the real equivalence check, rather than restating what the new one should return.
+    const before = /^(?:[ \t]*>[ \t]?)*[ \t]*(`{3,}|~{3,})[ \t]*$/;
+    const lines = [
+      "```",
+      "> ```",
+      "> > ```",
+      ">>```",
+      "  > ```  ",
+      " > ```` ",
+      "~~~",
+      "> ``` \t",
+      ">>~~~",
+      "> x ```",
+      "``` x",
+      ">>foo",
+      "",
+      ">",
+      " > ",
+      "```mermaid",
+    ];
+    for (const line of lines) {
+      expect(CLOSING_FENCE_LINE.exec(line)?.[1], line).toBe(before.exec(line)?.[1]);
+    }
   });
 
   it("redraws in the new palette when the theme changes", async () => {

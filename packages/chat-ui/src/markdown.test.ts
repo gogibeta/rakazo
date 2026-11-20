@@ -125,6 +125,26 @@ describe("plainTextLinkParts", () => {
     expect(performance.now() - started).toBeLessThan(250);
     expect(parts).toEqual([{ type: "text", value: text }]);
   });
+
+  it("rejects a runaway run of escaped brackets without rescanning the message", () => {
+    // Every "\\[" opens a candidate title, so an unbounded quantifier made each start position
+    // scan to the end of the text: 32k characters took over a second before the title was bounded.
+    const text = "\\[".repeat(16_000);
+    const started = performance.now();
+    const parts = plainTextLinkParts(text);
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(parts).toEqual([{ type: "text", value: text }]);
+  });
+
+  it("still reads a page link whose escaped title is at the length bound", () => {
+    // The bound has to clear the longest title the system allows: 200 characters, doubled by
+    // escaping when the title is nothing but brackets.
+    const title = "[".repeat(200);
+    const escaped = title.replace(/[[\]]/g, (c) => `\\${c}`);
+    expect(plainTextLinkParts(`[${escaped}](page:pg_1)`)).toEqual([
+      { type: "page", value: title, pageId: "pg_1" },
+    ]);
+  });
 });
 
 describe("sanitizeMarkdownUrl", () => {

@@ -176,6 +176,11 @@ function MermaidDiagram({ source, fallback }: { source: string; fallback: ReactN
   );
 }
 
+/** The closing fence of a streamed diagram fence: fence characters alone on the last line. */
+// No optional space after `>`: it overlapped the next repetition's leading run, so a line of
+// repeated " >" backtracked exponentially — 28 copies took 6 seconds to reject.
+export const CLOSING_FENCE_LINE = /^(?:[ \t]*>)*[ \t]*(`{3,}|~{3,})[ \t]*$/;
+
 function MarkdownPre({
   node,
   ...props
@@ -197,7 +202,7 @@ function MarkdownPre({
     const fence = start === undefined ? "" : streamingSource.slice(start, end);
     const opening = fence.match(/^(`{3,}|~{3,})/);
     const lastLine = fence.slice(fence.lastIndexOf("\n") + 1);
-    const closing = lastLine.match(/^(?:[ \t]*>[ \t]?)*[ \t]*(`{3,}|~{3,})[ \t]*$/);
+    const closing = lastLine.match(CLOSING_FENCE_LINE);
     if (
       !fence.includes("\n") ||
       !opening?.[1] ||
