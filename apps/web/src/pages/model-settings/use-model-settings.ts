@@ -120,9 +120,12 @@ export function useModelSettings(onClose: () => void, scope: SettingsScope) {
     thinkingLevel,
   } = form;
   const [codeCopied, copyOAuthCode] = useCopyText();
+  // Loading ends with the account and its saved connections. The catalog can be
+  // slow (it folds in live provider fetches), so it never gates the first paint:
+  // the saved connections render from the credentials query and the catalog
+  // fills in behind them when it lands.
   const [loading, setLoading] = useState(
     () =>
-      queryClient.getQueryData(catalogQuery.queryKey) === undefined ||
       queryClient.getQueryData(credentialsQuery.queryKey) === undefined ||
       queryClient.getQueryData(meQuery.queryKey) === undefined,
   );
@@ -226,9 +229,18 @@ export function useModelSettings(onClose: () => void, scope: SettingsScope) {
     if (cachedCatalog && cachedCredentials && cachedMe) {
       applyLoaded(cachedCatalog, cachedCredentials, cachedMe, selectionRevisionRef.current);
     }
-    void refresh({ reuse: true })
-      .catch((err: unknown) => setError(errorText(err, t`Could not load model settings`)))
+    // These share the refresh's in-flight reads (reuse), so the loading state
+    // clears as soon as the account and its connections arrive, without waiting
+    // for the catalog read the refresh also performs.
+    void Promise.all([
+      fetchFresh(queryClient, credentialsQuery, { reuse: true }),
+      fetchFresh(queryClient, meQuery, { reuse: true }),
+    ])
+      .catch(() => undefined)
       .finally(() => setLoading(false));
+    void refresh({ reuse: true }).catch((err: unknown) =>
+      setError(errorText(err, t`Could not load model settings`)),
+    );
     return () => {
       refreshRevisionRef.current += 1;
       modelProbe.invalidate();

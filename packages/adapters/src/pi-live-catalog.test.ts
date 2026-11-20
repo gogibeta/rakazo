@@ -18,6 +18,7 @@ const bundled = base.filter((entry) => entry.provider === provider);
 const ids = bundled.map((entry) => entry.id);
 const added = "gpt-future-chat";
 const credential = {
+  userId: "user-test",
   provider,
   secretId: "secret-test",
   version: "version-1",
@@ -239,6 +240,55 @@ describe("provider catalog cache", () => {
     await cache.read({ ...credential, version: "version-2" });
     expect(probe).toHaveBeenCalledTimes(4);
   });
+  it("never serves one user's cached catalog to another user", async () => {
+    const probe = vi.fn(async () => [...ids, added]);
+    const cache = new ProviderCatalogCache({ enabled: true, probe });
+    await cache.read(credential);
+    await cache.read(credential);
+    expect(probe).toHaveBeenCalledTimes(1);
+    // Same provider, connection and credential version, but another user:
+    // the cached list belongs to the first user and must not be served.
+    await cache.read({ ...credential, userId: "user-other" });
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps serving the last good catalog while refreshes fail", async () => {
+    let now = 0;
+    let failing = false;
+    let current = [...ids, added];
+    const probe = vi.fn(async () => {
+      if (failing) throw new Error("fake-secret-error");
+      return current;
+    });
+    const cache = new ProviderCatalogCache({
+      enabled: true,
+      probe,
+      now: () => now,
+      ttlMs: 100,
+      failureTtlMs: 100,
+    });
+    const good = await cache.read(credential);
+    expect(good).toEqual([...ids, added]);
+    now = 101;
+    failing = true;
+    // The stale list is served at once; the failed refresh must not lose it.
+    expect(await cache.read(credential)).toEqual(good);
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    // Let the failed refresh settle (it stamps the failure window from the
+    // injected clock) before time advances.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await cache.read(credential)).toEqual(good);
+    expect(probe).toHaveBeenCalledTimes(2);
+    // Once probes recover, the next stale read revalidates behind the last good list.
+    now = 202;
+    failing = false;
+    current = [...ids];
+    expect(await cache.read(credential)).toEqual(good);
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await cache.read(credential)).toEqual([...ids]);
+  });
+
   it.each(["failure", "empty", "implausible"])(
     "negative caches %s and retries after its short TTL",
     async (kind) => {
