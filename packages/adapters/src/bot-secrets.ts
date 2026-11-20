@@ -1090,12 +1090,31 @@ function passwordRedactionForms(password: string): string[] {
   ];
 }
 
-/** A card number as pages show it: as given, digits only, and in groups of four. */
+/**
+ * A card number as pages show it: as given, digits only, in groups of four, and in the groups
+ * American Express (4-6-5) and Diners Club (4-6-4) print for their 15- and 14-digit numbers.
+ * Those two lengths match neither the four-group pattern nor each other, so without their own
+ * forms a card shown that way came through a tool result untouched.
+ */
 export function cardRedactionForms(number: string): string[] {
   const digits = number.replace(/\D/g, "");
   const grouped = digits.replace(/(\d{4})(?=\d)/g, "$1 ");
   const hyphenated = digits.replace(/(\d{4})(?=\d)/g, "$1-");
-  return [...new Set([number, digits, grouped, hyphenated].filter(Boolean))];
+  const printed = digits.length === 15 ? "4-6-5" : digits.length === 14 ? "4-6-4" : undefined;
+  const groups = printed ? printed.split("-").map(Number) : [];
+  let at = 0;
+  const printedParts = groups.map((size) => {
+    const part = digits.slice(at, at + size);
+    at += size;
+    return part;
+  });
+  const printedSpaced = printedParts.join(" ");
+  const printedHyphenated = printedParts.join("-");
+  return [
+    ...new Set(
+      [number, digits, grouped, hyphenated, printedSpaced, printedHyphenated].filter(Boolean),
+    ),
+  ];
 }
 
 /**

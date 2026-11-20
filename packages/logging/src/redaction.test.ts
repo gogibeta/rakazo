@@ -267,6 +267,25 @@ describe("redaction", () => {
     expect(redacted).toContain("[Redacted]");
   });
 
+  it("redacts a cookie header's value, which follows a space rather than the colon", () => {
+    // `Cookie: session=…` puts the secret after a space, so the assignment rule never matches it.
+    expect(redactSensitiveText("Cookie: session=abcdef123456")).toBe("Cookie: [Redacted]");
+    expect(redactSensitiveText("set-cookie: sid=abc123def456; Path=/")).toBe(
+      "set-cookie: [Redacted]",
+    );
+  });
+
+  it("leaves the word cookie alone when it is not a header", () => {
+    expect(redactSensitiveText("the cookie jar is full")).toBe("the cookie jar is full");
+    expect(redactSensitiveText("Set-Cookie handling was discussed")).toBe(
+      "Set-Cookie handling was discussed",
+    );
+  });
+
+  it("redacts passwd as well as password", () => {
+    expect(redactSensitiveText("passwd=hunter2")).toBe("passwd=[Redacted]");
+  });
+
   it("redacts quoted JSON credential fields", () => {
     const redacted = redactSensitiveText(
       '{"password":"hunter2","token":"abc","authorization":"Bearer secret"}',
