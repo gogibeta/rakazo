@@ -33,6 +33,25 @@ const CONNECT_RETRY_ATTEMPTS = 8;
 const SLOW_CHECKOUT_MS = 1_000;
 const SATURATION_REPORT_INTERVAL_MS = 10_000;
 
+/**
+ * Every DateTime column is `TIMESTAMP(3)` without a time zone, while the defaults that fill them
+ * (`CURRENT_TIMESTAMP`) are instants. Postgres converts such an instant to the *session* time zone
+ * before storing it, and `pg` parses the bare value back as UTC, so a row written by the database
+ * and a row written by the app in the same transaction land one UTC offset apart. Measured on a
+ * host at +05:30: an app-written `Date` and a `DEFAULT CURRENT_TIMESTAMP` inserted one line apart
+ * came back 330 minutes apart, which is what skewed the 24 h expiry, the 6 h wallet unlock and
+ * retention. With the session pinned both come back exact.
+ */
+export const SESSION_TIME_ZONE = "UTC";
+
+function pinTimeZone(pool: Pool): void {
+  pool.on("connect", (client) => {
+    // On the connection rather than in the connection string: a URL option is lost the moment
+    // someone passes a bare `DATABASE_URL` through a pooler or a test harness.
+    client.query(`SET TIME ZONE '${SESSION_TIME_ZONE}'`).catch(() => undefined);
+  });
+}
+
 export function createPool(connectionString: string, options: DbClientOptions = {}): Pool {
   const pool = new Pool({
     connectionString,
@@ -53,6 +72,7 @@ export function createPool(connectionString: string, options: DbClientOptions = 
   pool.on("connect", (client) => {
     client.on("error", () => undefined);
   });
+  pinTimeZone(pool);
   installConnectRetry(pool);
   installDbContext(pool);
   installSaturationReport(pool, options.applicationName);
@@ -86,6 +106,7 @@ export function createDb(
     keepAlive: true,
   });
   keyPool.on("error", () => undefined);
+  pinTimeZone(keyPool);
   installDbContext(keyPool);
   installSaturationReport(keyPool, keyPool.options.application_name);
   const end = pool.end.bind(pool) as () => Promise<void>;
