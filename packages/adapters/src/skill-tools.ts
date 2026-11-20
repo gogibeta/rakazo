@@ -11,6 +11,7 @@ import { availableInSpace } from "@rakazo/db";
 import { BUILTIN_AGENT_SKILLS } from "./builtin-skills.js";
 
 export const SKILL_TOOL_NAMES = new Set([
+  "skill_list",
   "skill_read",
   "skill_create",
   "skill_update",
@@ -109,6 +110,33 @@ export async function listAgentSkillRecords(
     orderBy: [{ name: "asc" }, { id: "asc" }],
   });
   return mergeBuiltinSkills(builtinAgentSkillRecords(), rows.map(toRecord));
+}
+
+/** The catalog as a bot sees it: enough to choose a skill, without every skill's body. */
+export async function skillListFromTool(
+  prisma: PrismaClient,
+  owner: SkillOwner,
+  input: { query?: string } = {},
+): Promise<Record<string, unknown>> {
+  const skills = await listAgentSkillRecords(prisma, owner);
+  const needle = input.query?.trim().toLowerCase() ?? "";
+  // A query matches the name or the description: the two fields the catalog shows.
+  const matched = needle
+    ? skills.filter(
+        (skill) =>
+          skill.name.toLowerCase().includes(needle) ||
+          skill.description.toLowerCase().includes(needle),
+      )
+    : skills;
+  return {
+    count: matched.length,
+    skills: matched.map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      source: skill.source,
+      readOnly: skill.readOnly,
+    })),
+  };
 }
 
 async function findOwnedSkill(

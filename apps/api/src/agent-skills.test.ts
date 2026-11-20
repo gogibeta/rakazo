@@ -34,6 +34,17 @@ function setup(rows: ReturnType<typeof savedSkill>[] = []) {
         : row[key as keyof typeof row] === value,
     );
   const agentSkill = {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      const row = {
+        id: "created-1",
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+        allSpaces: false,
+        ...data,
+      } as unknown as ReturnType<typeof savedSkill> & { files?: unknown };
+      rows.push(row);
+      return row;
+    }),
     findMany: vi.fn(async ({ where }: { where: Where }) =>
       rows.filter((row) => matches(row, where)),
     ),
@@ -151,5 +162,40 @@ Write the notes.
     expect(parsed.description).toBe("Prepare weekly release notes");
     expect(parsed.body).toBe("Write the weekly notes.");
     expect(parsed.frontmatter.notes).toBe("First step\nSecond step\n\n");
+  });
+});
+
+describe("uploaded skill files in the API", () => {
+  it("stores attached files and lists their paths without shipping the bodies", async () => {
+    const { service } = setup();
+    const created = await service.create(actor, {
+      content: buildSkillMd({ name: "Billing", description: "Chase invoices", body: "Steps" }),
+      files: { "references/terms.md": "Net 30", "tables/rates.csv": "a,b\n1,2" },
+    });
+    expect(created.files).toEqual(["references/terms.md", "tables/rates.csv"]);
+    // The catalog carries the paths only; a reader fetches one body at a time.
+    expect(created).not.toHaveProperty("fileContents");
+  });
+
+  it("keeps stored files when an edit does not send any", async () => {
+    const row = {
+      ...savedSkill("Billing"),
+      files: { "references/terms.md": "Net 30" },
+    };
+    const { service } = setup([row]);
+    const updated = await service.update(actor, { skillId: row.id, body: "New steps" });
+    expect(updated.files).toEqual(["references/terms.md"]);
+    // Omitting files must not clear them: an unrelated edit is not a delete.
+    expect(row.files).toEqual({ "references/terms.md": "Net 30" });
+  });
+
+  it("replaces the whole set when an edit sends files", async () => {
+    const row = { ...savedSkill("Billing"), files: { "references/old.md": "Old" } };
+    const { service } = setup([row]);
+    const updated = await service.update(actor, {
+      skillId: row.id,
+      files: { "references/new.md": "New" },
+    });
+    expect(updated.files).toEqual(["references/new.md"]);
   });
 });

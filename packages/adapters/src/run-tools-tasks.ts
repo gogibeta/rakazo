@@ -27,6 +27,7 @@ import {
 import {
   skillCreateFromTool,
   skillDeleteFromTool,
+  skillListFromTool,
   skillReadFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
@@ -258,6 +259,17 @@ export const taskTools: ToolHandlers = {
       name: args.name ? String(args.name) : undefined,
     });
     return call.finish(cancelled);
+  },
+  async skill_list(ctx, call) {
+    const { deps, run } = ctx;
+    const { args } = call;
+    return skillListFromTool(
+      deps.prisma,
+      { spaceId: run.spaceId, userId: run.userId },
+      {
+        query: args.query ? String(args.query) : undefined,
+      },
+    );
   },
   async skill_read(ctx, call) {
     const { deps, run } = ctx;

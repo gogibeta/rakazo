@@ -754,6 +754,8 @@ export const AgentSkillSchema = z.object({
   content: z.string(),
   source: AgentSkillSourceSchema,
   readOnly: z.boolean(),
+  /** Paths of the text files stored beside SKILL.md; bodies are read one at a time. */
+  files: z.array(z.string()).optional(),
   /** Absent for built-in skills, which every space has. */
   availability: SpaceAvailabilitySchema.optional(),
   createdAt: z.string(),
@@ -771,14 +773,46 @@ export const AgentSkillCatalogEntrySchema = AgentSkillSchema.pick({
 });
 export type AgentSkillCatalogEntry = z.infer<typeof AgentSkillCatalogEntrySchema>;
 
+/** Companion files a person may attach to a skill: the same shape an installed
+ * plugin's skill carries, so one reader (skill_read) serves both. */
+export const SkillFilesInput = z.record(z.string(), z.string());
+
+/** Why a companion file set cannot be stored, or null when it is fine. */
+export function skillFilesIssue(files: Record<string, string> | undefined): string | null {
+  if (!files) return null;
+  const paths = Object.keys(files);
+  if (paths.length > 40) return "A skill can carry at most 40 files.";
+  let bytes = 0;
+  for (const path of paths) {
+    if (
+      !path ||
+      path.startsWith("/") ||
+      path.includes("\\") ||
+      path.split("/").some((part) => !part || part === "." || part === "..") ||
+      /[#?%]/.test(path)
+    )
+      return `"${path}" is not a safe file path.`;
+    // Scripts and binaries never install, so they are not accepted here either.
+    if (!/\.(md|mdx|txt|json|ya?ml|csv)$/i.test(path))
+      return `"${path}" is not a supported text file (md, mdx, txt, json, yaml, csv).`;
+    bytes += Buffer.byteLength(files[path] ?? "");
+  }
+  if (bytes > 400_000) return "Skill files must be at most 400000 characters in total.";
+  return null;
+}
+
 export const CreateAgentSkillInput = z
   .object({
     content: z.string().min(1).max(100_000).optional(),
     name: z.string().min(1).max(80).optional(),
     description: z.string().min(1).max(2000).optional(),
     body: z.string().max(100_000).optional(),
+    /** Text files beside SKILL.md, keyed by their path relative to the skill folder. */
+    files: SkillFilesInput.optional(),
   })
   .superRefine((input, ctx) => {
+    const filesIssue = skillFilesIssue(input.files);
+    if (filesIssue) ctx.addIssue({ code: "custom", message: filesIssue, path: ["files"] });
     if (input.content?.trim()) return;
     if (!input.name?.trim() || !input.description?.trim()) {
       ctx.addIssue({
@@ -796,13 +830,18 @@ export const UpdateAgentSkillInput = z
     name: z.string().min(1).max(80).optional(),
     description: z.string().min(1).max(2000).optional(),
     body: z.string().max(100_000).optional(),
+    /** Replaces the whole set; omit to leave the stored files untouched. */
+    files: SkillFilesInput.optional(),
   })
   .superRefine((input, ctx) => {
+    const filesIssue = skillFilesIssue(input.files);
+    if (filesIssue) ctx.addIssue({ code: "custom", message: filesIssue, path: ["files"] });
     if (
       input.content === undefined &&
       input.name === undefined &&
       input.description === undefined &&
-      input.body === undefined
+      input.body === undefined &&
+      input.files === undefined
     ) {
       ctx.addIssue({
         code: "custom",
