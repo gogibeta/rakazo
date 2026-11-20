@@ -299,3 +299,50 @@ test("a framed screen that drops after connecting loads again by itself through 
   await page.waitForTimeout(1_500);
   expect(loads).toBe(4);
 });
+
+test("a screen that is still connecting says so instead of showing a black frame", async ({
+  page,
+}, testInfo) => {
+  await signup(page, `screen-connecting-${Date.now()}@rakazo.test`, "password12", "Connecting");
+  await completeOnboarding(page);
+  const botId = activeBotId(page);
+  await rpc(page, "computer/boot", { botId });
+  await expect(rpc<{ state: string }>(page, "computer/status", { botId })).resolves.toMatchObject({
+    state: "running",
+  });
+
+  // The screen page loads but its connection never completes: it reports that
+  // it is still connecting, as a slow desktop does for its first seconds.
+  await page.route("**/novnc/session/view/1.connecting-test/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      headers: { "content-security-policy": "sandbox allow-scripts allow-pointer-lock" },
+      body: `<!doctype html><title>Test desktop</title><script>
+        parent.postMessage({ rakazoScreen: "loading" }, "*");
+        parent.postMessage({ rakazoScreen: "connecting" }, "*");
+      </script><p>Desktop</p>`,
+    }),
+  );
+  await page.route("**/rpc/computer/screenUrl", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        json: { url: "/novnc/session/view/1.connecting-test/vnc.html?autoconnect=true" },
+      }),
+    }),
+  );
+
+  await openBotPanelTab(page, "Computer");
+  const preview = page.getByTestId("computer-preview");
+  await expect(preview.locator("iframe")).toHaveAttribute("src", /1\.connecting-test\/vnc\.html/);
+  await expect(preview.getByTestId("computer-connecting")).toContainText("Connecting…");
+  await expect(preview.getByRole("alert")).toHaveCount(0);
+  await captureScreenshot(page, testInfo, "computer-screen-connecting");
+
+  await preview.hover();
+  await preview.getByTestId("computer-preview-open").click();
+  const overlay = page.getByTestId("computer-viewport");
+  await expect(overlay.getByTestId("computer-connecting")).toContainText("Connecting…");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});

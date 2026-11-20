@@ -8,6 +8,7 @@ import {
   probeScreen,
   probeScreenStatus,
   sameEmbeddedComputerScreen,
+  screenFrameConnecting,
   screenFrameError,
   screenFrameMessage,
   screenFrameStarted,
@@ -281,6 +282,22 @@ describe("screen frame reports", () => {
     expect(screenFrameError({ rakazoScreen: "disconnected" }, "fallback")).toBe(
       "The screen connection closed.",
     );
+  });
+
+  it("covers a reporting frame until it connects, and again after it drops", () => {
+    const base = { framed: true, reporting: true, held: false };
+    expect(screenFrameConnecting({ ...base, state: null })).toBe(true);
+    expect(screenFrameConnecting({ ...base, state: "loading" })).toBe(true);
+    expect(screenFrameConnecting({ ...base, state: "connecting" })).toBe(true);
+    expect(screenFrameConnecting({ ...base, state: "disconnected" })).toBe(true);
+    expect(screenFrameConnecting({ ...base, state: "failed" })).toBe(true);
+    expect(screenFrameConnecting({ ...base, state: "connected" })).toBe(false);
+    // A held predecessor is what the user sees while its successor connects.
+    expect(screenFrameConnecting({ ...base, state: "connecting", held: true })).toBe(false);
+    // A page that never reports cannot be followed; its screen stays as it was.
+    expect(screenFrameConnecting({ ...base, state: null, reporting: false })).toBe(false);
+    // No frame (an error took its place, or none is shown) needs no cover.
+    expect(screenFrameConnecting({ ...base, state: null, framed: false })).toBe(false);
   });
 
   it("only treats the proxy's own pages as reporting frames", () => {

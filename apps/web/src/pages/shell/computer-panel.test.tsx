@@ -55,6 +55,7 @@ async function render(
   status: ComputerStatus | null,
   onOpen = vi.fn(),
   disk?: { cleaningUpDisk?: boolean; onCleanUpDisk: () => void; onDismissDiskWarning: () => void },
+  connecting = false,
 ) {
   await act(async () => {
     root.render(
@@ -66,6 +67,7 @@ async function render(
         screenFrameRef={() => undefined}
         computerScreenError={null}
         computerBooting={null}
+        computerConnecting={connecting ? <span>Connecting…</span> : null}
         booting={false}
         showingRecoveryHint={false}
         showComputerRecoveryHint={false}
@@ -110,6 +112,14 @@ it.each([null, computer("stopped"), computer("suspended")])(
 it("previews a running computer's screen", async () => {
   await render(computer("running"));
   expect(container.querySelector('[data-state="idle"]')).toBeNull();
+  expect(container.querySelector("iframe")).not.toBeNull();
+  expect(container.querySelector('[data-testid="computer-connecting"]')).toBeNull();
+});
+
+it("covers a connecting preview instead of leaving its frame black", async () => {
+  await render(computer("running"), vi.fn(), undefined, true);
+  const cover = container.querySelector('[data-testid="computer-connecting"]');
+  expect(cover?.textContent).toContain("Connecting…");
   expect(container.querySelector("iframe")).not.toBeNull();
 });
 

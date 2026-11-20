@@ -162,6 +162,26 @@ export function screenFrameStarted(message: ScreenFrameMessage): boolean {
   return message.rakazoScreen !== "loading";
 }
 
+/**
+ * Whether a framed screen is still connecting, so the viewer covers its black
+ * frame with a connecting state instead of leaving it blank. Only a page that
+ * reports its state can be followed: a page that never reports keeps the
+ * screen as it was. The cover holds from the frame's mount until the page
+ * reports "connected" — the first real frame — and again after a drop, until
+ * the reconnect's page connects. A held predecessor frame is what the user
+ * still sees while its successor connects, so it is never covered; a frame
+ * replaced by an error is already gone, so it is never covered either.
+ */
+export function screenFrameConnecting(options: {
+  framed: boolean;
+  reporting: boolean;
+  state: ScreenFrameState | null;
+  held: boolean;
+}): boolean {
+  if (!options.framed || !options.reporting || options.held) return false;
+  return options.state !== "connected";
+}
+
 /** The error a frame report means for the screen, or null while it is fine. */
 export function screenFrameError(message: ScreenFrameMessage, fallback: string): string | null {
   if (message.rakazoScreen !== "failed" && message.rakazoScreen !== "disconnected") return null;

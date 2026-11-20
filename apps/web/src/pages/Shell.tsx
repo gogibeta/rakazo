@@ -1281,6 +1281,7 @@ function SpaceShell() {
               screenFrameRef={computerState.setScreenFrame}
               computerScreenError={computerControls.computerScreenError}
               computerBooting={computerControls.computerBooting}
+              computerConnecting={computerControls.computerConnecting}
               booting={booting}
               showingRecoveryHint={computerControls.showingRecoveryHint}
               showComputerRecoveryHint={computerControls.showComputerRecoveryHint}
@@ -1434,6 +1435,7 @@ function SpaceShell() {
           screenFrameRef={computerState.setScreenFrame}
           computerScreenError={computerControls.computerScreenError}
           computerBooting={computerControls.computerBooting}
+          computerConnecting={computerControls.computerConnecting}
           onStopTeaching={stopTeaching}
           onStopRun={() => void stopRun()}
           onRelease={computerControls.releaseComputer}
