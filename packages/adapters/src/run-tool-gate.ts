@@ -75,6 +75,7 @@ import {
 } from "./run-effects.js";
 import { enqueueSteeringContinuation, renewRunLease } from "./run-lifecycle.js";
 import { notifyRun } from "./run-notifications.js";
+import { publishNarrationBeforeAsk } from "./run-progress.js";
 import { resolveCompletedSecretLeftover } from "./run-secret.js";
 import type { ToolRequest } from "./run-tool-request.js";
 import { BUILTIN_AGENT_TOOL_NAMES, READ_ONLY_AGENT_TOOLS } from "./run-tool-selection.js";
@@ -913,6 +914,10 @@ async function showApprovalCard(ctx: RunContext, call: ToolCall, card: ApprovalC
     // Another worker owns the run now; exit without leaving a local pause card.
     return pauseForApproval(ctx);
   }
+  // The bot's own words before the card are why it is asking. A paused run never reaches
+  // the final reply that would bring held notes back, so post them ahead of the card —
+  // the same rule `ask_user` already follows.
+  await publishNarrationBeforeAsk(ctx);
   await ctx.computer.checkpoint.flush();
   await persistTurnCheckpoint(ctx, executionId);
   await ctx.settleRunningHelpers();
