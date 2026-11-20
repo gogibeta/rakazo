@@ -19,6 +19,7 @@ import type { RefObject } from "react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ComputerMaintenanceActions } from "../../components/ComputerMaintenanceActions";
 import { computersAreUnavailable } from "../../components/ComputersUnavailableHint";
+import type { ScreenFrameState } from "../../lib/computer-screen";
 import {
   bootComputerOnce,
   createScreenRefocus,
@@ -30,6 +31,7 @@ import {
   proxiedScreenCapability,
   SCREEN_FRAME_LOAD_TIMEOUT_MS,
   sameEmbeddedComputerScreen,
+  screenFrameConnecting,
   screenFrameError,
   screenFrameMessage,
   screenFrameStarted,
@@ -97,6 +99,9 @@ export function useComputerState({
   // and the page reports its own state; nothing past "loading" by the timeout means it stalled.
   const [screenFrame, setScreenFrame] = useState<HTMLIFrameElement | null>(null);
   const [screenLoadError, setScreenLoadError] = useState<string | null>(null);
+  // The framed page's last reported state; a mounted frame that has not yet
+  // reported "connected" is still connecting, and its black frame is covered.
+  const [screenFrameState, setScreenFrameState] = useState<ScreenFrameState | null>(null);
   // An error that replaced the screen waits for Retry rather than spending another login code.
   const screenErrorShown = useRef(false);
   // Synced before the frame's unmount cleanup runs, from committed renders only.
@@ -169,6 +174,8 @@ export function useComputerState({
     // Only a mounted frame resets the error: its own failure unmounts it, and Retry remounts it.
     if (!screenFrame) return;
     setScreenLoadError(null);
+    // A mounted (or remounted, or re-sourced) frame is connecting until its page says so.
+    setScreenFrameState(null);
     screenFrameReported.current = false;
     screenReconnect().loaded();
     const url = embeddableScreenUrl(screenUrl);
@@ -213,6 +220,7 @@ export function useComputerState({
       if (message.rakazoScreen !== "loading" && message.rakazoScreen !== "connecting") {
         setHeldScreen(null);
       }
+      setScreenFrameState(message.rakazoScreen);
       if (screenFrameStarted(message)) screenFrameReported.current = true;
       if (message.rakazoScreen === "connected") screenConnected = true;
       else if (message.rakazoScreen === "failed" || message.rakazoScreen === "disconnected")
@@ -472,6 +480,15 @@ export function useComputerState({
     screenReconnects.current.for(computerBotIdRef.current ?? "").reset();
   }
 
+  // Whether the visible frame is still connecting, so its black frame is
+  // covered from the moment it mounts until its page reports "connected".
+  const screenConnecting = screenFrameConnecting({
+    framed: screenFrame !== null,
+    reporting: isProxiedScreenUrl(embeddableScreenUrl(screenUrl)),
+    state: screenFrameState,
+    held: heldScreen !== null,
+  });
+
   return {
     computer,
     computerRef,
@@ -504,6 +521,7 @@ export function useComputerState({
       ? `${screenFrameKey}:${screenUrl}`
       : `${screenFrameKey}:${screenGeneration}`,
     heldScreen,
+    screenConnecting,
     screenLoadError,
     setScreenLoadError,
     screenAwaitsRetry,
@@ -571,6 +589,7 @@ export function useComputerControls({
     setComputerErrorFromScreen,
     screenLoadError,
     setScreenLoadError,
+    screenConnecting,
     screenAwaitsRetry,
     resetScreenReconnect,
     computerVisible,
@@ -942,6 +961,14 @@ export function useComputerControls({
         {t`Booting live desktop…`}
       </span>
     ) : null;
+  // A running computer's frame covers its own black screen with this until
+  // the framed page reports "connected"; the views render it over the frame.
+  const computerConnecting = screenConnecting ? (
+    <span className="flex flex-col items-center gap-3">
+      <Spinner aria-hidden className="size-5 motion-reduce:animate-none" />
+      {t`Connecting…`}
+    </span>
+  ) : null;
   const computerPreviewScreen =
     !computerOpen &&
     computer?.kind !== "desktop" &&
@@ -970,5 +997,6 @@ export function useComputerControls({
     hasControl,
     computerScreenError,
     computerBooting,
+    computerConnecting,
   };
 }

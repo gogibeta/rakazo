@@ -62,7 +62,12 @@ function computer(state: ComputerStatus["state"]): ComputerStatus {
 async function render(
   state: ComputerStatus["state"],
   onStart = vi.fn(),
-  options: { hasControl?: boolean; shared?: boolean } = {},
+  options: {
+    hasControl?: boolean;
+    shared?: boolean;
+    embeddedScreenUrl?: string | null;
+    connecting?: boolean;
+  } = {},
 ) {
   await act(async () => {
     root.render(
@@ -77,10 +82,11 @@ async function render(
         sending={false}
         booting={false}
         sendError={null}
-        embeddedScreenUrl={null}
+        embeddedScreenUrl={options.embeddedScreenUrl ?? null}
         screenFrameRef={() => undefined}
         computerScreenError={null}
         computerBooting={null}
+        computerConnecting={options.connecting ? <span>Connecting…</span> : null}
         onStopTeaching={() => undefined}
         onStopRun={() => undefined}
         onRelease={async () => undefined}
@@ -125,6 +131,17 @@ it("offers Start for an asleep computer", async () => {
   await render("suspended");
   expect(container.textContent).toContain("Computer is asleep");
   expect(startButton()).toBeDefined();
+});
+
+it("covers a connecting screen instead of leaving its frame black", async () => {
+  const screen = { embeddedScreenUrl: "https://screen.example.test/", connecting: true };
+  await render("running", vi.fn(), screen);
+  const cover = container.querySelector('[data-testid="computer-connecting"]');
+  expect(cover?.textContent).toContain("Connecting…");
+  expect(container.querySelector("iframe")).not.toBeNull();
+  await render("running", vi.fn(), { embeddedScreenUrl: screen.embeddedScreenUrl });
+  expect(container.querySelector('[data-testid="computer-connecting"]')).toBeNull();
+  expect(container.querySelector("iframe")).not.toBeNull();
 });
 
 it("says sign-ins are shared while someone in a shared space has control", async () => {

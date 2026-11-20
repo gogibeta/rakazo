@@ -43,6 +43,7 @@ type ComputerOverlayProps = {
   screenFrameRef: (frame: HTMLIFrameElement | null) => void;
   computerScreenError: ReactNode;
   computerBooting: ReactNode;
+  computerConnecting: ReactNode;
   onStopTeaching: () => void | Promise<void>;
   onStopRun: () => void;
   onRelease: (reason?: ComputerReleaseReason) => Promise<void>;
@@ -71,6 +72,7 @@ export function ComputerOverlay({
   screenFrameRef,
   computerScreenError,
   computerBooting,
+  computerConnecting,
   onStopTeaching,
   onStopRun,
   onRelease,
@@ -230,6 +232,14 @@ export function ComputerOverlay({
                   }}
                 />
               ))}
+              {computerConnecting ? (
+                <div
+                  data-testid="computer-connecting"
+                  className="absolute inset-0 grid place-items-center bg-background text-body text-muted-foreground/80"
+                >
+                  {computerConnecting}
+                </div>
+              ) : null}
               {bot ? (
                 <TeachCaptureOverlay
                   botId={bot.id}

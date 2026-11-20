@@ -155,6 +155,35 @@ it("never caches a Wuying login code", async () => {
   expect(state.computerCacheRef.current.get("bot-1")?.screenUrl).toBeNull();
 });
 
+it("covers a screen with a connecting state until its page reports connected", async () => {
+  await read();
+  expect(state.screenConnecting).toBe(true);
+  await report("connecting");
+  expect(state.screenConnecting).toBe(true);
+  await report("connected");
+  expect(state.screenConnecting).toBe(false);
+});
+
+it("covers a dropped proxied screen again while its reconnect loads", async () => {
+  screenUrlFactory = () => proxied("view", "v1");
+  await read();
+  expect(state.screenConnecting).toBe(true);
+  await report("loading");
+  expect(state.screenConnecting).toBe(true);
+  await report("connected");
+  expect(state.screenConnecting).toBe(false);
+  // The drop covers the frozen frame at once, and the remounted frame stays
+  // covered until its own page connects.
+  await report("disconnected");
+  expect(state.screenConnecting).toBe(true);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
+  expect(state.screenConnecting).toBe(true);
+  await report("connected");
+  expect(state.screenConnecting).toBe(false);
+});
+
 it("reconnects a proxied screen whose reload raced a restart, without the error", async () => {
   screenUrlFactory = () => "/novnc/session/view/1.restart/vnc.html";
   await read();
@@ -390,8 +419,11 @@ it("keeps the replaced screen over its successor until that one connects", async
   expect(frames[0]).toBe(viewFrame);
   expect(frames[0]!.getAttribute("aria-hidden")).toBe("true");
   expect(frames[1]!.dataset.src).toContain("/control/");
+  // The held screen is what the user sees, so the connecting successor is not covered.
+  expect(state.screenConnecting).toBe(false);
   await reportFrom(frames[1]!, "connecting");
   expect(container.querySelectorAll("iframe")).toHaveLength(2);
+  expect(state.screenConnecting).toBe(false);
   await reportFrom(frames[1]!, "connected");
   frames = [...container.querySelectorAll("iframe")];
   expect(frames).toHaveLength(1);

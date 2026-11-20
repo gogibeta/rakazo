@@ -19,6 +19,7 @@ type ComputerPanelProps = {
   screenFrameRef: (frame: HTMLIFrameElement | null) => void;
   computerScreenError: ReactNode;
   computerBooting: ReactNode;
+  computerConnecting: ReactNode;
   booting: boolean;
   showingRecoveryHint: boolean;
   showComputerRecoveryHint: boolean;
@@ -80,6 +81,7 @@ function ComputerPreview({
   screenFrameRef,
   computerScreenError,
   computerBooting,
+  computerConnecting,
   booting,
   showingRecoveryHint,
   showComputerRecoveryHint,
@@ -153,20 +155,30 @@ function ComputerPreview({
             className={`grid h-full place-items-center px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}
           />
         ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
-          screenFrames(screenFrameKey, embeddedScreenUrl, heldScreen).map((frame) => (
-            <iframe
-              key={frame.key}
-              title={frame.held ? undefined : t`Bot screen preview`}
-              aria-hidden={frame.held || undefined}
-              tabIndex={frame.held ? -1 : undefined}
-              ref={frame.held ? undefined : screenFrameRef}
-              src={frame.url}
-              sandbox={screenIframeSandbox(frame.url)}
-              className={`h-full w-full border-0 bg-black${frame.held ? " absolute inset-0" : ""}`}
-              allow="clipboard-read; clipboard-write"
-              style={{ pointerEvents: "none" }}
-            />
-          ))
+          <>
+            {screenFrames(screenFrameKey, embeddedScreenUrl, heldScreen).map((frame) => (
+              <iframe
+                key={frame.key}
+                title={frame.held ? undefined : t`Bot screen preview`}
+                aria-hidden={frame.held || undefined}
+                tabIndex={frame.held ? -1 : undefined}
+                ref={frame.held ? undefined : screenFrameRef}
+                src={frame.url}
+                sandbox={screenIframeSandbox(frame.url)}
+                className={`h-full w-full border-0 bg-black${frame.held ? " absolute inset-0" : ""}`}
+                allow="clipboard-read; clipboard-write"
+                style={{ pointerEvents: "none" }}
+              />
+            ))}
+            {computerConnecting ? (
+              <div
+                data-testid="computer-connecting"
+                className="absolute inset-0 grid place-items-center bg-background text-body text-muted-foreground/80"
+              >
+                {computerConnecting}
+              </div>
+            ) : null}
+          </>
         ) : (
           <div
             className={`grid h-full place-items-center px-6 text-center text-body text-muted-foreground/80 ${hideOnHover}`}
