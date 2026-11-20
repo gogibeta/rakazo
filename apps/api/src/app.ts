@@ -641,6 +641,9 @@ async function buildApp(overrides: CreateAppOverrides): Promise<AppHandles> {
       return (await auth.api.getSession({ headers }))?.user.id;
     },
     isAdmin: (userId) => isAdmin({ prisma, env: { adminEmails: env.adminEmails } }, userId),
+    // Same set the HTTP routes trust, so a page on another site cannot open a
+    // shell with this API's cookie attached.
+    isTrustedOrigin: (origin) => isTrustedOrigin(origin, env),
   });
   const oauthTokenUpgrade = auth
     .encryptStoredOAuthTokens()

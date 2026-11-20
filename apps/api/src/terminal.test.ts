@@ -8,10 +8,15 @@ import { createTerminalServer } from "./terminal.js";
 
 const servers: Array<ReturnType<typeof createServer>> = [];
 
-async function serve(sessionUserId: string | undefined, admin: boolean) {
+async function serve(
+  sessionUserId: string | undefined,
+  admin: boolean,
+  trustedOrigin = (origin: string) => origin === "https://app.rakazo.test",
+) {
   const terminal = createTerminalServer({
     sessionUserId: async () => sessionUserId,
     isAdmin: async () => admin,
+    isTrustedOrigin: trustedOrigin,
   });
   const server = createServer();
   server.on("upgrade", (request, socket, head) => {
@@ -23,9 +28,9 @@ async function serve(sessionUserId: string | undefined, admin: boolean) {
   return { terminal, url: `ws://127.0.0.1:${port}${TERMINAL_PATH}` };
 }
 
-function attempt(url: string) {
+function attempt(url: string, origin?: string) {
   return new Promise<number>((resolve) => {
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, origin ? { origin } : {});
     ws.on("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));
     ws.on("open", () => {
       ws.close();
@@ -92,10 +97,51 @@ describe("terminal upgrade", () => {
     ws.close();
   });
 
+  it("rejects an upgrade from a site we do not trust", async () => {
+    // A page on another site can make the browser attach this API's cookie to a
+    // WebSocket; an upgrade bypasses the CORS checks the HTTP routes apply.
+    const { url } = await serve("admin-1", true);
+    expect(await attempt(url, "https://evil.test")).toBe(403);
+  });
+
+  it("accepts an upgrade from a trusted origin", async () => {
+    const { url } = await serve("admin-1", true);
+    expect(await attempt(url, "https://app.rakazo.test")).toBe(101);
+  });
+
+  it("accepts an upgrade with no Origin at all", async () => {
+    // A non-browser client cannot be tricked into sending a cookie, so it is allowed.
+    const { url } = await serve("admin-1", true);
+    expect(await attempt(url)).toBe(101);
+  });
+
+  it("rejects an upgrade whose Origin header is repeated", async () => {
+    // Node hands repeated headers over as an array. No browser sends two, so a
+    // request shaped that way must not slip past the trust check.
+    const { terminal } = await serve("admin-1", true);
+    const seen: string[] = [];
+    const handled = terminal.handleUpgrade(
+      {
+        url: TERMINAL_PATH,
+        headers: { origin: ["https://app.rakazo.test", "https://evil.test"] },
+      } as never,
+      {
+        on: () => undefined,
+        off: () => undefined,
+        end: (chunk: string) => seen.push(chunk),
+      } as never,
+      Buffer.alloc(0),
+    );
+    expect(handled).toBe(true);
+    expect(seen.join("")).toContain("403");
+    terminal.close();
+  });
+
   it("leaves other upgrade paths to the next handler", async () => {
     const terminal = createTerminalServer({
       sessionUserId: async () => "admin-1",
       isAdmin: async () => true,
+      isTrustedOrigin: () => true,
     });
     const handled = terminal.handleUpgrade(
       { url: "/api/devices/connect", headers: {} } as never,
