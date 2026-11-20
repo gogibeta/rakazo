@@ -137,13 +137,13 @@ function identityHeaders(c: Context) {
 
 app.get("/health", (c) => c.json({ ok: true, image: COMPUTER_IMAGE }));
 
-app.use("/computers", async (c, next) => {
-  if (!hasValidBearerToken(c.req.header("authorization"), supervisorToken)) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
-  await next();
-});
-app.use("/computers/*", async (c, next) => {
+// Deny by default: every route is authenticated unless it is listed here. Guarding only
+// "/computers" and "/computers/*" protected today's routes by coincidence, and would have left the
+// first route added under any other path open to anyone who can reach the port. The health check
+// is the one exception, because the container probe has no token to send.
+const PUBLIC_PATHS = new Set(["/health"]);
+app.use("*", async (c, next) => {
+  if (PUBLIC_PATHS.has(c.req.path)) return next();
   if (!hasValidBearerToken(c.req.header("authorization"), supervisorToken)) {
     return c.json({ error: "unauthorized" }, 401);
   }
