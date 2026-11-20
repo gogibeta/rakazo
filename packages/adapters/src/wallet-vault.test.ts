@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import { verifyPassword } from "./wallet-envelope.js";
+import { createVaultSqlShim } from "./wallet-vault-fake.js";
 import {
   changeWalletVaultPassword,
   setupWalletVaultPassword,
@@ -96,6 +97,7 @@ function vaultStore() {
         },
       ),
     },
+    ...createVaultSqlShim(rows),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
   return { prisma: client as unknown as PrismaClient, rows };
@@ -133,7 +135,7 @@ describe("wallet vault password state", () => {
   });
 
   // Password derivations are deliberately expensive; these cases chain several.
-  it("changes the password only with the current one, moving the epoch and resetting the throttle", async () => {
+  it("changes the password only with the current one, moving the epoch and refunding its charge", async () => {
     const store = vaultStore();
     await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
     const onRejected = vi.fn(async () => undefined);
@@ -158,7 +160,8 @@ describe("wallet vault password state", () => {
     const row = store.rows.get("u1")!;
     expect(status.configured).toBe(true);
     expect(row.passwordEpoch).toBe(2);
-    expect(row.failedAttempts).toBe(0);
+    // The success refunds exactly its own charge: the earlier wrong attempt stays charged.
+    expect(row.failedAttempts).toBe(1);
     expect(row.lockedUntil).toBeNull();
     expect(await verifyPassword(row.verifier, NEW_PASSWORD)).toBe(true);
     expect(await verifyPassword(row.verifier, PASSWORD)).toBe(false);
@@ -254,7 +257,7 @@ describe("wallet vault unlock verification", () => {
     );
   });
 
-  it("verifies the right password, returns the epoch, and resets the throttle", async () => {
+  it("verifies the right password, returns the epoch, and refunds its own charge", async () => {
     const store = vaultStore();
     await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
     await expect(verifyWalletVaultPassword(store.prisma, "u1", WRONG)).rejects.toThrow(
@@ -265,7 +268,8 @@ describe("wallet vault unlock verification", () => {
     expect(await verifyWalletVaultPassword(store.prisma, "u1", PASSWORD)).toEqual({
       passwordEpoch: 1,
     });
-    expect(store.rows.get("u1")!.failedAttempts).toBe(0);
+    // The success refunds exactly its own charge: the earlier wrong attempt stays charged.
+    expect(store.rows.get("u1")!.failedAttempts).toBe(1);
     expect(store.rows.get("u1")!.lockedUntil).toBeNull();
   }, 30_000);
 

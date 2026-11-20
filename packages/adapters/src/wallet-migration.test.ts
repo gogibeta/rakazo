@@ -7,6 +7,7 @@ import {
   WalletMigrationError,
   WalletMigrationNotFoundError,
 } from "./wallet-migration.js";
+import { createVaultSqlShim } from "./wallet-vault-fake.js";
 import {
   setupWalletVaultPassword,
   WalletVaultNotConfiguredError,
@@ -148,6 +149,7 @@ function store() {
         },
       ),
     },
+    ...createVaultSqlShim(vaultRows),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
   return { prisma: client as unknown as PrismaClient, wallets, vaultRows };
