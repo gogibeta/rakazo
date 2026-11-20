@@ -385,6 +385,9 @@ describe("development backup failures", () => {
 
   it("keeps reused artifacts private and unreplaced when the database dump fails", () => {
     const f = fixture();
+    // data/ must exist: the homes check runs before the dump, so without it the script would fail
+    // for the wrong reason and this test would stop covering a failed dump.
+    write(path.join(f.checkout, "data/home.txt"), "example home");
     const output = path.join(f.checkout, "backups/example");
     for (const name of ["rakazo.sql", "homes.tgz"]) {
       write(path.join(output, name), "old backup");
@@ -426,12 +429,21 @@ describe("development backup failures", () => {
     expect(f.commands()).toEqual([]);
   });
 
-  it.each(["absent", "skipped"])("allows an empty archive when data is %s", (scenario) => {
+  it("fails without an archive when data is absent and homes are not skipped", () => {
+    // A backup that silently held only the database restored attachments and bot homes that had
+    // no files behind them, and nobody found out until they needed it.
     const f = fixture();
-    if (scenario === "skipped") write(path.join(f.checkout, "data/home.txt"), "example home");
-    const result = f.run("scripts/backup.sh", ["example"], {
-      RAKAZO_BACKUP_SKIP_HOMES: scenario === "skipped" ? "1" : "0",
-    });
+    const result = f.run("scripts/backup.sh", ["example"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("RAKAZO_BACKUP_SKIP_HOMES=1");
+    expect(result.stdout).not.toContain("Backup written");
+    expect(f.commands()).toEqual([]);
+  });
+
+  it("allows an empty archive when homes are explicitly skipped", () => {
+    const f = fixture();
+    write(path.join(f.checkout, "data/home.txt"), "example home");
+    const result = f.run("scripts/backup.sh", ["example"], { RAKAZO_BACKUP_SKIP_HOMES: "1" });
     expect(result.status, result.stderr).toBe(0);
     expect(contents(path.join(f.checkout, "backups/example/homes.tgz"))).toBe("");
   });
@@ -447,6 +459,9 @@ describe("development backup failures", () => {
     const result = f.run("scripts/backup.sh", ["example"]);
     expect(result.status).not.toBe(0);
     expect(result.stdout).not.toContain("Backup written");
+    // The layout check runs before the dump, so a bad data/ fails fast instead of after paying for
+    // the database dump.
+    expect(f.commands()).toEqual([]);
   });
 
   it("propagates the tar exit production tolerates without replacing the failed archive", () => {
