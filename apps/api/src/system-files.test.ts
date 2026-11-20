@@ -409,6 +409,20 @@ describe("system files", () => {
     await expect(stat(path.join(outside, "fresh.txt"))).rejects.toThrow();
   });
 
+  it("refuses a new file inside a secret folder reached by an innocent name", async () => {
+    // The requested path names no secret, and its folder is genuinely inside the root,
+    // so every check aimed at the *path* passes. Only the folder's real name says
+    // ".ssh": a new file must be refused on that, exactly like an existing one.
+    const deps = makeDeps();
+    await mkdir(path.join(root, ".ssh"));
+    await symlink(path.join(root, ".ssh"), path.join(root, "keys"));
+    await expect(
+      writeSystemFile(deps, actor, { path: "keys/authorized.txt", content: "ssh-rsa AAAA" }),
+    ).rejects.toThrow(/not available in system files/i);
+    // Nothing was created, under either name.
+    await expect(readdir(path.join(root, ".ssh"))).resolves.toEqual([]);
+  });
+
   it("reads the file it validated, not one swapped in after the check", async () => {
     // Forces the exact interleaving the race needs: the path is validated, and only
     // then does the symlink appear. The old code re-opened by name after checking, so

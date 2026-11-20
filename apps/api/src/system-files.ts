@@ -275,7 +275,14 @@ async function openWriteTarget(rootReal: string, input: string): Promise<WriteTa
         throw error;
       },
     );
-    if (!existing) return { parent: pinned, name: path.basename(joined), existing: null };
+    if (!existing) {
+      // A brand-new file is refused on its folder's real name, not the name that was
+      // asked for: `keys/` may be a link to `.ssh`, and nothing in the requested path
+      // says so. An existing target is checked the same way below, through its own
+      // resolved path.
+      assertResolvedNotSecret(rootReal, path.join(parentReal, path.basename(joined)));
+      return { parent: pinned, name: path.basename(joined), existing: null };
+    }
     // Opening followed any link, so this descriptor names the file the save would
     // replace. Its own folder is what the rename must be anchored to; using the
     // link's folder would replace the link instead of writing through it.
