@@ -48,6 +48,14 @@ vi.mock("./fleet-tools.js", async (importOriginal) => ({
   createFleetGroup: createFleetGroupMock,
 }));
 
+// Spying on the shared narration helper proves the approval pause calls it, without rebuilding
+// the reply state a paused turn never finalizes.
+const publishNarrationBeforeAskMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("./run-progress.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./run-progress.js")>()),
+  publishNarrationBeforeAsk: publishNarrationBeforeAskMock,
+}));
+
 const reviewMock = vi.fn();
 const autoReviewProvider: AutoReviewProvider = {
   describe: () => ({
@@ -779,6 +787,45 @@ it("enqueues pending work when an approval pauses its current run", async () => 
   expect(f.enqueue).toHaveBeenCalledWith(
     expect.objectContaining({ payload: { runId: "pending-run" } }),
   );
+});
+
+describe("text written before an approval card", () => {
+  beforeEach(() => {
+    publishNarrationBeforeAskMock.mockClear();
+  });
+
+  it("posts the reply written before the pause, as a question does", async () => {
+    // A paused run never reaches the final reply that brings held notes back, so the words
+    // that explain why the bot is asking have to be posted ahead of the card. `ask_user`
+    // already worked this way; the approval gate did not, and the text was lost.
+    const f = fixture({ name: "write_file", trigger: "webhook" });
+    f.setCalls([{ args: { path: "notes.txt", content: "hi" }, executionId: "call-1" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(publishNarrationBeforeAskMock).toHaveBeenCalledOnce();
+  });
+
+  it("posts it before the card, so the person reads the reason first", async () => {
+    const f = fixture({ name: "write_file", trigger: "webhook" });
+    f.setCalls([{ args: { path: "notes.txt", content: "hi" }, executionId: "call-1" }]);
+    await f.run();
+    expect(publishNarrationBeforeAskMock.mock.invocationCallOrder[0]).toBeLessThan(
+      f.pauseRunForInput.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("posts nothing extra when the tool runs without asking", async () => {
+    // The helper itself no-ops on empty text, but it must not be reached at all on a run
+    // that never pauses: an approval-free turn already ends with a normal final reply.
+    const f = fixture({
+      name: "shell",
+      trigger: "webhook",
+      rules: [{ effect: "always_allow", matchKind: "tool", matchValue: "shell" }],
+    });
+    await f.run(true);
+    expect(f.pauseRunForInput).not.toHaveBeenCalled();
+    expect(publishNarrationBeforeAskMock).not.toHaveBeenCalled();
+  });
 });
 
 /** The action ids on the first card the run paused for. */
