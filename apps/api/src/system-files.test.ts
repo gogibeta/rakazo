@@ -1,8 +1,66 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { PrismaClient } from "@rakazo/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * The swap windows are a few instructions wide, so a timing loop cannot reach them:
+ * hammering the filesystem passes against both the vulnerable and the fixed code and
+ * proves nothing. These hooks fire at the exact call that used to re-open a path by
+ * name, which forces the interleaving instead of racing it.
+ */
+const fsHooks = vi.hoisted(() => ({
+  beforeReadFile: null as null | ((file: string) => Promise<void>),
+  beforeRename: null as null | ((from: string, to: string) => Promise<void>),
+  beforeWriteFile: null as null | ((file: string) => Promise<void>),
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readFile: async (file: Parameters<typeof actual.readFile>[0], ...rest: unknown[]) => {
+      const hook = fsHooks.beforeReadFile;
+      if (hook) {
+        fsHooks.beforeReadFile = null;
+        await hook(String(file));
+      }
+      return (actual.readFile as (...args: unknown[]) => unknown)(file, ...rest);
+    },
+    writeFile: async (file: Parameters<typeof actual.writeFile>[0], ...rest: unknown[]) => {
+      const hook = fsHooks.beforeWriteFile;
+      if (hook) {
+        fsHooks.beforeWriteFile = null;
+        await hook(String(file));
+      }
+      return (actual.writeFile as (...args: unknown[]) => unknown)(file, ...rest);
+    },
+    rename: async (
+      from: Parameters<typeof actual.rename>[0],
+      to: Parameters<typeof actual.rename>[1],
+    ) => {
+      const hook = fsHooks.beforeRename;
+      if (hook) {
+        fsHooks.beforeRename = null;
+        await hook(String(from), String(to));
+      }
+      return actual.rename(from, to);
+    },
+  };
+});
+
 import {
   getSystemFilesStatus,
   listSystemFiles,
@@ -18,6 +76,9 @@ let root: string;
 let outside: string;
 
 beforeEach(async () => {
+  fsHooks.beforeReadFile = null;
+  fsHooks.beforeRename = null;
+  fsHooks.beforeWriteFile = null;
   base = await mkdtemp(path.join(tmpdir(), "system-files-"));
   root = path.join(base, "root");
   outside = path.join(base, "outside");
@@ -316,5 +377,115 @@ describe("system files", () => {
     const listed = await listSystemFiles(deps, actor, { path: "notes" });
     expect(listed.entries).toHaveLength(1000);
     expect(listed.truncated).toBe(true);
+  });
+
+  it("refuses to write through a link that took the file's place", async () => {
+    // The write path opens its existing target, so a symlink standing where the
+    // file was is followed to wherever it points. Out of the root that is refused;
+    // asserting the reason and the untouched bytes is what makes this fail on a
+    // build that only checked the path by name.
+    const deps = makeDeps();
+    const target = path.join(root, "hello.txt");
+    await rm(target, { force: true });
+    await symlink(path.join(outside, "secret.txt"), target);
+    await expect(
+      writeSystemFile(deps, actor, { path: "hello.txt", content: "overwritten" }),
+    ).rejects.toThrow(/outside the system files root/i);
+    // The file outside the root is untouched.
+    expect(await readFile(path.join(outside, "secret.txt"), "utf8")).toBe("outside the root");
+    // And the link is still a link: nothing replaced it.
+    expect((await lstat(target)).isSymbolicLink()).toBe(true);
+  });
+
+  it("refuses a new file whose folder is a link out of the root", async () => {
+    // The create case had no parent check: a folder that is a link outside the root
+    // was a legitimate place to write a brand-new file. The folder is now proven
+    // inside the root before the save, whether the file exists or not.
+    const deps = makeDeps();
+    await symlink(outside, path.join(root, "linked"));
+    await expect(
+      writeSystemFile(deps, actor, { path: "linked/fresh.txt", content: "x" }),
+    ).rejects.toThrow(/outside the system files root/i);
+    await expect(stat(path.join(outside, "fresh.txt"))).rejects.toThrow();
+  });
+
+  it("refuses a new file inside a secret folder reached by an innocent name", async () => {
+    // The requested path names no secret, and its folder is genuinely inside the root,
+    // so every check aimed at the *path* passes. Only the folder's real name says
+    // ".ssh": a new file must be refused on that, exactly like an existing one.
+    const deps = makeDeps();
+    await mkdir(path.join(root, ".ssh"));
+    await symlink(path.join(root, ".ssh"), path.join(root, "keys"));
+    await expect(
+      writeSystemFile(deps, actor, { path: "keys/authorized.txt", content: "ssh-rsa AAAA" }),
+    ).rejects.toThrow(/not available in system files/i);
+    // Nothing was created, under either name.
+    await expect(readdir(path.join(root, ".ssh"))).resolves.toEqual([]);
+  });
+
+  it("reads the file it validated, not one swapped in after the check", async () => {
+    // Forces the exact interleaving the race needs: the path is validated, and only
+    // then does the symlink appear. The old code re-opened by name after checking, so
+    // it read the outside file; opening once and reading the descriptor cannot.
+    const deps = makeDeps();
+    const target = path.join(root, "hello.txt");
+    fsHooks.beforeReadFile = async () => {
+      await rm(target, { force: true });
+      await symlink(path.join(outside, "secret.txt"), target);
+    };
+    const result = await readSystemFile(deps, actor, { path: "hello.txt" });
+    // The original file was already opened, so its bytes are what comes back.
+    expect(result.content).toBe("hello world");
+    expect(result.content).not.toContain("outside the root");
+    await rm(target, { force: true });
+    await writeFile(target, "hello world");
+  });
+
+  it("writes to the folder it validated, not one swapped in after the check", async () => {
+    // Same forcing, on the write path. A rename replaces a directory entry, so the
+    // folder has to be pinned: this drops the symlink into place immediately before
+    // the temporary file is written, which is where the old code re-opened by name.
+    const deps = makeDeps();
+    const folder = path.join(root, "notes");
+    const moved = path.join(base, "notes-moved");
+    fsHooks.beforeWriteFile = async () => {
+      await rename(folder, moved);
+      await symlink(outside, folder).catch(() => undefined);
+    };
+    const saved = await writeSystemFile(deps, actor, {
+      path: "notes/todo.md",
+      content: "written after the swap",
+    }).catch((error: Error) => error);
+    // Nothing may land outside the root, whether it wrote or refused.
+    await expect(stat(path.join(outside, "todo.md"))).rejects.toThrow();
+    if (saved instanceof Error) {
+      expect(saved.message).toMatch(/outside the system files root/i);
+    } else {
+      expect(saved).toEqual({ ok: true, size: 22 });
+    }
+    // It must have written into the folder it validated, not the link's target.
+    expect(await readFile(path.join(moved, "todo.md"), "utf8")).toBe("written after the swap");
+  });
+
+  it("keeps an ordinary file readable and writable", async () => {
+    // Guard against the checks being so strict that normal use breaks.
+    const deps = makeDeps();
+    expect((await readSystemFile(deps, actor, { path: "hello.txt" })).content).toBe("hello world");
+    await expect(
+      writeSystemFile(deps, actor, { path: "hello.txt", content: "hello again" }),
+    ).resolves.toEqual({ ok: true, size: 11 });
+  });
+
+  it("still writes through a symlink that stays inside the root", async () => {
+    // Documented behaviour: an inside-root link is written through to its target
+    // rather than replaced. The new open checks must not turn that into an error.
+    const deps = makeDeps();
+    await symlink(path.join(root, "hello.txt"), path.join(root, "alias.txt"));
+    await expect(
+      writeSystemFile(deps, actor, { path: "alias.txt", content: "through the link" }),
+    ).resolves.toEqual({ ok: true, size: 16 });
+    // The target changed and the link is still a link.
+    expect(await readFile(path.join(root, "hello.txt"), "utf8")).toBe("through the link");
+    expect((await stat(path.join(root, "alias.txt"))).isFile()).toBe(true);
   });
 });
