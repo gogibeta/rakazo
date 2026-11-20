@@ -47,4 +47,14 @@ describe("supervisor denies unknown routes by default", () => {
     const response = await request("/not-a-route", { authorization: `Bearer ${token}` });
     expect(response.status).toBe(404);
   });
+
+  it("matches the public list exactly, so a lookalike path is not public", async () => {
+    // The exemption is a set membership test, not a prefix. A `startsWith("/health")` rule
+    // would open every one of these, which is the same shape of mistake as the prefix guards
+    // this change replaces — so it is worth pinning rather than leaving to the reader.
+    for (const path of ["/HEALTH", "/health/", "//health", "/health/../computers"]) {
+      const response = await request(path);
+      expect(response.status, `GET ${path}`).toBe(401);
+    }
+  });
 });
