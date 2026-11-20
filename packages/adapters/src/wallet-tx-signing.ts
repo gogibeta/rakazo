@@ -31,9 +31,10 @@ function rlpList(items: Uint8Array[]): Uint8Array {
 /** The RLP length prefix for a payload of `length`, offset by `offset`. */
 function rlpLength(length: number, offset: number): Uint8Array {
   if (length < 56) return new Uint8Array([offset + length]);
-  // Long form: (offset - 1) + byte-length-of-length, then the length bytes.
+  // Long form: offset + 55 + byte-length-of-length (0xb7+ for strings, 0xf7+ for lists),
+  // then the big-endian length bytes.
   const lengthBytes = minimalBytes(BigInt(length));
-  return concat(new Uint8Array([offset - 1 + lengthBytes.length]), lengthBytes);
+  return concat(new Uint8Array([offset + 55 + lengthBytes.length]), lengthBytes);
 }
 
 /** Minimal big-endian bytes for a non-negative integer (0 encodes as empty). */
@@ -132,7 +133,8 @@ export function signEip1559Transaction(
     const signature = secp256k1.sign(signingHash, privateKey);
     const { r, s, recovery } = signature;
     if (recovery === undefined) throw new Error("Signature carries no recovery id");
-    const yParity = new Uint8Array([recovery]);
+    // RLP integers take minimal bytes: parity 0 is the empty string (0x80), 1 is 0x01.
+    const yParity = minimalBytes(BigInt(recovery));
 
     const signed = concat(
       new Uint8Array([0x02]),

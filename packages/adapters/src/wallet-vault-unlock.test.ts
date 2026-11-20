@@ -42,7 +42,11 @@ function fakeClient(status: {
       passwordEpoch: 1,
     })),
     lock: vi.fn(async () => ({ locked: true as const })),
-    sign: vi.fn(async () => ({ txHash: "0xhash", walletUseId: "use-test" })),
+    sign: vi.fn(async () => ({
+      signedTransaction: "0x02signed",
+      transactionHash: "0xhash",
+      from: "0x0000000000000000000000000000000000000000",
+    })),
     fill: vi.fn(async () => ({ ok: true as const })),
   };
 }
