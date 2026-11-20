@@ -134,7 +134,7 @@ export async function reserveWalletVaultAttempt(
             "pendingReservations" || jsonb_build_object(${token}::text, ${generationText}::text),
           "lockedUntil" =
             CASE WHEN "failedAttempts" + 1 >= ${WALLET_VAULT_MAX_FAILED_ATTEMPTS}
-              THEN COALESCE("windowStartedAt", ${now}::timestamp) + ${LOCKOUT_INTERVAL}
+              THEN COALESCE("windowStartedAt", ${now}::timestamp) + ${lockoutInterval()}
               ELSE NULL END
       WHERE "userId" = ${userId}
         AND "failedAttempts" < ${WALLET_VAULT_MAX_FAILED_ATTEMPTS}
@@ -187,8 +187,12 @@ export type Settlement =
 /** The counters a rejected attempt reports: the hook never sees a password. */
 export type RejectionInfo = { failedAttempts: number; lockedUntil: Date | null };
 
-/** A 15-minute lockout/window as a constant Postgres interval — never built from input. */
-const LOCKOUT_INTERVAL = PrismaSql.sql`INTERVAL '15 minutes'`;
+/**
+ * A 15-minute lockout/window as a constant Postgres interval — never built from input. Built
+ * lazily so importing this module never touches the `Prisma` namespace: a test double that
+ * mocks `@rakazo/db` without it must still be able to import the module.
+ */
+const lockoutInterval = (): Prisma.Sql => PrismaSql.sql`INTERVAL '15 minutes'`;
 
 /** Lock the one vault row every writer of its throttle fields serializes on. */
 async function lockVaultRow(
@@ -335,7 +339,7 @@ async function settleFailureInTx(
     SET "pendingReservations" = "pendingReservations" - ${token}::text,
         "lockedUntil" =
           CASE WHEN "failedAttempts" >= ${WALLET_VAULT_MAX_FAILED_ATTEMPTS}
-            THEN "windowStartedAt" + ${LOCKOUT_INTERVAL}
+            THEN "windowStartedAt" + ${lockoutInterval()}
             ELSE NULL END
     WHERE "userId" = ${userId} AND jsonb_exists("pendingReservations", ${token}::text)
     RETURNING "failedAttempts", "lockedUntil"`);

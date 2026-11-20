@@ -35,7 +35,10 @@ const asValues = (query: RawQuery): unknown[] => (Array.isArray(query.values) ? 
 export function createVaultSqlShim<R extends FakeVaultRow>(rows: Map<string, R>) {
   let tokenSequence = 1_000n;
 
-  const getRow = (userId: string): R | undefined => {
+  /** The row shape once `getRow` has applied the database's column defaults. */
+  type NormalizedVaultRow = Required<FakeVaultRow>;
+
+  const getRow = (userId: string): NormalizedVaultRow | undefined => {
     const row = rows.get(userId);
     if (!row) return undefined;
     // Mirror the database's column defaults so a row created through the model API still
@@ -47,7 +50,7 @@ export function createVaultSqlShim<R extends FakeVaultRow>(rows: Map<string, R>)
     row.windowStartedAt ??= null;
     row.pendingReservations ??= {};
     row.credentialRevision ??= 0;
-    return row;
+    return row as NormalizedVaultRow;
   };
 
   /** The user id is the only string parameter that names a row in the map. */

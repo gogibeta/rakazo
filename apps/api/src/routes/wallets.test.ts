@@ -4,6 +4,7 @@ import {
 } from "@rakazo/adapters/wallet-vault";
 import type { WalletVaultClient } from "@rakazo/adapters/wallet-vault-client";
 import { WalletVaultClientError } from "@rakazo/adapters/wallet-vault-client";
+import { createVaultSqlShim } from "@rakazo/adapters/wallet-vault-fake";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterContext } from "./context.js";
@@ -105,6 +106,9 @@ function walletStore() {
     load: vi.fn(async () => KEY),
   };
   const prisma = {
+    // The reservation throttle's raw SQL, backed by the same in-memory rows the model
+    // doubles below mutate, so password verification runs the real statements.
+    ...createVaultSqlShim(vaultRows),
     userWallet: {
       create: vi.fn(
         async ({
