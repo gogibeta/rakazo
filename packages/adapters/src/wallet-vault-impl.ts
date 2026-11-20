@@ -170,7 +170,11 @@ type WalletVaultRow = {
 };
 
 /** The persisted throttle counters, read back after a settlement lands. */
-type ThrottleState = { failedAttempts: number; lockedUntil: Date | null };
+type ThrottleState = {
+  failedAttempts: number;
+  lockedUntil: Date | null;
+  credentialRevision: bigint;
+};
 
 /** What settling one reservation reports. A token already gone settles nothing. */
 export type Settlement =
@@ -180,7 +184,12 @@ export type Settlement =
       failedAttempts: number;
       lockedUntil: Date | null;
       passwordEpoch?: number;
-      /** Set on a success whose credential snapshot had been replaced concurrently. */
+      /** The credential revision live on the row once this settlement committed. */
+      credentialRevision?: bigint;
+      /**
+       * Set when the credential snapshot this attempt verified against is no longer the
+       * row's: the refund still lands, but the attempt must not authorize (design §4.3).
+       */
       credentialsChanged?: boolean;
     };
 
@@ -286,27 +295,42 @@ async function settleSuccessInTx(
   // an older window's token leaves the new window's counter untouched. The comparison is
   // made in SQL against the row's live generation, so it cannot drift from the row being
   // updated and no host-side boolean has to be bound as a query parameter.
+  //
+  // The lock is derived from the counter the refund leaves behind (design §4.3), never
+  // cleared unconditionally: a success on a row still holding other charges at the cap stays
+  // locked, and one that drops below the cap reopens at once. The credential revision comes
+  // back so the caller can tell whether the snapshot it verified against is still the row's.
   const updated = await tx.$queryRaw<ThrottleState[]>(PrismaSql.sql`
-    UPDATE "wallet_vaults"
-    SET "pendingReservations" = "pendingReservations" - ${token}::text,
-        "failedAttempts" =
-          CASE
-            WHEN jsonb_extract_path_text("pendingReservations", ${token}::text)
-                 = "throttleGeneration"::text
-            THEN "failedAttempts" - 1
-            ELSE "failedAttempts"
-          END,
-        "lockedUntil" = NULL
-    WHERE "userId" = ${userId} AND jsonb_exists("pendingReservations", ${token}::text)
-    RETURNING "failedAttempts", "lockedUntil"`);
+    WITH owned AS (
+      SELECT "userId",
+             "failedAttempts" -
+               CASE
+                 WHEN jsonb_extract_path_text("pendingReservations", ${token}::text)
+                      = "throttleGeneration"::text
+                 THEN 1
+                 ELSE 0
+               END AS "nextAttempts"
+      FROM "wallet_vaults"
+      WHERE "userId" = ${userId} AND jsonb_exists("pendingReservations", ${token}::text)
+    )
+    UPDATE "wallet_vaults" AS v
+    SET "pendingReservations" = v."pendingReservations" - ${token}::text,
+        "failedAttempts" = owned."nextAttempts",
+        "lockedUntil" =
+          CASE WHEN owned."nextAttempts" >= ${WALLET_VAULT_MAX_FAILED_ATTEMPTS}
+            THEN v."windowStartedAt" + ${lockoutInterval()}
+            ELSE NULL END
+    FROM owned
+    WHERE v."userId" = owned."userId"
+    RETURNING v."failedAttempts", v."lockedUntil", v."credentialRevision"`);
   const state = updated[0];
   if (!state) return { settled: false };
   return {
     settled: true,
     passwordEpoch: row.passwordEpoch,
-    credentialsChanged: false,
     failedAttempts: state.failedAttempts,
     lockedUntil: state.lockedUntil,
+    credentialRevision: BigInt(state.credentialRevision),
   };
 }
 
@@ -342,13 +366,14 @@ async function settleFailureInTx(
             THEN "windowStartedAt" + ${lockoutInterval()}
             ELSE NULL END
     WHERE "userId" = ${userId} AND jsonb_exists("pendingReservations", ${token}::text)
-    RETURNING "failedAttempts", "lockedUntil"`);
+    RETURNING "failedAttempts", "lockedUntil", "credentialRevision"`);
   const state = updated[0];
   if (!state) return { settled: false };
   return {
     settled: true,
     failedAttempts: state.failedAttempts,
     lockedUntil: state.lockedUntil,
+    credentialRevision: BigInt(state.credentialRevision),
   };
 }
 
@@ -456,12 +481,20 @@ export async function changeWalletVaultPassword(
   const outcome = await prisma.$transaction(async (tx) => {
     const locked = await lockVaultRow(tx, userId);
     const row = locked[0];
+    // The row vanished mid-change: there is nothing left to authenticate against and nothing
+    // to settle. Design §4.5 — do not change credentials and do not report success.
     if (!row) return { settled: false } as Settlement;
     const now = at ?? (await dbNow(tx));
     const generation = await normalizeWalletVaultWindow(tx, row, now);
     if (generation === null) return { settled: false } as Settlement;
-    const pending = row.pendingReservations[reservation.token] !== undefined;
-    const revisionMatches = pending && row.credentialRevision === reservation.credentialRevision;
+    // The token is no longer pending — already settled, or retired by maintenance. Design
+    // §4.5: do not change credentials and do not report success.
+    if (row.pendingReservations[reservation.token] === undefined) {
+      return { settled: false } as Settlement;
+    }
+    // The swap is conditional on the revision the reservation read, so a concurrent change
+    // wins and this one refunds instead of overwriting the newer credential.
+    const revisionMatches = row.credentialRevision === reservation.credentialRevision;
     if (revisionMatches) {
       await tx.walletVault.update({
         where: { userId },
@@ -474,9 +507,17 @@ export async function changeWalletVaultPassword(
       });
     }
     const settled = await settleSuccessInTx(tx, userId, reservation.token, at);
+    if (revisionMatches && !settled.settled) {
+      // §4.5: a credential swap that landed must settle its own reservation in this same
+      // transaction. Anything else is an invariant violation — roll the whole thing back.
+      throw new Error("wallet vault change: credential swap did not settle its reservation");
+    }
     return { ...settled, credentialsChanged: !revisionMatches };
   });
-  if (outcome.settled && outcome.credentialsChanged) {
+  // An unsettled reservation means the token was already consumed or retired: never report
+  // success on that path, and never let the caller believe the credentials moved. (§4.3/§4.5)
+  if (!outcome.settled) throw new WalletVaultPasswordError();
+  if (outcome.credentialsChanged) {
     // The password was correct for the snapshot this reservation read, so the slot is
     // refunded — but a newer credential already exists, so this change did not land.
     throw new WalletVaultPasswordError();
@@ -530,9 +571,13 @@ export async function verifyWalletVaultPassword(
   }
 
   const settled = await settleWalletVaultSuccess(prisma, userId, reservation.token, at);
-  // The password matched the snapshot this reservation read, but the vault was re-keyed
-  // concurrently: the slot is refunded and the attempt is not a failure, yet it must not
-  // authorize — the same generic refusal, so the response never says which check moved.
-  if (!settled.settled || settled.credentialsChanged) throw new WalletVaultPasswordError();
+  // §4.3: the refund lands even when the credential snapshot has moved on, but this attempt
+  // must not authorize against a snapshot that is no longer the row's. Compare the revision
+  // live on the row after settlement with the one this reservation was admitted under: a
+  // concurrent re-key makes them differ, and the refusal is the same generic error so the
+  // response never says which check moved.
+  if (!settled.settled) throw new WalletVaultPasswordError();
+  const credentialsChanged = settled.credentialRevision !== reservation.credentialRevision;
+  if (credentialsChanged) throw new WalletVaultPasswordError();
   return { passwordEpoch: settled.passwordEpoch ?? reservation.passwordEpoch };
 }

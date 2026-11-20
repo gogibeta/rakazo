@@ -136,8 +136,23 @@ export function createVaultSqlShim<R extends FakeVaultRow>(rows: Map<string, R>)
       const ownsCharge = pending[token] === String(row.throttleGeneration ?? 0);
       delete pending[token];
       if (ownsCharge) row.failedAttempts -= 1;
-      row.lockedUntil = null;
-      return { rows: [{ failedAttempts: row.failedAttempts, lockedUntil: null }], count: 1 };
+      // The lock is derived from the counter the refund leaves behind (design §4.3), the same
+      // derivation the real settlement SQL performs, so a success on a row still holding
+      // other charges at the cap keeps its lock here too.
+      row.lockedUntil =
+        row.failedAttempts >= WALLET_VAULT_MAX_FAILED_ATTEMPTS
+          ? lockoutFrom(row.windowStartedAt)
+          : null;
+      return {
+        rows: [
+          {
+            failedAttempts: row.failedAttempts,
+            lockedUntil: row.lockedUntil,
+            credentialRevision: row.credentialRevision,
+          },
+        ],
+        count: 1,
+      };
     }
     // settleFailureInTx: the charge stays; only the pending token goes.
     if (text.includes('"pendingReservations" = "pendingReservations" - ')) {
@@ -151,7 +166,13 @@ export function createVaultSqlShim<R extends FakeVaultRow>(rows: Map<string, R>)
           ? lockoutFrom(row.windowStartedAt)
           : null;
       return {
-        rows: [{ failedAttempts: row.failedAttempts, lockedUntil: row.lockedUntil }],
+        rows: [
+          {
+            failedAttempts: row.failedAttempts,
+            lockedUntil: row.lockedUntil,
+            credentialRevision: row.credentialRevision,
+          },
+        ],
         count: 1,
       };
     }
