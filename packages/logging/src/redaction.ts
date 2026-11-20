@@ -70,7 +70,11 @@ const BEARER = /\bBearer\s+[^\s"',;&]+/gi;
 // The lookahead admits only words that contain a secret name, so a long word is scanned once
 // rather than once per name inside it. A credential after an auth scheme goes with its scheme.
 const SECRET_ASSIGNMENT =
-  /\b(?=[A-Za-z0-9_]*(?:password|secret|token|authorization|apikey|api_key|api-key))([A-Za-z0-9_]+|api-key)\s*[:=]\s*(?:(?:basic|bearer|digest|token)\s+)?\S+/gi;
+  /\b(?=[A-Za-z0-9_]*(?:password|passwd|secret|token|authorization|apikey|api_key|api-key))([A-Za-z0-9_]+|api-key)\s*[:=]\s*(?:(?:basic|bearer|digest|token)\s+)?\S+/gi;
+// A cookie header carries its whole value as the credential, and `Cookie: session=…` puts the
+// secret after a space rather than after the colon, so the assignment rule above never sees it.
+// The value ends at the end of the line, which is where a header's value ends.
+const COOKIE_HEADER = /\b((?:set-)?cookie\s*:\s*)[^\r\n]+/gi;
 // Quoted keys follow the structured-binding rule: any key containing a secret name.
 const JSON_SECRET_FIELD =
   /"(?=[A-Za-z0-9_-]*(?:password|passwd|secret|token|authorization|apikey|api_key|api-key|email|cookie|credential))([A-Za-z0-9_-]+)"\s*:\s*"(?:\\.|[^"\\])*"/gi;
@@ -100,6 +104,7 @@ export function redactSensitiveText(text: string): string {
     .replace(EMAIL_CANDIDATE, (candidate) => (candidate.includes("@") ? REDACTED : candidate))
     .replace(JSON_SECRET_FIELD, `"$1":"${REDACTED}"`)
     .replace(BEARER, `Bearer ${REDACTED}`)
+    .replace(COOKIE_HEADER, `$1${REDACTED}`)
     .replace(SECRET_ASSIGNMENT, (_match, key: string) => `${key}=${REDACTED}`)
     .replace(BARE_SECRET_CANDIDATE, (candidate) =>
       candidate.startsWith("eyJ") && !candidate.includes(".")
