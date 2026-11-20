@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
+import { createVaultSqlShim } from "./wallet-vault-fake.js";
 import {
   changeWalletVaultPassword,
   verifyWalletVaultPassword,
@@ -113,6 +114,7 @@ function vaultStore() {
         },
       ),
     },
+    ...createVaultSqlShim(rows),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
   return { prisma: client as unknown as PrismaClient, rows };

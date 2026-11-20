@@ -15,7 +15,8 @@
     "./wallet-vault": "./src/wallet-vault.ts",
     "./wallet-vault-client": "./src/wallet-vault-client.ts",
     "./wallet-vault-service": "./src/wallet-vault-service.ts",
-    "./wallet-vault-unlock": "./src/wallet-vault-unlock.ts"
+    "./wallet-vault-unlock": "./src/wallet-vault-unlock.ts",
+    "./wallet-vault-fake": "./src/wallet-vault-fake.ts"
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",

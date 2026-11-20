@@ -1054,6 +1054,17 @@ model WalletVault {
   changedAt       DateTime
   failedAttempts  Int       @default(0)
   lockedUntil     DateTime?
+  /// The accounting window this vault's charged failures belong to. Each expiry
+  /// bumps it, so a reservation taken in an older window can never refund or
+  /// charge the current one. See pr66-design.md.
+  throttleGeneration  BigInt @default(0)
+  /// When the current 15-minute accounting window began; null once it expired.
+  windowStartedAt     DateTime?
+  /// Outstanding reservation tokens mapped to the generation each was admitted in.
+  pendingReservations Json   @default("{}")
+  /// Bumped on every credential swap; a reservation verifies against the revision
+  /// it was admitted under, so a concurrent change cannot be overwritten.
+  credentialRevision  BigInt @default(0)
 
   @@map("wallet_vaults")
 }
