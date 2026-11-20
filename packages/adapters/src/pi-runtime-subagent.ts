@@ -33,6 +33,7 @@ import {
 import { observedPiStream } from "./pi-usage.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
+import { uniqueToolCallIdStream } from "./tool-call-ids.js";
 
 export const MAX_PARALLEL_SUBAGENTS = 4;
 
@@ -132,6 +133,8 @@ export async function executeSubagent(
   );
   const nestedHost: ToolHost = {
     ...host,
+    // The helper's transcript renames its own calls; they must not remap the main agent's ids.
+    providerToolCallIds: new Map(),
     activeModel: {
       config: requestModel,
       models: selectedModel.models,

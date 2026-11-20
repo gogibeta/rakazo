@@ -103,3 +103,28 @@ it("reports a pinned turn whose pending tool is offline as unavailable, not inco
   ).toThrow(PausedTurnToolsUnavailableError);
   expect(restoreTurnCheckpointEffects(fixture(), checkpoint("desktop_run"), model)).toBeUndefined();
 });
+it("restores the pending assignment under the provider's call id, not the renamed one", () => {
+  // A repeated provider id is renamed in the transcript so results stay paired; the saved
+  // assignment keys on the id the provider sent, so the restore has to map back to it.
+  const saved = JSON.parse(checkpoint("fixture_write"));
+  saved.messages[0].content[0] = {
+    type: "toolCall",
+    id: "call_0_1",
+    name: "fixture_write",
+    arguments: {},
+    providerCallId: "call_0",
+  };
+  saved.pendingToolCallId = "call_0_1";
+  const fingerprint = toolEffectIdempotencyKey("run-1", "fixture_write", {});
+  saved.effectOccurrences = [
+    {
+      executionId: JSON.stringify(["pi-tool", "main", "call_0"]),
+      fingerprint,
+      occurrence: 0,
+    },
+  ];
+  const ctx = fixture([tool("fixture_write")]);
+  const blob = JSON.stringify(saved);
+  expect(restoreTurnCheckpointEffects(ctx, blob, model)).toBe(blob);
+  expect(ctx.state.effects.restoredPending).toEqual(saved.effectOccurrences[0]);
+});
