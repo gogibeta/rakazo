@@ -27,6 +27,8 @@ function stubStore(): WalletVaultStore {
     walletMigrationStatus: vi.fn(async () => "legacy_server_only"),
     recordUnlock: vi.fn(async () => undefined),
     recordLock: vi.fn(async () => undefined),
+    readProposal: vi.fn(async () => null),
+    readWalletKeyEnvelope: vi.fn(async () => null),
   };
 }
 
@@ -108,15 +110,15 @@ describe("vault service HTTP surface", () => {
 
   it("validates grants before wallets: locked first, then the typed refusal", async () => {
     const app = vaultApp();
-    const locked = await call(app, "/v1/sign", { userId: "u1", grantId: "g", walletId: "w1" });
+    const locked = await call(app, "/v1/sign", { userId: "u1", grantId: "g", proposalId: "p1" });
     expect(locked.status).toBe(403);
     expect((await bodyOf(locked)).code).toBe("vault_locked");
 
     const unlock = await call(app, "/v1/unlock", { userId: "u1", password: PASSWORD });
     const { grantId } = await bodyOf(unlock);
-    const sign = await call(app, "/v1/sign", { userId: "u1", grantId, walletId: "w1" });
-    expect(sign.status).toBe(409);
-    expect((await bodyOf(sign)).code).toBe("wallet_not_migrated");
+    const sign = await call(app, "/v1/sign", { userId: "u1", grantId, proposalId: "p1" });
+    expect(sign.status).toBe(404);
+    expect((await bodyOf(sign)).code).toBe("proposal_not_found");
   });
 
   it("refuses malformed bodies without reading further", async () => {

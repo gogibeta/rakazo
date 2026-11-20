@@ -21,7 +21,7 @@ const grantId = z.string().min(1).max(128);
 const statusBody = z.object({ userId });
 const unlockBody = z.object({ userId, password: z.string().min(1).max(1024) });
 const lockBody = z.object({ userId });
-const signBody = z.object({ userId, grantId, walletId: z.string().min(1).max(128) });
+const signBody = z.object({ userId, grantId, proposalId: z.string().min(1).max(128) });
 const fillBody = z.object({
   userId,
   grantId,
@@ -40,6 +40,10 @@ const ERROR_STATUS: Record<string, number> = {
   operation_not_allowed: 403,
   wallet_not_found: 404,
   wallet_not_migrated: 409,
+  proposal_not_found: 404,
+  proposal_not_signable: 409,
+  proposal_tampered: 409,
+  wallet_key_mismatch: 409,
   signing_not_enabled: 409,
   fill_not_enabled: 409,
 };

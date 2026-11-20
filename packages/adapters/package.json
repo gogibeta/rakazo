@@ -46,6 +46,8 @@
     "@larksuiteoapi/node-sdk": "1.76.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@mozilla/readability": "0.6.0",
+    "@noble/curves": "1.9.1",
+    "@noble/hashes": "1.8.0",
     "@observablehq/plot": "0.6.19",
     "@opentelemetry/api": "1.10.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.301.0",
