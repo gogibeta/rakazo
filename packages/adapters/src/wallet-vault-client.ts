@@ -37,6 +37,10 @@ const CLIENT_ERROR_MESSAGES: Record<WalletVaultClientErrorCode, string> = {
   operation_not_allowed: "The unlock grant does not allow this operation.",
   wallet_not_found: "Wallet not found.",
   wallet_not_migrated: "The wallet is not protected by the wallet password yet.",
+  proposal_not_found: "Proposal not found.",
+  proposal_not_signable: "The proposal is no longer available to sign.",
+  proposal_tampered: "The proposal does not match its recorded fingerprint.",
+  wallet_key_mismatch: "The wallet key does not match the proposal's recorded sender.",
   signing_not_enabled: "Wallet signing is not available yet.",
   fill_not_enabled: "Wallet filling is not available yet.",
   unauthorized: "The vault refused the service credential.",
@@ -56,8 +60,12 @@ export class WalletVaultClientError extends Error {
   }
 }
 
-/** A completed sign, as the vault will report it: the hash and the use record, nothing else. */
-export type WalletVaultSignResult = { txHash: string; walletUseId: string };
+/** A completed sign: the signed transaction, its hash, and the sender. */
+export type WalletVaultSignResult = {
+  signedTransaction: string;
+  transactionHash: string;
+  from: string;
+};
 
 export type WalletVaultClient = ReturnType<typeof createWalletVaultClient>;
 
@@ -202,16 +210,21 @@ export function createWalletVaultClient(options: {
       return { locked: true as const };
     },
 
-    /** Ask the vault to sign for a wallet under a grant. Returns only the hash. */
+    /**
+     * Ask the vault to sign one stored proposal under a grant. The vault
+     * re-reads the proposal itself, verifies its canonical hash, and returns
+     * the signed transaction; the caller broadcasts it (PR 7b).
+     */
     async sign(input: {
+      proposalId: string;
       userId: string;
       grantId: string;
-      walletId: string;
     }): Promise<WalletVaultSignResult> {
       const payload = await call("/v1/sign", { ...input });
       return {
-        txHash: stringField(payload, "txHash"),
-        walletUseId: stringField(payload, "walletUseId"),
+        signedTransaction: stringField(payload, "signedTransaction"),
+        transactionHash: stringField(payload, "transactionHash"),
+        from: stringField(payload, "from"),
       };
     },
 

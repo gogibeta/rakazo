@@ -187,9 +187,9 @@ describe("wallet vault client", () => {
   });
 
   it("maps a refused operation's code through", async () => {
-    const { vault } = client(async () => jsonResponse(409, { code: "wallet_not_migrated" }));
-    expect(await codeOf(vault.sign({ userId: "u1", grantId: "g", walletId: "w1" }))).toBe(
-      "wallet_not_migrated",
+    const { vault } = client(async () => jsonResponse(409, { code: "proposal_not_signable" }));
+    expect(await codeOf(vault.sign({ userId: "u1", grantId: "g", proposalId: "p1" }))).toBe(
+      "proposal_not_signable",
     );
   });
 

@@ -72,5 +72,57 @@ export function createPrismaVaultStore(prisma: PrismaClient): WalletVaultStore {
         }),
       );
     },
+
+    async readProposal(input) {
+      return asTenant(input.userId, async () => {
+        const row = await prisma.walletProposal.findFirst({
+          where: { id: input.proposalId, userId: input.userId },
+          select: {
+            id: true,
+            walletId: true,
+            fromAddress: true,
+            chainId: true,
+            to: true,
+            amountWei: true,
+            data: true,
+            nonce: true,
+            gasLimit: true,
+            maxFeePerGas: true,
+            maxPriorityFeePerGas: true,
+            status: true,
+            canonicalHash: true,
+            expiresAt: true,
+          },
+        });
+        if (!row) return null;
+        return {
+          proposalId: row.id,
+          walletId: row.walletId,
+          fromAddress: row.fromAddress,
+          chainId: row.chainId,
+          to: row.to,
+          amountWei: row.amountWei,
+          data: row.data,
+          nonce: row.nonce,
+          gasLimit: row.gasLimit,
+          maxFeePerGas: row.maxFeePerGas,
+          maxPriorityFeePerGas: row.maxPriorityFeePerGas,
+          status: row.status,
+          canonicalHash: row.canonicalHash,
+          expiresAt: row.expiresAt,
+        };
+      });
+    },
+
+    async readWalletKeyEnvelope(input) {
+      return asTenant(input.userId, async () => {
+        const row = await prisma.userWallet.findFirst({
+          where: { id: input.walletId, userId: input.userId },
+          select: { keyCiphertext: true, passwordWrap: true },
+        });
+        if (!row?.keyCiphertext || !row.passwordWrap) return null;
+        return { keyCiphertext: row.keyCiphertext, passwordWrap: row.passwordWrap };
+      });
+    },
   };
 }

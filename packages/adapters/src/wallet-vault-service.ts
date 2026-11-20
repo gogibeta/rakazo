@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { openWalletKeyWithPassword } from "./wallet-envelope.js";
+import { walletProposalCanonicalHash } from "./wallet-proposals.js";
+import { signEip1559Transaction } from "./wallet-tx-signing.js";
 import { WalletVaultNotConfiguredError, WalletVaultPasswordError } from "./wallet-vault-impl.js";
 
 /**
@@ -58,6 +61,10 @@ export type WalletVaultServiceErrorCode =
   | "operation_not_allowed"
   | "wallet_not_found"
   | "wallet_not_migrated"
+  | "proposal_not_found"
+  | "proposal_not_signable"
+  | "proposal_tampered"
+  | "wallet_key_mismatch"
   | "signing_not_enabled"
   | "fill_not_enabled";
 
@@ -71,6 +78,10 @@ const ERROR_MESSAGES: Record<WalletVaultServiceErrorCode, string> = {
   operation_not_allowed: "The unlock grant does not allow this operation.",
   wallet_not_found: "Wallet not found.",
   wallet_not_migrated: "The wallet is not protected by the wallet password yet.",
+  proposal_not_found: "Proposal not found.",
+  proposal_not_signable: "The proposal is no longer available to sign.",
+  proposal_tampered: "The proposal does not match its recorded fingerprint.",
+  wallet_key_mismatch: "The wallet key does not match the proposal's recorded sender.",
   signing_not_enabled: "Wallet signing is not available yet.",
   fill_not_enabled: "Wallet filling is not available yet.",
 };
@@ -84,6 +95,44 @@ export class WalletVaultServiceError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * The stored proposal a signing request names, exactly as the database holds
+ * it. The vault re-reads this itself — the caller names the proposal and
+ * supplies nothing else — so what gets signed is what was validated, never a
+ * transaction the caller reconstructed.
+ */
+export type WalletProposalForSigning = {
+  proposalId: string;
+  walletId: string;
+  /** The sender the canonical hash covers; fixed at creation. */
+  fromAddress: string;
+  chainId: number;
+  /** null for a contract deploy. */
+  to: string | null;
+  /** Native value in wei, as an exact decimal string. */
+  amountWei: string;
+  /** 0x-prefixed calldata; null when the call carries none. */
+  data: string | null;
+  nonce: number;
+  gasLimit: string;
+  maxFeePerGas: string;
+  maxPriorityFeePerGas: string;
+  status: string;
+  /** sha256 of the canonical serialization, recorded at creation. */
+  canonicalHash: string;
+  expiresAt: Date;
+};
+
+/** The signed transaction the vault returns for a proposal. */
+export type WalletVaultSignResult = {
+  /** `0x02 || RLP([…, yParity, r, s])` — what an RPC broadcast accepts. */
+  signedTransaction: string;
+  /** keccak256 of the signed transaction. */
+  transactionHash: string;
+  /** Lowercase sender address, recovered from the signature. */
+  from: string;
+};
 
 /**
  * The durable state the vault core needs, nothing more. The vault service
@@ -112,6 +161,16 @@ export interface WalletVaultStore {
   }): Promise<void>;
   /** Mark a grant's audit row revoked. Audit only, like {@link recordUnlock}. */
   recordLock(input: { userId: string; grantId: string; revokedAt: Date }): Promise<void>;
+  /** The stored proposal to sign, or null when this person has no such proposal. */
+  readProposal(input: {
+    proposalId: string;
+    userId: string;
+  }): Promise<WalletProposalForSigning | null>;
+  /** The wallet's key envelope, or null when this person has no such wallet. */
+  readWalletKeyEnvelope(input: {
+    walletId: string;
+    userId: string;
+  }): Promise<{ keyCiphertext: string; passwordWrap: string } | null>;
 }
 
 /** What an unlock hands back: the grant handle and its fixed expiry. Never material. */
@@ -393,10 +452,82 @@ export function createWalletVaultService(deps: {
      * step — so after grant and wallet validation this refuses, typed,
      * rather than pretend to sign.
      */
-    async sign(input: { userId: string; grantId: string; walletId: string }): Promise<never> {
-      await requireGrant(input.userId, input.grantId, "sign");
-      await requireMigratedWallet(input.userId, input.walletId);
-      throw new WalletVaultServiceError("signing_not_enabled");
+    /**
+     * Sign one stored proposal with its wallet's key.
+     *
+     * The caller names the proposal and supplies nothing else: the proposal is
+     * re-read here, its canonical hash is recomputed from the stored fields and
+     * compared against the hash recorded when the owner approved it, and only
+     * then is the wallet's key opened and the transaction signed. A caller can
+     * therefore never swap in different fields, a different proposal, or a
+     * different wallet between confirmation and signing.
+     */
+    async sign(input: {
+      proposalId: string;
+      userId: string;
+      grantId: string;
+    }): Promise<WalletVaultSignResult> {
+      const grant = await requireGrant(input.userId, input.grantId, "sign");
+      const proposal = await deps.store.readProposal({
+        proposalId: input.proposalId,
+        userId: input.userId,
+      });
+      if (!proposal) throw new WalletVaultServiceError("proposal_not_found");
+      if (proposal.status !== "proposed" || proposal.expiresAt.getTime() <= now().getTime()) {
+        throw new WalletVaultServiceError("proposal_not_signable");
+      }
+      // The stored hash is the fingerprint the owner confirmed. Recompute it from
+      // the stored fields: a mismatch means the row was altered after approval, and
+      // the proposal must not be signed.
+      const canonicalHash = walletProposalCanonicalHash({
+        from: proposal.fromAddress,
+        chainId: proposal.chainId,
+        to: proposal.to,
+        value: proposal.amountWei,
+        data: proposal.data,
+        nonce: proposal.nonce,
+        gasLimit: proposal.gasLimit,
+        maxFeePerGas: proposal.maxFeePerGas,
+        maxPriorityFeePerGas: proposal.maxPriorityFeePerGas,
+      });
+      if (canonicalHash !== proposal.canonicalHash) {
+        throw new WalletVaultServiceError("proposal_tampered");
+      }
+      await requireMigratedWallet(input.userId, proposal.walletId);
+      const envelope = await deps.store.readWalletKeyEnvelope({
+        walletId: proposal.walletId,
+        userId: input.userId,
+      });
+      if (!envelope) throw new WalletVaultServiceError("wallet_not_found");
+      const privateKey = await openWalletKeyWithPassword({
+        walletId: proposal.walletId,
+        envelope,
+        password: grant.passwordMaterial.toString("utf8"),
+      });
+      try {
+        const signed = signEip1559Transaction(
+          {
+            chainId: proposal.chainId,
+            nonce: proposal.nonce,
+            to: proposal.to,
+            value: proposal.amountWei,
+            data: proposal.data,
+            gasLimit: proposal.gasLimit,
+            maxFeePerGas: proposal.maxFeePerGas,
+            maxPriorityFeePerGas: proposal.maxPriorityFeePerGas,
+          },
+          privateKey,
+        );
+        // The canonical hash binds the proposal to one sender. If the key just
+        // used does not control that sender, the signature would not match what
+        // the owner confirmed — refuse rather than hand back the wrong signature.
+        if (signed.from.toLowerCase() !== proposal.fromAddress.toLowerCase()) {
+          throw new WalletVaultServiceError("wallet_key_mismatch");
+        }
+        return signed;
+      } finally {
+        privateKey.fill(0);
+      }
     },
 
     /** The fill broker's shape, with the same validation order as sign. */

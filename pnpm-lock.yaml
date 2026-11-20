@@ -1007,6 +1007,12 @@ importers:
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
+      '@noble/curves':
+        specifier: 1.9.1
+        version: 1.9.1
+      '@noble/hashes':
+        specifier: 2.3.0
+        version: 2.3.0
       '@observablehq/plot':
         specifier: 0.6.19
         version: 0.6.19
