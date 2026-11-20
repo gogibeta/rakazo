@@ -37,6 +37,8 @@ const APPROVAL_EXEMPT_TOOLS = new Set([
  * run. Anything else, new tools included, is gated there (see outsideRunToolRequiresApproval).
  */
 const OUTSIDE_RUN_SAFE_BUILTIN_TOOLS = new Set([
+  "app_get_settings",
+  "app_list_models",
   "ask_user",
   "attach_file",
   "browser_snapshot",
@@ -99,6 +101,8 @@ const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set([
   "set_child_bot_model",
   // Power-cycling the deployment's own host takes every bot down with it.
   "restart_host",
+  // A model switch decides which provider receives the owner's conversations.
+  "app_set_model",
 ]);
 
 const READ_ONLY_CONNECTOR_PATTERN = /(^|[_-])(get|list|search|find|read)([_-]|$)/i;
@@ -260,6 +264,8 @@ export function isOwnerStartedRun(trigger: string, followUpFromUser: boolean): b
  * an attacker wrote, and taints the run. New tools taint by default.
  */
 export const OWN_STATE_RESULT_TOOLS: ReadonlySet<string> = new Set([
+  "app_get_settings",
+  "app_list_models",
   "ask_user",
   // Only confirms what the bot itself sent.
   "send_email",

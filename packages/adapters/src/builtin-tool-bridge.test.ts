@@ -62,7 +62,9 @@ describe("built-in tool bridge", () => {
     // search_history lists earlier tool work by kind without a keyword;
     // list_wallets is named among find_tool's deferred areas.
     // send_to_chat_apps is listed so a bot asked to message its owner finds it.
-    expect(definitionBytes(listed)).toBeLessThanOrEqual(33_400);
+    // Budget covers the pinned set's serialized size after the app-model tools' descriptions
+    // landed (33,438 bytes at the time of writing).
+    expect(definitionBytes(listed)).toBeLessThanOrEqual(33_600);
     expect(deferred.map((tool) => tool.name)).toEqual(
       expect.arrayContaining(["render_plot", "create_space", "generate_secret", "scratchpad_add"]),
     );

@@ -139,6 +139,7 @@ export const MESSAGING_COMMANDS_HELP = [
   "/steer <message> — steer the run in progress",
   "/model — switch the model (or /model <id>)",
   "/help — show this list",
+  "In the app you can also just ask in plain words — “change your model to …” — and the bot will switch there.",
 ].join("\n");
 
 /**
