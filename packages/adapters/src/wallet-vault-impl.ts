@@ -441,6 +441,65 @@ export async function setupWalletVaultPassword(
  * password. The reservation is settled in that same transaction whether the revision matched or
  * not: a correct password must never be recorded as a failure.
  */
+/**
+ * Apply one prepared credential change under a specific change token, atomically with
+ * consuming that token. This is the whole change settlement in one unit: lock the row, skip
+ * if the token is no longer pending (already settled, or retired by maintenance — design
+ * §4.5), swap the credential only when the row's revision still matches the revision the
+ * change was prepared against (so a concurrent change wins and this one refunds instead of
+ * overwriting a newer credential), and settle the token in that same transaction.
+ *
+ * Exported so the duplicate-settlement invariant — one change token writes the credential
+ * at most once — can be driven directly. The public {@link changeWalletVaultPassword} mints
+ * a fresh token per call, so a same-token replay is unreachable through it; this unit is the
+ * only way to replay one.
+ */
+export async function applyWalletVaultPasswordChange(
+  prisma: PrismaClient,
+  userId: string,
+  token: string,
+  prepared: { verifier: string; credentialRevision: bigint },
+  at?: Date,
+): Promise<Settlement> {
+  return prisma.$transaction(async (tx) => {
+    const locked = await lockVaultRow(tx, userId);
+    const row = locked[0];
+    // The row vanished mid-change: there is nothing left to authenticate against and nothing
+    // to settle. Design §4.5 — do not change credentials and do not report success.
+    if (!row) return { settled: false } as Settlement;
+    const now = at ?? (await dbNow(tx));
+    const generation = await normalizeWalletVaultWindow(tx, row, now);
+    if (generation === null) return { settled: false } as Settlement;
+    // The token is no longer pending — already settled, or retired by maintenance. Design
+    // §4.5: do not change credentials and do not report success.
+    if (row.pendingReservations[token] === undefined) {
+      return { settled: false } as Settlement;
+    }
+    // The swap is conditional on the revision the change was prepared against, so a
+    // concurrent change wins and this one refunds instead of overwriting the newer
+    // credential.
+    const revisionMatches = row.credentialRevision === prepared.credentialRevision;
+    if (revisionMatches) {
+      await tx.walletVault.update({
+        where: { userId },
+        data: {
+          verifier: prepared.verifier,
+          changedAt: now,
+          passwordEpoch: { increment: 1 },
+          credentialRevision: { increment: 1 },
+        },
+      });
+    }
+    const settled = await settleSuccessInTx(tx, userId, token, at);
+    if (revisionMatches && !settled.settled) {
+      // §4.5: a credential swap that landed must settle its own reservation in this same
+      // transaction. Anything else is an invariant violation — roll the whole thing back.
+      throw new Error("wallet vault change: credential swap did not settle its reservation");
+    }
+    return { ...settled, credentialsChanged: !revisionMatches };
+  });
+}
+
 export async function changeWalletVaultPassword(
   prisma: PrismaClient,
   userId: string,
@@ -478,42 +537,13 @@ export async function changeWalletVaultPassword(
   // revision the reservation read, so a concurrent change wins and this one refunds instead.
   // The reservation is settled in the same transaction whether the revision matched or not:
   // a correct password must never be recorded as a failure.
-  const outcome = await prisma.$transaction(async (tx) => {
-    const locked = await lockVaultRow(tx, userId);
-    const row = locked[0];
-    // The row vanished mid-change: there is nothing left to authenticate against and nothing
-    // to settle. Design §4.5 — do not change credentials and do not report success.
-    if (!row) return { settled: false } as Settlement;
-    const now = at ?? (await dbNow(tx));
-    const generation = await normalizeWalletVaultWindow(tx, row, now);
-    if (generation === null) return { settled: false } as Settlement;
-    // The token is no longer pending — already settled, or retired by maintenance. Design
-    // §4.5: do not change credentials and do not report success.
-    if (row.pendingReservations[reservation.token] === undefined) {
-      return { settled: false } as Settlement;
-    }
-    // The swap is conditional on the revision the reservation read, so a concurrent change
-    // wins and this one refunds instead of overwriting the newer credential.
-    const revisionMatches = row.credentialRevision === reservation.credentialRevision;
-    if (revisionMatches) {
-      await tx.walletVault.update({
-        where: { userId },
-        data: {
-          verifier,
-          changedAt: now,
-          passwordEpoch: { increment: 1 },
-          credentialRevision: { increment: 1 },
-        },
-      });
-    }
-    const settled = await settleSuccessInTx(tx, userId, reservation.token, at);
-    if (revisionMatches && !settled.settled) {
-      // §4.5: a credential swap that landed must settle its own reservation in this same
-      // transaction. Anything else is an invariant violation — roll the whole thing back.
-      throw new Error("wallet vault change: credential swap did not settle its reservation");
-    }
-    return { ...settled, credentialsChanged: !revisionMatches };
-  });
+  const outcome = await applyWalletVaultPasswordChange(
+    prisma,
+    userId,
+    reservation.token,
+    { verifier, credentialRevision: reservation.credentialRevision },
+    at,
+  );
   // An unsettled reservation means the token was already consumed or retired: never report
   // success on that path, and never let the caller believe the credentials moved. (§4.3/§4.5)
   if (!outcome.settled) throw new WalletVaultPasswordError();

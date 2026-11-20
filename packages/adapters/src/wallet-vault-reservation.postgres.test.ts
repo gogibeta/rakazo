@@ -3,6 +3,7 @@ import type { PrismaClient } from "@rakazo/db";
 import { createDb, Prisma, runAsSystem } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  applyWalletVaultPasswordChange,
   changeWalletVaultPassword,
   reserveWalletVaultAttempt,
   settleWalletVaultFailure,
@@ -806,47 +807,77 @@ describePostgres("wallet vault reservation throttle (PostgreSQL)", () => {
   });
 
   it("duplicate_password_change_cannot_write_twice", async () => {
-    const userId = await person();
-    const gate = await gateVerifier();
-    let changeToken = "";
-    try {
-      const change = runAsSystem("change", () =>
-        changeWalletVaultPassword(prisma, userId, {
-          currentPassword: PASSWORD,
-          newPassword: NEW_PASSWORD,
+    // A change token is single-use: applying the same prepared change twice must write the
+    // credential exactly once. The public change path mints a fresh token per call, so a
+    // same-token replay is driven through applyWalletVaultPasswordChange — the atomic unit
+    // the change path itself uses — with the SAME token both times.
+    const { createPasswordVerifier } = await import("./wallet-envelope.js");
+    const readRow = (id: string) =>
+      runAsSystem("change read", () =>
+        prisma.walletVault.findUniqueOrThrow({
+          where: { userId: id },
+          select: { credentialRevision: true, passwordEpoch: true, verifier: true },
         }),
       );
-      await gate.called;
-      const mid = await throttle(userId);
-      changeToken = Object.keys(mid.pendingReservations)[0]!;
-      gate.release();
-      await change;
-    } finally {
-      gate.restore();
-    }
-    const after = await throttle(userId);
-    expect(after.credentialRevision).toBe(1n);
-    expect(after.pendingReservations).toEqual({});
 
-    // Replaying the same change's settlement finds no pending token: it cannot settle again,
-    // cannot bump the revision again, and cannot rewrite the verifier.
-    const replaySuccess = await runAsSystem("settle", () =>
-      settleWalletVaultSuccess(prisma, userId, changeToken),
-    );
-    expect(replaySuccess.settled).toBe(false);
-    const replayFailure = await runAsSystem("settle", () =>
-      settleWalletVaultFailure(prisma, userId, changeToken),
-    );
-    expect(replayFailure.settled).toBe(false);
+    // --- sequential replay ---------------------------------------------------------
+    const userId = await person();
+    const reservation = await reserve(userId);
+    const before = await readRow(userId);
+    const verifier = await createPasswordVerifier(NEW_PASSWORD);
+    const prepared = { verifier, credentialRevision: reservation.credentialRevision };
 
-    const state = await throttle(userId);
-    expect(state.credentialRevision).toBe(1n);
-    expect(state.pendingReservations).toEqual({});
-    expect(state.failedAttempts).toBe(0);
-    const verifier = await storedVerifier(userId);
+    const first = await runAsSystem("change", () =>
+      applyWalletVaultPasswordChange(prisma, userId, reservation.token, prepared),
+    );
+    expect(first.settled).toBe(true);
+    const afterFirst = await readRow(userId);
+    expect(afterFirst.credentialRevision).toBe(before.credentialRevision + 1n);
+    expect(afterFirst.passwordEpoch).toBe(before.passwordEpoch + 1);
+    expect(afterFirst.verifier).not.toBe(before.verifier);
+
+    // Replaying the SAME token is a duplicated settlement of one change. It must not write
+    // the credential a second time: the token is already consumed and the revision has moved
+    // on, so neither the token guard nor the revision guard admits a second swap.
+    const replay = await runAsSystem("replay", () =>
+      applyWalletVaultPasswordChange(prisma, userId, reservation.token, prepared),
+    );
+    expect(replay.settled).toBe(false);
+    const afterReplay = await readRow(userId);
+    expect(afterReplay.credentialRevision).toBe(afterFirst.credentialRevision);
+    expect(afterReplay.passwordEpoch).toBe(afterFirst.passwordEpoch);
+    expect(afterReplay.verifier).toBe(afterFirst.verifier);
+    expect((await throttle(userId)).pendingReservations).toEqual({});
+
+    // --- concurrent replay ---------------------------------------------------------
+    // The same token applied twice at once: the row lock serializes the two transactions, so
+    // exactly one of them writes and the other finds its token already consumed.
+    const userId2 = await person();
+    const second = await reserve(userId2);
+    const before2 = await readRow(userId2);
+    const verifier2 = await createPasswordVerifier(NEW_PASSWORD);
+    const prepared2 = { verifier: verifier2, credentialRevision: second.credentialRevision };
+    const both = await Promise.all([
+      runAsSystem("change A", () =>
+        applyWalletVaultPasswordChange(prisma, userId2, second.token, prepared2),
+      ),
+      runAsSystem("change B", () =>
+        applyWalletVaultPasswordChange(prisma, userId2, second.token, prepared2),
+      ),
+    ]);
+    expect(both.filter((outcome) => outcome.settled)).toHaveLength(1);
+    const afterBoth = await readRow(userId2);
+    expect(afterBoth.credentialRevision).toBe(before2.credentialRevision + 1n);
+    expect(afterBoth.passwordEpoch).toBe(before2.passwordEpoch + 1);
+    expect((await throttle(userId2)).pendingReservations).toEqual({});
+
+    // The surviving credential is the new one, on both rows.
     const { verifyPassword } = await import("./wallet-envelope.js");
-    expect(await verifyPassword(verifier, NEW_PASSWORD)).toBe(true);
-    expect(await verifyPassword(verifier, PASSWORD)).toBe(false);
+    for (const id of [userId, userId2]) {
+      const stored = await storedVerifier(id);
+      expect(await verifyPassword(stored, NEW_PASSWORD)).toBe(true);
+      expect(await verifyPassword(stored, PASSWORD)).toBe(false);
+    }
   });
 
   it("unknown_token_cannot_change_credentials_or_budget", async () => {
