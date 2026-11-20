@@ -1,7 +1,9 @@
 import type { BotSecretDestination } from "@rakazo/contracts";
 import { encodeCardSecret, encodeContactSecret } from "@rakazo/contracts";
+import { redactSecrets } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import {
+  cardRedactionForms,
   defaultVaultItemTitle,
   listBotSecrets,
   listVaultItems,
@@ -183,6 +185,39 @@ describe("what the bot sees", () => {
     expect(forms).toEqual(
       expect.arrayContaining(["4242424242424242", "4242 4242 4242 4242", "4242-4242-4242-4242"]),
     );
+  });
+
+  it("hides a 15-digit Amex in the 4-6-5 groups it is printed in", async () => {
+    const db = fakeDatabase();
+    await save(db, "amex", JSON.stringify({ ...fakeCard, number: "3782 822463 10005" }), card);
+    const forms = await loadLoginPasswordRedactions(db.prisma, secretStore, scope);
+    // Public test number. The 4-6-5 grouping is what a page shows and what the four-group
+    // pattern could not produce, so it reached tool output whole before this change.
+    expect(forms).toEqual(
+      expect.arrayContaining(["378282246310005", "3782 822463 10005", "3782-822463-10005"]),
+    );
+    expect(redactSecrets("Card 3782 822463 10005 was declined", forms)).toBe(
+      "Card [redacted] was declined",
+    );
+  });
+
+  it("hides a 14-digit Diners Club number in its 4-6-4 groups", async () => {
+    const db = fakeDatabase();
+    await save(db, "diners", JSON.stringify({ ...fakeCard, number: "3056 930902 5904" }), card);
+    const forms = await loadLoginPasswordRedactions(db.prisma, secretStore, scope);
+    expect(forms).toEqual(
+      expect.arrayContaining(["30569309025904", "3056 930902 5904", "3056-930902-5904"]),
+    );
+  });
+
+  it("adds no printed form for a 16-digit card", () => {
+    // Only the two lengths that print differently gain forms. Sixteen digits must return exactly
+    // what it did, because the purchase tests pin that list.
+    expect(cardRedactionForms("4242 4242 4242 4242")).toEqual([
+      "4242 4242 4242 4242",
+      "4242424242424242",
+      "4242-4242-4242-4242",
+    ]);
   });
 
   it("never fills a card or contact as a login", async () => {
