@@ -438,3 +438,28 @@ it("names the model that served a reply, and says nothing when the run recorded 
   renderView("bot", [], { message: reply(), speakerName: "Assistant" });
   expect(shown()).toBeUndefined();
 });
+
+it("keeps the speaker name as its own text when a model is shown beside it", () => {
+  // The group-chat e2e finds a speaker with getByText(name, { exact: true }), which compares
+  // an element's whole text. The model chip sits in the same header, so the name must stay in
+  // an element of its own or the header reads "Research Writer<model>" and stops matching —
+  // which is what failed the Web E2E shard when the model was added.
+  const reply: ThreadMessage = {
+    id: "message",
+    threadId: "thread",
+    seq: 1,
+    role: "bot",
+    botId: "bot-1",
+    createdAt: new Date().toISOString(),
+    blocks: [{ kind: "text", text: "Done" }],
+    model: { provider: "openrouter", id: "deepseek-v4.1-flash-free" },
+  };
+  renderView("bot", [], { message: reply, speakerName: "Research Writer" });
+
+  expect(container.querySelector('[data-testid="speaker-name"]')?.textContent).toBe(
+    "Research Writer",
+  );
+  expect(container.querySelector('[data-testid="reply-model"]')?.textContent).toBe(
+    "deepseek-v4.1-flash-free",
+  );
+});
