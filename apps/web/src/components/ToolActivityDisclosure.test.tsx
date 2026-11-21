@@ -95,7 +95,7 @@ describe("ToolActivityDisclosure", () => {
     const html = renderToStaticMarkup(<ToolSteps steps={[{ label: "Shell", count: 1 }]} />);
 
     expect(visibleText(html)).toBe("✓ Shell");
-    expect(html).not.toContain("data-testid=\"tool-step-outcome\"");
+    expect(html).not.toContain('data-testid="tool-step-outcome"');
   });
 
   it("labels a finished card with the tool count and duration", () => {
