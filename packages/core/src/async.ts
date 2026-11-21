@@ -65,6 +65,15 @@ export function withAbort<T>(
 }
 
 /**
+ * A signal that aborts with a `TimeoutError` after `ms`, or with `parent`'s reason when that
+ * aborts first. Nothing to dispose; {@link requestDeadline} is the one with its own message.
+ */
+export function deadlineSignal(ms: number, parent?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  return parent ? anySignal([parent, timeout]) : timeout;
+}
+
+/**
  * A signal that aborts with `message` after `timeoutMs`, or with `parent`'s reason when that
  * aborts first. Dispose once the request settles.
  */

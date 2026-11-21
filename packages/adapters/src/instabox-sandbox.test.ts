@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { INSTABOX_COMPUTER_TEMPLATE } from "./instabox-sandbox.js";
 import { emulatedInstabox, InstaboxEmulator } from "./instabox-sandbox.test-support.js";
 import { isSandboxGoneError } from "./sandbox-errors.js";
-import { assertSandboxWorkspaceContract } from "./sandbox-test-support.js";
+import { assertSandboxWorkspaceContract, settleMachineCleanup } from "./sandbox-test-support.js";
 
 const ctx = {
   operationId: "test",
@@ -179,13 +179,14 @@ describe("instabox computer backend", () => {
     expect(emulator.computers.get(computer.id)!.state).toBe("suspended");
   });
 
-  it("pauses the computer when a timed-out job's kill is not confirmed", async () => {
+  it("keeps the computer running when a timed-out job had already exited", async () => {
     const { emulator, provider, computer } = await started();
     emulator.hangs = (command) => command.includes("infinity");
     emulator.jobKill = () => false;
-    await expect(run(provider, computer, 50)).rejects.toThrow("was paused");
-    expect(emulator.killedJobs).toHaveLength(3);
-    expect(emulator.computers.get(computer.id)!.state).toBe("suspended");
+    const events = await run(provider, computer, 50);
+    expect(events.at(-1)).toEqual({ type: "exit", code: 124 });
+    expect(emulator.killedJobs).toHaveLength(1);
+    expect(emulator.computers.get(computer.id)!.state).toBe("running");
   });
 
   it("retries a job kill that fails once", async () => {
@@ -222,5 +223,49 @@ describe("instabox computer backend", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("a computer created by a start that then fails", () => {
+    const unpublished = new Error("gateway refused");
+    /** The computer is created, and publishing its gateway fails. */
+    function start(emulator: InstaboxEmulator) {
+      const create = emulator.create.bind(emulator);
+      vi.spyOn(emulator, "create").mockImplementation(async (...args) => {
+        const machine = await create(...args);
+        machine.ports.publish = async () => {
+          throw unpublished;
+        };
+        return machine;
+      });
+      const instabox = emulatedInstabox(emulator).provider();
+      return settleMachineCleanup(() => instabox.provision(request, ctx));
+    }
+
+    it("is deleted, trying a failed delete again", async () => {
+      const emulator = new InstaboxEmulator();
+      const kill = emulator.kill.bind(emulator);
+      vi.spyOn(emulator, "kill")
+        .mockRejectedValueOnce(new Error("connection reset"))
+        .mockImplementation(kill);
+
+      const { error, left } = await start(emulator);
+
+      expect(error).toBe(unpublished);
+      expect(emulator.computers.size).toBe(0);
+      expect(left).toEqual([]);
+    });
+
+    it("is reported when it cannot be deleted, and the start's own error stands", async () => {
+      const emulator = new InstaboxEmulator();
+      const kill = vi.spyOn(emulator, "kill").mockRejectedValue(new Error("connection reset"));
+
+      const { error, left } = await start(emulator);
+
+      expect(error).toBe(unpublished);
+      expect(kill).toHaveBeenCalledTimes(4);
+      // Each delete may take what its try has left of the cleanup's time, never instabox's default.
+      expect(kill).toHaveBeenNthCalledWith(1, "m_test1", 10_000);
+      expect(left).toEqual([{ provider: "instabox", machineId: "m_test1" }]);
+    });
   });
 });
