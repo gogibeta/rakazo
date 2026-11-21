@@ -1,5 +1,6 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentRunRequest } from "@rakazo/adapter-kit";
 import { isTerminatingReplyResult, terminatingReplyText } from "./approval-effect.js";
 import { withAutomatedLabels } from "./automated-messages.js";
 import { DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
@@ -33,7 +34,6 @@ import {
 import { observedPiStream } from "./pi-usage.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
 import { deliverFinishedShells } from "./shell-command-stream.js";
-import { uniqueToolCallIdStream } from "./tool-call-ids.js";
 
 export const MAX_PARALLEL_SUBAGENTS = 4;
 
@@ -49,6 +49,43 @@ export function helperResultText(text: string, tail: string | undefined, limit: 
   if (tail.length > limit) return clipTo(tail, limit);
   const room = limit - tail.length - 2;
   return text && room > 1 ? `${clipTo(text, room)}\n\n${tail}` : tail;
+}
+
+/**
+ * The model a helper runs: an explicitly requested per-call model when the call names one,
+ * else the member's configured subagent model, else the calling run's own model. Throws when
+ * the call names half a model, or a model the run cannot resolve.
+ */
+export async function subagentRequestModel(
+  host: {
+    request: Pick<
+      AgentRunRequest,
+      "model" | "fallbackModels" | "resolveModel" | "resolveSubagentModel"
+    >;
+    activeModel: { config: AgentRunRequest["model"] };
+  },
+  args: Record<string, unknown>,
+): Promise<AgentRunRequest["model"]> {
+  const requestedProvider = String(args.model_provider ?? "").trim();
+  const requestedModelId = String(args.model_id ?? "").trim();
+  const hasBackups = Boolean(host.request.fallbackModels?.length);
+  let requestModel = hasBackups ? host.activeModel.config : host.request.model;
+  if (Boolean(requestedProvider) !== Boolean(requestedModelId)) {
+    throw new Error("model_provider and model_id must both be set");
+  }
+  if (requestedProvider && requestedModelId) {
+    if (!host.request.resolveModel) {
+      throw new Error("Per-call subagent model selection is unavailable");
+    }
+    requestModel = await host.request.resolveModel(requestedProvider, requestedModelId);
+  } else if (host.request.resolveSubagentModel) {
+    // An explicit per-call model wins; otherwise the member's configured helper model, when
+    // they set one. The resolver answers null when they did not, or the choice cannot run,
+    // so the helper then follows this run's own model.
+    const configured = await host.request.resolveSubagentModel();
+    if (configured) requestModel = configured;
+  }
+  return requestModel;
 }
 
 export async function executeSubagent(
@@ -74,20 +111,10 @@ export async function executeSubagent(
     progress: "starting…",
   });
 
-  const requestedProvider = String(args.model_provider ?? "").trim();
-  const requestedModelId = String(args.model_id ?? "").trim();
   const hasBackups = Boolean(host.request.fallbackModels?.length);
-  let requestModel = hasBackups ? host.activeModel.config : host.request.model;
+  let requestModel: ToolHost["request"]["model"];
   try {
-    if (Boolean(requestedProvider) !== Boolean(requestedModelId)) {
-      throw new Error("model_provider and model_id must both be set");
-    }
-    if (requestedProvider && requestedModelId) {
-      if (!host.request.resolveModel) {
-        throw new Error("Per-call subagent model selection is unavailable");
-      }
-      requestModel = await host.request.resolveModel(requestedProvider, requestedModelId);
-    }
+    requestModel = await subagentRequestModel(host, args);
   } catch (error) {
     const message = sanitizeError(error instanceof Error ? error.message : String(error));
     host.queue.push({

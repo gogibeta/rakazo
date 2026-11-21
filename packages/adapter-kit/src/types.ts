@@ -655,6 +655,12 @@ export interface AgentRunRequest {
   ) => Promise<void>;
   /** Resolve an explicitly requested helper model within the active user and space scope. */
   resolveModel?: (provider: string, modelId: string) => Promise<AgentRunModel>;
+  /**
+   * The member's configured model for helpers — the `subagent` model role — resolved lazily so
+   * a run that starts no helper does no extra work. Null (or a choice that cannot run) lets a
+   * helper follow this run's own model.
+   */
+  resolveSubagentModel?: () => Promise<AgentRunModel | null>;
   resumeFromCheckpoint?: string;
   /** Opaque runtime transcript, persisted only on the server. */
   turnCheckpoint?: string;

@@ -35,6 +35,9 @@ export function deploymentModelRole(
   }
   // No computer model means the main model works the screen itself.
   if (role === "computer") return { primary: null, backups: [] };
+  // A separate helper model is the member's choice alone: without one a helper follows the
+  // main model, so the deployment does not stand in for it here.
+  if (role === "subagent") return { primary: null, backups: [] };
   const provider = defaults.settings?.defaultModelProvider ?? defaults.deployment?.provider;
   const modelId =
     usableModelId(defaults.settings?.defaultModelId) ?? usableModelId(defaults.deployment?.model);

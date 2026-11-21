@@ -223,6 +223,12 @@ describe("model roles", () => {
         env: { RAKAZO_AUTO_REVIEW_PROVIDER: "local-provider", RAKAZO_AUTO_REVIEW_MODEL: "judge" },
       }),
     ).toEqual({ primary: { provider: "local-provider", modelId: "judge" }, backups: [] });
+    // A separate helper model is the member's choice alone: the deployment does not stand in,
+    // so an unset subagent role leaves every helper on the run's own model.
+    expect(deploymentModelRole("subagent", deploymentDefaults)).toEqual({
+      primary: null,
+      backups: [],
+    });
   });
 
   it("uses the deployment's defaults for a member who chose nothing", async () => {
@@ -251,6 +257,29 @@ describe("model roles", () => {
       backups: [{ provider: "b", modelId: "n" }],
       primarySource: "member",
     });
+  });
+
+  it("gives helpers the member's subagent model, and the run's model when they set none", async () => {
+    const configured = roleClient([
+      {
+        role: "subagent",
+        position: 0,
+        provider: "helper-provider",
+        modelId: "helper-model",
+        thinkingLevel: "low",
+      },
+    ]);
+    await expect(
+      effectiveModelRole(configured, scope, "subagent", deploymentDefaults),
+    ).resolves.toEqual({
+      primary: { provider: "helper-provider", modelId: "helper-model", thinkingLevel: "low" },
+      backups: [],
+      primarySource: "member",
+    });
+    // No subagent choice and no deployment stand-in, so a helper follows the run's model.
+    await expect(
+      effectiveModelRole(roleClient([]), scope, "subagent", deploymentDefaults),
+    ).resolves.toEqual({ primary: null, backups: [], primarySource: null });
   });
 
   it("follows the account's list unless the Space keeps its own", async () => {

@@ -23,7 +23,14 @@ const START = {
   effectKey: "effect-1",
 };
 
-function harness(overrides: { trigger?: string; threadBotId?: string | null } = {}) {
+function harness(
+  overrides: {
+    trigger?: string;
+    threadBotId?: string | null;
+    /** The member's saved model-role rows, read by the subagent-model lookup. */
+    roles?: Array<{ role: string; position: number; provider: string; modelId: string }>;
+  } = {},
+) {
   const createRun = vi.fn(async (_args: unknown) => ({ id: "helper-run" }));
   const tx = {
     $queryRaw: vi.fn(async () => []),
@@ -37,6 +44,13 @@ function harness(overrides: { trigger?: string; threadBotId?: string | null } = 
   };
   const prisma = {
     $transaction: vi.fn(async (work: (client: typeof tx) => Promise<unknown>) => work(tx)),
+    // What appliedModelRole reads: no Space override, so the account's list applies.
+    spaceSettingOverride: { findUnique: vi.fn(async () => null) },
+    userModelRoleChoice: {
+      findMany: vi.fn(async ({ where }: { where: { role: string } }) =>
+        (overrides.roles ?? []).filter((row) => row.role === where.role),
+      ),
+    },
   };
   const enqueue = vi.fn(async () => undefined);
   const ctx = {
@@ -114,6 +128,36 @@ describe("starting a background helper", () => {
       startBackgroundHelper(half.ctx, { ...START, modelProvider: "openai" }),
     ).resolves.toEqual({ error: "model_provider and model_id must both be set" });
     expect(half.prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("pins the member's configured subagent model when the call names none", async () => {
+    const h = harness({
+      roles: [
+        {
+          role: "subagent",
+          position: 0,
+          provider: "helper-provider",
+          modelId: "helper-model",
+        },
+      ],
+    });
+    await expect(startBackgroundHelper(h.ctx, START)).resolves.toMatchObject({ ok: true });
+    expect(h.createRun).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modelProvider: "helper-provider",
+        modelId: "helper-model",
+        modelPinned: true,
+      }),
+      select: { id: true },
+    });
+  });
+
+  it("leaves the helper on the bot's own model when no subagent model is configured", async () => {
+    const h = harness({ roles: [] });
+    await expect(startBackgroundHelper(h.ctx, START)).resolves.toMatchObject({ ok: true });
+    const data = h.createRun.mock.calls[0]?.[0] as { data?: Record<string, unknown> };
+    expect(data).not.toHaveProperty("data.modelPinned");
+    expect(data).not.toHaveProperty("data.modelProvider");
   });
 });
 

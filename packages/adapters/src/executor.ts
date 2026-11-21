@@ -26,6 +26,7 @@ import {
   accountDeactivated,
   activateModelCredentialKey,
   appendEventInTransaction,
+  appliedModelRole,
   availableInSpace,
   cancelDeactivatedAccountRuns,
   cancelRunsInTransaction,
@@ -2061,6 +2062,34 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                     resolveConnectedModel(run, provider, modelId, (values) =>
                       runSecrets.push(...values),
                     ),
+              resolveSubagentModel: scripted
+                ? undefined
+                : async () => {
+                    // The member's helper model — the subagent role — when they set one. A
+                    // helper runs it instead of this run's model; an unset or unrunnable
+                    // choice answers null, so the helper follows this run's model.
+                    const { primary } = await appliedModelRole(deps.prisma, run, "subagent");
+                    if (!primary) return null;
+                    try {
+                      return await resolveConnectedModel(
+                        run,
+                        primary.provider,
+                        primary.modelId,
+                        (values) => runSecrets.push(...values),
+                        false,
+                        primary.thinkingLevel ?? null,
+                        primary.credentialId,
+                      );
+                    } catch (error) {
+                      getLogger().warn("subagent model unavailable; helper follows the run model", {
+                        runId: run.id,
+                        "model.provider": primary.provider,
+                        "model.id": primary.modelId,
+                        error,
+                      });
+                      return null;
+                    }
+                  },
               onToolCompleted: (completion) => {
                 if (effects.restoredPending?.executionId === completion.executionId)
                   effects.restoredPending = undefined;
