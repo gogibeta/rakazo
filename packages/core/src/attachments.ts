@@ -206,8 +206,12 @@ export function toolStepsHistoryText(
 
 const TOOL_STEP_OUTCOMES = ["succeeded", "failed", "stopped"] as const;
 
-/** "succeeded" when every call ended the same way, else "2 succeeded, 1 failed". */
-function toolStepOutcomeText(step: { count: number; outcomes?: unknown }): string {
+/**
+ * "succeeded" when every call ended the same way, else "2 succeeded, 1 failed". Empty when the
+ * step records no outcome (a live step, or history written before outcomes were kept).
+ * Shared with the web chat so a step reads the same there as it does in the bot's own history.
+ */
+export function toolStepOutcomeText(step: { count: number; outcomes?: unknown }): string {
   const outcomes = (step.outcomes ?? {}) as Partial<Record<string, unknown>>;
   if (typeof outcomes !== "object") return "";
   const counts = TOOL_STEP_OUTCOMES.flatMap((outcome) => {
