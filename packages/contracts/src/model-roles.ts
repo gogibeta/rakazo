@@ -4,7 +4,7 @@ import type { ModelCatalogEntry } from "./model-connections.js";
 import { ModelBackupChoiceSchema, modelChoiceListSchema } from "./model-connections.js";
 
 /** Add purposes here; connections, persistence, pickers and backups stay shared. */
-export const ModelRoleSchema = z.enum(["main", "approval", "computer"]);
+export const ModelRoleSchema = z.enum(["main", "approval", "computer", "subagent"]);
 export type ModelRole = z.infer<typeof ModelRoleSchema>;
 export const ModelRoleChoiceSchema = ModelBackupChoiceSchema.extend({
   thinkingLevel: ThinkingLevelSchema.nullable().optional(),
@@ -28,5 +28,7 @@ export type ModelRoleView = z.infer<typeof ModelRoleViewSchema>;
 
 export function modelSupportsRole(entry: ModelCatalogEntry, role: ModelRole): boolean {
   if (role === "approval") return true;
+  // A helper runs any regular model, exactly like the main role: decisions models answer
+  // verdicts, not chat turns, and only computer mode needs a model that sees images.
   return entry.protocol !== "decisions" && (role !== "computer" || entry.images !== false);
 }

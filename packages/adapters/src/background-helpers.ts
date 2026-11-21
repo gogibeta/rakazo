@@ -11,6 +11,7 @@ import {
 import type { Prisma } from "@rakazo/db";
 import {
   appendEventInTransaction,
+  appliedModelRole,
   assertRunCanWriteHistory,
   createThreadMessageInTransaction,
   THREAD_LOCK_TRANSACTION_OPTIONS,
@@ -79,6 +80,21 @@ export async function startBackgroundHelper(
   if (Boolean(input.modelProvider) !== Boolean(input.modelId)) {
     return { error: "model_provider and model_id must both be set" };
   }
+  // An explicit per-call model wins; otherwise the member's configured helper model — the
+  // subagent role — when they set one. Unset, the helper follows this bot's model as before.
+  let modelProvider = input.modelProvider;
+  let modelId = input.modelId;
+  if (!modelProvider && !modelId) {
+    const { primary } = await appliedModelRole(
+      deps.prisma,
+      { userId: run.userId, spaceId: run.spaceId },
+      "subagent",
+    );
+    if (primary) {
+      modelProvider = primary.provider;
+      modelId = primary.modelId;
+    }
+  }
   const clientNonce = `background-helper:${input.effectKey}`;
   const started = { ok: true as const, name: input.name, note: startedNote(input.name) };
   const card: HelperBlock = {
@@ -137,23 +153,25 @@ export async function startBackgroundHelper(
         status: "queued",
       },
     });
-    const helperRun = await tx.run.create({
-      data: {
-        spaceId: run.spaceId,
-        botId: bot.id,
-        threadId: helperThread.id,
-        taskId: task.id,
-        userId: run.userId,
-        status: "queued",
-        trigger: BACKGROUND_HELPER_TRIGGER,
-        sourceMessageId: message.id,
-        clientNonce,
-        ...(input.modelProvider
-          ? { modelProvider: input.modelProvider, modelId: input.modelId, modelPinned: true }
-          : {}),
-      },
-      select: { id: true },
-    });
+    const helperRunData: Prisma.RunUncheckedCreateInput = {
+      spaceId: run.spaceId,
+      botId: bot.id,
+      threadId: helperThread.id,
+      taskId: task.id,
+      userId: run.userId,
+      status: "queued",
+      trigger: BACKGROUND_HELPER_TRIGGER,
+      sourceMessageId: message.id,
+      clientNonce,
+    };
+    // A helper with a model of its own — named per call, or the member's configured helper
+    // model — is pinned to it, so it does not silently run something else.
+    if (modelProvider) {
+      helperRunData.modelProvider = modelProvider;
+      helperRunData.modelId = modelId;
+      helperRunData.modelPinned = true;
+    }
+    const helperRun = await tx.run.create({ data: helperRunData, select: { id: true } });
     return { eventSeq: event.seq, helperRunId: helperRun.id };
   }, THREAD_LOCK_TRANSACTION_OPTIONS);
   if (committed === "full") {
