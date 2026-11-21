@@ -2045,6 +2045,26 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "app_set_default_model",
+    description:
+      'Change the account\'s default model — the one that runs when a bot has no model of its own. Pass model as the user named it: a name like "Claude Sonnet" or an exact id; pass provider when they named the connection too. The owner approves the change on a card before it happens; the current default stays first in the fallback chain. When a name matches several models, the result lists their ids so you can ask which one.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: {
+          type: "string",
+          description: 'A name like "Claude Sonnet" or an exact id.',
+        },
+        provider: {
+          type: "string",
+          description: "Optional; the connection to take the model from.",
+        },
+      },
+      required: ["model"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "list_fleet",
     description:
       "List the bots and groups in this space with their ids, sections, pinned state and models. You can manage every bot listed; createdByMe only says which ones you created. Pass bot_id of a bot in this space to read only its full instructions and instructionsVersion, which set_child_instructions needs as expected_version. Call this before changing the bots you manage.",

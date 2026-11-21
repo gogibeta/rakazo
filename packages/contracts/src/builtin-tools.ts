@@ -111,6 +111,7 @@ export const BUILTIN_TOOL_NAMES = [
   "app_list_models",
   "app_get_settings",
   "app_set_model",
+  "app_set_default_model",
   ...FLEET_TOOL_NAMES,
   "archive_bot",
   "message_bot",
