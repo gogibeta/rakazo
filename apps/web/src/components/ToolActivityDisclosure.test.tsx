@@ -68,6 +68,36 @@ function mountCard() {
 }
 
 describe("ToolActivityDisclosure", () => {
+  it("shows a failed step as failed instead of ticking it as a success", () => {
+    // A run whose Browser act call failed must not read as "✓ Browser act": the step's own
+    // outcomes are what the bot's history records, so the chat has to agree with them.
+    const html = renderToStaticMarkup(
+      <ToolSteps
+        steps={[
+          { label: "Shell", count: 1, outcomes: { succeeded: 1 } },
+          { label: "Browser act", count: 1, outcomes: { failed: 1 } },
+          { label: "Write file", count: 3, outcomes: { succeeded: 2, failed: 1 } },
+        ]}
+      />,
+    );
+
+    expect(html).toContain("✕");
+    expect(html).toContain("✓");
+    expect(visibleText(html)).toContain("Browser act failed");
+    // A mixed step names both counts rather than picking one.
+    expect(visibleText(html)).toContain("Write file ×3 2 succeeded, 1 failed");
+    // A fully successful step still reads as a plain tick.
+    expect(visibleText(html)).toContain("Shell succeeded");
+  });
+
+  it("leaves a step with no recorded outcome without an outcome label", () => {
+    // A live step, or history written before outcomes were kept: no claim either way.
+    const html = renderToStaticMarkup(<ToolSteps steps={[{ label: "Shell", count: 1 }]} />);
+
+    expect(visibleText(html)).toBe("✓ Shell");
+    expect(html).not.toContain('data-testid="tool-step-outcome"');
+  });
+
   it("labels a finished card with the tool count and duration", () => {
     const html = markup({ live: false, stepCount: 2, durationMs: 12000 });
     expect(visibleText(html)).toContain("Done 2 tools 12s");

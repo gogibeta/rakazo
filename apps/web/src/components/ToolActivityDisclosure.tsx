@@ -1,7 +1,7 @@
 import { Plural, Trans } from "@lingui/react/macro";
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type { ThreadMessage } from "@rakazo/contracts";
-import { formatCompactDuration } from "@rakazo/core";
+import { formatCompactDuration, toolStepOutcomeText } from "@rakazo/core";
 import {
   Collapsible,
   CollapsibleContent,
@@ -9,13 +9,57 @@ import {
 } from "@rakazo/ui-web/components/ui/collapsible";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
-import { Fragment } from "react";
 import { toolStepCount } from "../lib/tool-activity-view";
 
 type ToolStep = Extract<ThreadMessage["blocks"][number], { kind: "steps" }>["steps"][number];
 
 /** While a run is live, only the most recent steps are listed so a long run does not push the chat down. */
 export const LIVE_TOOL_STEP_WINDOW = 6;
+
+/**
+ * One tool step. A step whose calls failed reads as failed, not as a tick: the outcome text is
+ * what the bot's own history records, so the chat cannot claim a success the run did not have.
+ */
+function ToolStepRow({ step, isCurrent }: { step: ToolStep; isCurrent: boolean }) {
+  const outcome = toolStepOutcomeText(step);
+  const failed = outcome.includes("failed");
+  const tone = isCurrent ? "text-warning" : failed ? "text-destructive" : "text-success";
+  return (
+    <>
+      {step.note ? (
+        <div className="py-1 text-body-sm text-foreground/75" data-testid="tool-step-note">
+          <ChatMarkdown>{step.note}</ChatMarkdown>
+        </div>
+      ) : null}
+      <div className="flex min-w-0 items-center gap-2 leading-5">
+        <span
+          className={`text-label ${tone}`}
+          style={{ animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined }}
+          aria-hidden
+        >
+          {isCurrent ? "◷" : failed ? "✕" : "✓"}
+        </span>
+        <span
+          className={`min-w-0 flex-1 truncate text-body-sm ${
+            isCurrent ? "text-foreground" : "text-muted-foreground"
+          }`}
+          title={step.label}
+        >
+          {step.label}
+          {step.count > 1 ? ` ×${step.count}` : ""}
+        </span>
+        {outcome ? (
+          <span
+            className={`shrink-0 text-label ${failed ? "text-destructive" : "text-muted-foreground"}`}
+            data-testid="tool-step-outcome"
+          >
+            {outcome}
+          </span>
+        ) : null}
+      </div>
+    </>
+  );
+}
 
 export function ToolSteps({
   steps,
@@ -36,36 +80,13 @@ export function ToolSteps({
           <Plural value={hidden} one="+# earlier step" other="+# earlier steps" />
         </div>
       ) : null}
-      {shown.map((step, offset) => {
-        const index = hidden + offset;
-        const isCurrent = index === currentIndex;
-        return (
-          <Fragment key={index}>
-            {step.note ? (
-              <div className="py-1 text-body-sm text-foreground/75" data-testid="tool-step-note">
-                <ChatMarkdown>{step.note}</ChatMarkdown>
-              </div>
-            ) : null}
-            <div className="flex min-w-0 items-center gap-2 leading-5">
-              <span
-                className={`text-label ${isCurrent ? "text-warning" : "text-success"}`}
-                style={{ animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined }}
-              >
-                {isCurrent ? "◷" : "✓"}
-              </span>
-              <span
-                className={`min-w-0 flex-1 truncate text-body-sm ${
-                  isCurrent ? "text-foreground" : "text-muted-foreground"
-                }`}
-                title={step.label}
-              >
-                {step.label}
-                {step.count > 1 ? ` ×${step.count}` : ""}
-              </span>
-            </div>
-          </Fragment>
-        );
-      })}
+      {shown.map((step, offset) => (
+        <ToolStepRow
+          key={hidden + offset}
+          step={step}
+          isCurrent={hidden + offset === currentIndex}
+        />
+      ))}
     </div>
   );
 }
