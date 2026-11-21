@@ -1122,6 +1122,16 @@ export function releaseToolCallBudget(runId: string, keepForResume: boolean) {
   if (!keepForResume) toolCallBudgetsByRun.delete(runId);
 }
 
+/**
+ * The budget a run ended with, without touching it. `toolCallBudgetFor` re-reads env limits and
+ * resets the in-flight count, so it cannot answer "what did this run spend" after the fact; this
+ * returns the tracked row as it stands, or undefined when no bound was configured (nothing could
+ * have been crossed, and the usage records already hold the totals).
+ */
+export function spentToolCallBudget(runId: string): ToolCallBudget | undefined {
+  return toolCallBudgetsByRun.get(runId);
+}
+
 export function maybeAbortToolCallBudget(host: ToolHost) {
   if (host.toolCallBudget.exceeded && host.toolCallBudget.inFlight === 0) {
     host.abortTurn();

@@ -31,6 +31,7 @@ import {
   cancelDeactivatedAccountRuns,
   cancelRunsInTransaction,
   createPendingSteeringRun,
+  createToolLimitContinuation,
   effectiveMemoryScope,
   isPartialReplyClientNonce,
   listModelCredentialKeys,
@@ -128,6 +129,7 @@ import { usesNativeShell } from "./native-shell.js";
 import { createPaidServiceProvider } from "./paid-services-factory.js";
 import { paymentWalletConnected } from "./payment-wallets.js";
 import { restoreComputerModels } from "./pi-runtime-computer-mode.js";
+import { spentToolCallBudget } from "./pi-runtime-tools.js";
 import { loadPurchaseRedactions } from "./purchase-service.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import { backOffRoutineAfterAccountError } from "./routine-backoff.js";
@@ -2140,6 +2142,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           );
           if (await consumeRunEvents(ctx, runtimeEvents)) return;
           if (await interruptedByShutdown()) return;
+          await handOffIfToolLimitStopped(ctx);
           await completeRun(ctx);
         } catch (turnError) {
           if (await interruptedByShutdown()) return;
@@ -2191,6 +2194,45 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
       }
     },
   };
+}
+
+/**
+ * When the tool-call fuse stopped this turn, queue the run that carries on.
+ *
+ * The fuse bounds one turn's cost, so a task that needs more than the fuse used to stop dead and
+ * wait for the owner to type "continue" — often mid-build, and sometimes right after the bot had
+ * announced a commit that then silently never happened. A continuation keeps every turn bounded
+ * while letting the task finish on its own, which is the behaviour the owner asked for.
+ *
+ * Only the tool-call bound is handed off. The token and cost bounds are operator policy about how
+ * much a run may spend; silently starting another run after one hits them would defeat them.
+ *
+ * Best effort: a continuation that cannot be created must not stop the run from finalizing, so a
+ * failure here is logged and the run completes as it would have without this.
+ */
+async function handOffIfToolLimitStopped(ctx: RunContext): Promise<void> {
+  const { deps, run } = ctx;
+  const budget = spentToolCallBudget(ctx.runId);
+  if (budget?.exceeded !== "tool_calls") return;
+  try {
+    const progress = ctx.state.reply.assistantTurnText;
+    const continuationId = await deps.prisma.$transaction(async (tx) => {
+      const created = await createToolLimitContinuation(tx, run, progress);
+      return created?.runId ?? null;
+    });
+    // No event here: the successor is only queued, and `run.started` belongs to the turn that
+    // actually begins. The stopped run's own `run.completed`, written by the caller right after
+    // this, is what tells a connected client the thread moved on.
+    if (!continuationId) return;
+    await deps.jobs.enqueue(runContinueJob(continuationId));
+    getLogger().info("run.tool_limit.continued", {
+      "run.id": run.id,
+      "run.continuation": continuationId,
+      "run.tool_calls": budget.toolCalls.used,
+    });
+  } catch (error) {
+    getLogger().error("run.tool_limit.continuation_failed", error);
+  }
 }
 
 /**
