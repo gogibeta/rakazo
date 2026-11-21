@@ -214,6 +214,17 @@ export const MessageView = memo(function MessageView({
             size={22}
           />
           {speakerName}
+          {message.model ? (
+            // Which model actually wrote this reply. A thread that failed over mid-conversation
+            // shows a different name per reply instead of one name for the whole thread.
+            <span
+              className="truncate font-normal text-muted-foreground"
+              title={`${message.model.provider} / ${message.model.id}`}
+              data-testid="reply-model"
+            >
+              {message.model.id}
+            </span>
+          ) : null}
         </div>
       ) : author ? (
         <div

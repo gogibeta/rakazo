@@ -507,6 +507,12 @@ export const ReplyPreviewSchema = z.object({
 });
 export type ReplyPreview = z.infer<typeof ReplyPreviewSchema>;
 
+export const ThreadMessageModelSchema = z.object({
+  provider: z.string().trim().min(1).max(80),
+  id: z.string().trim().min(1).max(200),
+});
+export type ThreadMessageModel = z.infer<typeof ThreadMessageModelSchema>;
+
 export const ThreadMessageSchema = z.object({
   id: Id,
   threadId: Id,
@@ -519,6 +525,11 @@ export const ThreadMessageSchema = z.object({
   replyQuote: z.string().optional(),
   replyPreview: ReplyPreviewSchema.nullable().optional(),
   runId: Id.optional(),
+  /**
+   * The model that actually served this reply, when it is known. A run records the model it
+   * used, so a thread served by more than one provider still says which one wrote each answer.
+   */
+  model: ThreadMessageModelSchema.optional(),
   /** Set when the message was sent from a live voice call; groups one call's transcript. */
   callId: z.string().optional(),
   createdAt: z.string(),

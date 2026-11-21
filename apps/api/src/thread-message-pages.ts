@@ -2,6 +2,7 @@ import type {
   MessageAuthor,
   MessageBlock,
   ThreadMessage,
+  ThreadMessageModel,
   ThreadMessagePage,
 } from "@rakazo/contracts";
 import { MessageBlock as MessageBlockSchema } from "@rakazo/contracts";
@@ -288,10 +289,41 @@ async function toThreadMessages(prisma: MessageDb, rows: MessageRow[]): Promise<
     prisma,
     rows.flatMap((row) => [row.authorUserId, row.replyTo?.authorUserId]),
   );
-  return rows.map((row) => toThreadMessage(row, authors));
+  const models = await loadServingModels(prisma, rows);
+  return rows.map((row) => toThreadMessage(row, authors, models.get(row.runId ?? "")));
 }
 
-function toThreadMessage(row: MessageRow, authors: Map<string, MessageAuthor>): ThreadMessage {
+/**
+ * The model each reply was actually served by, keyed by run. A run records the model it used,
+ * so this reads it rather than re-deriving what the thread "should" be on: a thread that
+ * failed over mid-conversation shows a different name per reply, which is the point.
+ */
+async function loadServingModels(
+  prisma: MessageDb,
+  rows: MessageRow[],
+): Promise<Map<string, ThreadMessageModel>> {
+  const runIds = [...new Set(rows.flatMap((row) => (row.runId ? [row.runId] : [])))];
+  if (runIds.length === 0) return new Map();
+  // Same lookup `withoutPeerRunMessages` makes for these rows; a caller that filtered every
+  // row out needs no model either, so an empty page costs no query.
+  const runs = await prisma.run.findMany({
+    where: { id: { in: runIds }, modelProvider: { not: null }, modelId: { not: null } },
+    select: { id: true, modelProvider: true, modelId: true },
+  });
+  return new Map(
+    runs.flatMap((run) =>
+      run.modelProvider && run.modelId
+        ? [[run.id, { provider: run.modelProvider, id: run.modelId }] as const]
+        : [],
+    ),
+  );
+}
+
+function toThreadMessage(
+  row: MessageRow,
+  authors: Map<string, MessageAuthor>,
+  model?: ThreadMessageModel,
+): ThreadMessage {
   const parent = row.replyTo?.threadId === row.threadId ? row.replyTo : null;
   const parsed = parent ? MessageBlockSchema.array().safeParse(parent.blocks) : undefined;
   const replyPreview =
@@ -318,6 +350,7 @@ function toThreadMessage(row: MessageRow, authors: Map<string, MessageAuthor>): 
     replyQuote: row.replyQuote ?? undefined,
     replyPreview,
     runId: row.runId ?? undefined,
+    ...(model ? { model } : {}),
     callId: callIdFromClientNonce(row.clientNonce),
     createdAt: row.createdAt.toISOString(),
   };
