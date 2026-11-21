@@ -187,6 +187,7 @@ describe("Pi runtime errors", () => {
     "Incomplete JSON segment at the end",
     "OpenCode rejected this chat session. Send the message again.",
     "The upstream model provider could not complete this request. Please retry shortly.",
+    "Example stream ended without a finish reason",
     "server_error: The model failed to generate a response.",
     '400 data: {"error":{"code":"invalid_parameter_error","param":null,"message":"Download multimodal file timed out","type":"invalid_request_error"},"id":"chatcmpl-example"}\n\n',
   ])("keeps a dropped connection transient: %s", async (message) => {
