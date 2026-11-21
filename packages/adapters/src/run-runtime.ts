@@ -10,6 +10,7 @@ import { phoneCallSettings, resolveEncryptionKey, uploadSizeFromEnv } from "@rak
 import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 import {
   createApprovalExpirySweeper,
+  createRunRetentionPruner,
   createSecurityEventPruner,
   createTransientEventPruner,
   securityEventRetentionDays,
@@ -297,6 +298,7 @@ export function createRunReconciler(
       securityEventRetentionDays(),
     ),
     reconcileTransientEventRetention: createTransientEventPruner(prisma),
+    reconcileRunRetention: createRunRetentionPruner(prisma),
     reconcileAuditLog: createAuditLogReconciler(prisma, auditLogConfig()),
     reconcileApprovalExpiry: createApprovalExpirySweeper(prisma),
     reconcileIdleComputers: createIdleComputerSweeper({ prisma, jobs }),
