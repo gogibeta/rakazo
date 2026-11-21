@@ -1019,12 +1019,16 @@ async function finalizeRunOnce(
       });
       // A continuation's source is the newest steering it was created for. Only newer
       // messages justify another run after failure, even if setup failed before claiming.
+      // `claimedAt` is cleared too: claiming requires it to be null, so a row released with a
+      // stale claim would be counted as pending — creating a continuation run — and then be
+      // invisible to that run when it tried to claim it. That is how steering sent during a
+      // run that died (a provider at capacity, for one) was silently dropped.
       await tx.steeringMessage.updateMany({
         where: {
           runId: input.runId,
           message: sourceMessage ? { seq: { gt: sourceMessage.seq } } : undefined,
         },
-        data: { runId: null },
+        data: { runId: null, claimedAt: null },
       });
     }
     let firstResponse = false;
