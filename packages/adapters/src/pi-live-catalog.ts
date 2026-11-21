@@ -135,13 +135,22 @@ export function applyProviderLiveCatalog(
 }
 
 export type ProviderCatalogCredential = {
+  userId: string;
   provider: string;
   secretId: string;
   version: string;
   apiKey: () => Promise<string | undefined>;
 };
 
-/** API-key policy over the same cache lifecycle as Codex. No raw key enters cache identity. */
+/**
+ * API-key policy over the same cache lifecycle as Codex. No raw key enters cache identity:
+ * an entry is keyed by provider, user, connection (secret id) and a hash of the stored
+ * credential, so a key or base-URL change rekeys the entry and one user's catalog is never
+ * served to another. The freshness TTL is short (5 minutes) because reads are
+ * stale-while-revalidate — a stale entry is served at once and refreshed behind the read —
+ * so a short TTL costs only background probes while keeping the picker current as
+ * providers add or retire models. A failed refresh keeps serving the last good list.
+ */
 export class ProviderCatalogCache {
   private readonly cache: LiveCatalogCache<string>;
   private readonly probe: typeof probeCatalogProviderModels;
@@ -165,8 +174,8 @@ export class ProviderCatalogCache {
     this.probe = options.probe ?? probeCatalogProviderModels;
     this.cache = new LiveCatalogCache({
       now: options.now,
-      ttlMs: options.ttlMs ?? 6 * 60 * 60_000,
-      failureTtlMs: options.failureTtlMs ?? 10 * 60_000,
+      ttlMs: options.ttlMs ?? 5 * 60_000,
+      failureTtlMs: options.failureTtlMs ?? 60_000,
       waitMs: options.waitMs ?? 1_500,
       deadlineMs: options.deadlineMs ?? 5_000,
       staleMaxAgeMs: 24 * 60 * 60_000,
@@ -180,7 +189,7 @@ export class ProviderCatalogCache {
     if (!this.enabled || !catalogProviderProbeBaseUrl(credential.provider))
       return Promise.resolve(undefined);
     return this.cache.read(
-      `${credential.provider}:${credential.secretId}:${credential.version}`,
+      `${credential.provider}:${credential.userId}:${credential.secretId}:${credential.version}`,
       async (signal) => {
         const apiKey = await credential.apiKey();
         if (!apiKey || signal.aborted) return { attempted: true, models: undefined };
@@ -227,7 +236,7 @@ export async function providerLiveCatalogsForSpace(
     rows.map(async (row) => {
       const provider = slots.get(row.id);
       if (!provider) return;
-      const ids = await readSecretCatalog(cache, secrets, provider, row);
+      const ids = await readSecretCatalog(cache, secrets, scope.userId, provider, row);
       if (ids) out.set(row.id, ids);
     }),
   );
@@ -240,10 +249,12 @@ export const providerCatalogCache = new ProviderCatalogCache();
 function readSecretCatalog(
   cache: ProviderCatalogCache,
   secrets: Pick<SecretStore, "load">,
+  userId: string,
   provider: string,
   row: { id: string; ciphertext: string },
 ): Promise<string[] | undefined> {
   return cache.read({
+    userId,
     provider,
     secretId: row.id,
     version: createHash("sha256").update(row.ciphertext).digest("hex"),
@@ -299,7 +310,7 @@ export async function providerLiveListsModel(
     }),
   );
   if (!row) return false;
-  const ids = await readSecretCatalog(cache, secrets, provider, row);
+  const ids = await readSecretCatalog(cache, secrets, userId, provider, row);
   if (!ids) return false;
   if (ids.includes(modelId)) return true;
   const selections = await readOnce(reads, `selections:${userId}`, () =>

@@ -336,8 +336,13 @@ describe("live page helper one-time code fill", () => {
       const { fill, set } = widget(10);
       fill("123456");
       expect(set).not.toHaveBeenCalled();
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      expect(set).toHaveBeenCalledWith("-webkit-text-security", "disc", "important");
+      // The helper masks the box on a 50 ms timer (page_secrets.py), and this test draws the
+      // page's own slots only 10 ms after fill. A fixed 120 ms sleep raced that timer and flaked
+      // on a loaded CI event loop, so poll for the mask instead of sleeping a fixed slice.
+      await vi.waitFor(
+        () => expect(set).toHaveBeenCalledWith("-webkit-text-security", "disc", "important"),
+        { timeout: 5_000, interval: 10 },
+      );
     });
 
     it("finds a code written with dashes shown without them, and gives the slots back when the box is refilled", () => {

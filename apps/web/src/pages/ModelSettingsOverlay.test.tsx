@@ -420,6 +420,25 @@ it("reopens on cached models without a spinner and refreshes them behind it", as
   }
 });
 
+it("paints the saved connections on a cold open while the catalog is still loading", async () => {
+  models.credentials.mockResolvedValue([deepseekCredential]);
+  models.list.mockReturnValue(new Promise<never>(() => undefined));
+  const view = await renderSettings(true);
+  try {
+    // The overlay's own loading gate (a large centered spinner) must not be
+    // what stands between the user and their saved connections.
+    const gate = [
+      ...view.container.querySelectorAll('[aria-label="Loading model catalog…"]'),
+    ].filter((entry) => entry.classList.contains("size-5"));
+    expect(gate).toHaveLength(0);
+    expect(
+      view.container.querySelector('[data-testid="model-provider-cred-deepseek"]'),
+    ).not.toBeNull();
+  } finally {
+    await view.unmount();
+  }
+});
+
 it("shows a stored BYOK key when provider settings reopen", async () => {
   models.credentials.mockResolvedValue([deepseekCredential]);
 
