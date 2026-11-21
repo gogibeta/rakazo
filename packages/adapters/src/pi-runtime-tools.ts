@@ -427,6 +427,7 @@ export function describeToolActivity(
   if (toolName === "app_list_models") return "Checking available models";
   if (toolName === "app_get_settings") return "Checking my settings";
   if (toolName === "app_set_model") return "Changing my model";
+  if (toolName === "app_set_default_model") return "Changing the default model";
   if (toolName === "create_child_routine") return `Scheduling routine: ${detail(record.name)}`;
   if (toolName === "remember") return "Saving a note to memory";
   if (toolName === "save_shared_memory") return `Saving shared memory: ${detail(record.path)}`;

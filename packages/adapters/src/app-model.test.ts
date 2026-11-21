@@ -1,8 +1,14 @@
 import type { PrismaClient } from "@rakazo/db";
-import { commitBotUpdate } from "@rakazo/db";
+import { appliedModelRole, commitBotUpdate, updateModelRole } from "@rakazo/db";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OwnBotModelRow } from "./app-model.js";
-import { applyOwnBotModelChange, listOwnBotModels, prepareOwnBotModelChange } from "./app-model.js";
+import {
+  applyDefaultModelChange,
+  applyOwnBotModelChange,
+  listOwnBotModels,
+  prepareDefaultModelChange,
+  prepareOwnBotModelChange,
+} from "./app-model.js";
 import type { FleetPrepareDeps } from "./fleet-tools.js";
 import type * as ModelSelection from "./model-selection.js";
 import { validateBotModelChange } from "./model-selection.js";
@@ -14,11 +20,15 @@ vi.mock("./model-selection.js", async (importOriginal) => ({
 
 vi.mock("@rakazo/db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@rakazo/db")>()),
+  appliedModelRole: vi.fn(),
   commitBotUpdate: vi.fn(),
+  updateModelRole: vi.fn(),
 }));
 
 const validate = vi.mocked(validateBotModelChange);
 const commit = vi.mocked(commitBotUpdate);
+const appliedRole = vi.mocked(appliedModelRole);
+const updateRole = vi.mocked(updateModelRole);
 
 const scope = { userId: "user-1", spaceId: "space-1" };
 const onDefault: OwnBotModelRow = {
@@ -285,5 +295,139 @@ describe("applyOwnBotModelChange", () => {
     );
     expect(result).toEqual({ error: "Your model changed since you approved; ask again." });
     expect(commit).not.toHaveBeenCalled();
+  });
+});
+
+describe("prepareDefaultModelChange", () => {
+  const currentRole = {
+    primary: { provider: "google", modelId: "gemini-3.8-flash" },
+    backups: [{ provider: "google", modelId: "gemini-2.5-pro" }],
+  };
+
+  beforeEach(() => {
+    appliedRole.mockReset();
+    appliedRole.mockResolvedValue(currentRole);
+  });
+
+  it("promotes the named model and steps the current default down to the fallback head", async () => {
+    const listing = await listOwnBotModels(deps(), scope, onDefault);
+    const target = listing.connections[0]!.models.find((model) => !model.active)!;
+    const prepared = await prepareDefaultModelChange(deps(), scope, { model: target.id });
+    expect(prepared).toEqual({
+      ok: true,
+      canonical: {
+        provider: "google",
+        model: target.id,
+        previous: { provider: "google", model: "gemini-3.8-flash" },
+      },
+      summary: {
+        title: "Make this the default model?",
+        lines: [
+          "From: Google: Gemini 3.8 Flash",
+          `To: Google: ${target.label}`,
+          "The current default stays first in the fallback chain.",
+        ],
+      },
+    });
+  });
+
+  it("refuses the model that is already the default", async () => {
+    const prepared = await prepareDefaultModelChange(deps(), scope, { model: "gemini flash" });
+    expect(prepared).toEqual({ ok: false, error: "That model is already the default." });
+  });
+
+  it("needs a model to promote", async () => {
+    expect(await prepareDefaultModelChange(deps(), scope, {})).toEqual({
+      ok: false,
+      error: "Pass the model to make the default.",
+    });
+  });
+
+  it("refuses a model no connection serves", async () => {
+    const prepared = await prepareDefaultModelChange(deps(), scope, { model: "Claude Sonnet" });
+    expect(prepared).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/connect .*Anthropic.* in Settings first/),
+    });
+  });
+
+  it("surfaces a validation refusal", async () => {
+    const listing = await listOwnBotModels(deps(), scope, onDefault);
+    const target = listing.connections[0]!.models.find((model) => !model.active)!;
+    validate.mockResolvedValue({ ok: false, error: "Unknown model for that provider" });
+    const prepared = await prepareDefaultModelChange(deps(), scope, { model: target.id });
+    expect(prepared).toEqual({ ok: false, error: "Unknown model for that provider" });
+  });
+});
+
+describe("applyDefaultModelChange", () => {
+  beforeEach(() => {
+    appliedRole.mockReset();
+    updateRole.mockReset();
+  });
+
+  it("promotes the chosen model and steps the old default to the fallback head", async () => {
+    const prepared = deps();
+    appliedRole.mockResolvedValue({
+      primary: { provider: "google", modelId: "gemini-3.8-flash" },
+      backups: [{ provider: "google", modelId: "gemini-2.5-pro" }],
+    });
+    updateRole.mockResolvedValue({ primary: null, backups: [] });
+    const result = await applyDefaultModelChange(prepared, scope, {
+      provider: "google",
+      model: "gemini-2.5-pro",
+      previous: { provider: "google", model: "gemini-3.8-flash" },
+    });
+    expect(result).toEqual({
+      ok: true,
+      provider: "google",
+      model: "gemini-2.5-pro",
+      previous: { provider: "google", model: "gemini-3.8-flash" },
+    });
+    expect(updateRole).toHaveBeenCalledWith(
+      prepared.prisma,
+      { userId: "user-1", spaceId: "space-1" },
+      "main",
+      {
+        primary: { provider: "google", modelId: "gemini-2.5-pro" },
+        backups: [{ provider: "google", modelId: "gemini-3.8-flash" }],
+      },
+    );
+  });
+
+  it("refuses when the default changed while the approval waited", async () => {
+    appliedRole.mockResolvedValue({
+      primary: { provider: "google", modelId: "gemini-2.5-pro" },
+      backups: [],
+    });
+    const result = await applyDefaultModelChange(deps(), scope, {
+      provider: "google",
+      model: "gemini-2.5-pro",
+      previous: { provider: "google", model: "gemini-3.8-flash" },
+    });
+    expect(result).toEqual({ error: "The default model changed since you approved; ask again." });
+    expect(updateRole).not.toHaveBeenCalled();
+  });
+
+  it("refuses a change that would not move the default", async () => {
+    appliedRole.mockResolvedValue({
+      primary: { provider: "google", modelId: "gemini-2.5-pro" },
+      backups: [],
+    });
+    const result = await applyDefaultModelChange(deps(), scope, {
+      provider: "google",
+      model: "gemini-2.5-pro",
+      previous: { provider: "google", model: "gemini-2.5-pro" },
+    });
+    expect(result).toEqual({ error: "That model is already the default." });
+    expect(updateRole).not.toHaveBeenCalled();
+  });
+
+  it("refuses a prepared request that names no model", async () => {
+    const result = await applyDefaultModelChange(deps(), scope, {
+      previous: { provider: null, model: null },
+    });
+    expect(result).toEqual({ error: "This default-model change names no model." });
+    expect(updateRole).not.toHaveBeenCalled();
   });
 });

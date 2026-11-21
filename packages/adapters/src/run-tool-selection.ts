@@ -187,8 +187,10 @@ export function selectBuiltinToolsForRun(options: {
         BACKGROUND_HELPER_TOOL_NAMES.has(tool.name)) &&
       (!FLEET_TOOL_NAMES_SET.has(tool.name) ||
         (Boolean(options.fleetManagement) && ownerStartedRun)) &&
-      // Switching the model it runs on is the owner's call, made in their own chat.
-      (ownerStartedRun || tool.name !== "app_set_model") &&
+      // Switching the model it runs on, or the account's default model, is the owner's
+      // call, made in their own chat.
+      (ownerStartedRun ||
+        (tool.name !== "app_set_model" && tool.name !== "app_set_default_model")) &&
       (ownerStartedRun || (tool.name !== "update_preferences" && tool.name !== "feedback")) &&
       (options.paymentWalletEnabled || !PURCHASE_TOOL_NAMES.has(tool.name)) &&
       (options.mediaImagesEnabled || tool.name !== "generate_image") &&

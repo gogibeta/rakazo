@@ -1,6 +1,7 @@
-import type { Actor } from "@rakazo/contracts";
+import type { Actor, ModelRoleChoice } from "@rakazo/contracts";
+import { makeDefaultModelPatch } from "@rakazo/core";
 import type { ThreadEvents } from "@rakazo/db";
-import { commitBotUpdate, isRecordNotFound } from "@rakazo/db";
+import { appliedModelRole, commitBotUpdate, isRecordNotFound, updateModelRole } from "@rakazo/db";
 import type { FleetCardSummary } from "./approval-ask.js";
 import { asRecord } from "./connector-http.js";
 import type { FleetPrepareDeps } from "./fleet-tools.js";
@@ -266,4 +267,106 @@ export async function applyOwnBotModelChange(
     model: validated.model,
     thinkingLevel: validated.thinkingLevel,
   };
+}
+
+export type DefaultModelChangePrepared =
+  | {
+      ok: true;
+      canonical: {
+        provider: string;
+        model: string;
+        previous: { provider: string | null; model: string | null };
+      };
+      summary: FleetCardSummary;
+    }
+  | { ok: false; error: string };
+
+/**
+ * Resolve a requested change to the default model — the one that runs when a bot
+ * has no model of its own — before the approval card is written. The canonical
+ * request the card shows is the request an approval replays, so a catalog or
+ * settings change while the card waits cannot change what was approved.
+ */
+export async function prepareDefaultModelChange(
+  deps: FleetPrepareDeps,
+  scope: Scope,
+  args: Record<string, unknown>,
+): Promise<DefaultModelChangePrepared> {
+  const provider = text(args.provider);
+  const model = text(args.model);
+  if (!model) return refuse("Pass the model to make the default.");
+  const modelDeps = { prisma: deps.prisma, ...deps.modelChange };
+  const chosen = await resolveModelChoice(modelDeps, scope, { model, provider });
+  if (!chosen.ok) return refuse(chosen.error);
+  const validated = await validateBotModelChange(modelDeps, {
+    userId: scope.userId,
+    spaceId: scope.spaceId,
+    provider: chosen.provider,
+    model: chosen.model,
+  });
+  if (!validated.ok) return refuse(validated.error);
+  if (!validated.provider || !validated.model)
+    return refuse("That model is not available on a connected provider.");
+  const choice: ModelRoleChoice = { provider: validated.provider, modelId: validated.model };
+  const current = await appliedModelRole(deps.prisma, scope, "main");
+  const patch = makeDefaultModelPatch(current, choice);
+  if (!patch) return refuse("That model is already the default.");
+  const previous = current.primary;
+  const lines = [
+    `From: ${modelLabel(previous?.provider ?? null, previous?.modelId ?? null)}`,
+    `To: ${modelLabel(choice.provider, choice.modelId)}`,
+  ];
+  // The old default is demoted, not dropped: it takes over when the new one fails.
+  if (previous) lines.push("The current default stays first in the fallback chain.");
+  return {
+    ok: true,
+    canonical: {
+      provider: choice.provider,
+      model: choice.modelId,
+      previous: { provider: previous?.provider ?? null, model: previous?.modelId ?? null },
+    },
+    summary: { title: "Make this the default model?", lines },
+  };
+}
+
+/**
+ * Commit a prepared (and, unless the space never asks, approved) default-model
+ * change. The current default is re-read and must still be the one the card
+ * showed, and the patch is recomputed from it, so fallbacks edited while the
+ * card waited are kept rather than clobbered.
+ */
+export async function applyDefaultModelChange(
+  deps: FleetPrepareDeps,
+  scope: Scope,
+  canonical: Record<string, unknown>,
+): Promise<
+  | {
+      ok: true;
+      provider: string;
+      model: string;
+      previous: { provider: string | null; model: string | null };
+    }
+  | { error: string }
+> {
+  const provider = text(canonical.provider);
+  const model = text(canonical.model);
+  if (!provider || !model) return { error: "This default-model change names no model." };
+  const shownRecord = asRecord(canonical.previous);
+  const shown = {
+    provider: text(shownRecord?.provider) ?? null,
+    model: text(shownRecord?.model) ?? null,
+  };
+  const current = await appliedModelRole(deps.prisma, scope, "main");
+  const live = current.primary;
+  if ((live?.provider ?? null) !== shown.provider || (live?.modelId ?? null) !== shown.model)
+    return { error: "The default model changed since you approved; ask again." };
+  const patch = makeDefaultModelPatch(current, { provider, modelId: model });
+  if (!patch) return { error: "That model is already the default." };
+  await updateModelRole(
+    deps.prisma,
+    { userId: scope.userId, spaceId: scope.spaceId },
+    "main",
+    patch,
+  );
+  return { ok: true, provider, model, previous: shown };
 }

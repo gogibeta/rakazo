@@ -127,6 +127,14 @@ describe("toolRequiresApproval", () => {
     }
   });
 
+  it("always asks before the bot changes the account's default model", () => {
+    expect(toolRequiresApproval("app_set_default_model", false)).toBe(true);
+    expect(toolRequiresExplicitApproval("app_set_default_model")).toBe(true);
+    // Re-routing the default reaches every bot without its own model, so the
+    // result is never treated as the bot's own saved state.
+    expect(toolResultTaintsRun("app_set_default_model")).toBe(true);
+  });
+
   it("treats grouping and scheduling other bots as ordinary approvals that Never ask skips", () => {
     for (const name of ["create_group", "update_group", "create_child_routine"]) {
       expect(toolRequiresApproval(name, false)).toBe(true);

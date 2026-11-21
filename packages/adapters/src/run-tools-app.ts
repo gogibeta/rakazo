@@ -1,6 +1,6 @@
 import { approvalModeFromPreference } from "@rakazo/core";
 import type { OwnBotModelRow } from "./app-model.js";
-import { applyOwnBotModelChange, listOwnBotModels } from "./app-model.js";
+import { applyDefaultModelChange, applyOwnBotModelChange, listOwnBotModels } from "./app-model.js";
 import { asRecord } from "./connector-http.js";
 import { botModelLabel } from "./fleet-tools.js";
 import type { RunContext } from "./run-context.js";
@@ -9,8 +9,10 @@ import type { ToolHandlers } from "./run-tool-gate.js";
 
 /**
  * Conversational app control: the tools behind plain-words requests like
- * "what model are you on?" and "change your model to …". They act only on
- * the bot this run belongs to; app_set_model runs the request the approval
+ * "what model are you on?", "change your model to …" and "make this the default
+ * model". app_list_models and app_get_settings read state; app_set_model acts
+ * only on the bot this run belongs to, while app_set_default_model changes the
+ * owner's account default. The approval-gated ones run the request the approval
  * step prepared (see prepareToolRequest), never the model's raw arguments.
  */
 export const appTools: ToolHandlers = {
@@ -70,6 +72,23 @@ export const appTools: ToolHandlers = {
       { ...prepared, events: deps.events },
       { userId: run.userId, spaceId: run.spaceId, threadId: thread.id },
       bot.id,
+      args,
+    );
+    return call.finish(result);
+  },
+
+  async app_set_default_model(ctx, call) {
+    const { deps, run } = ctx;
+    const { args } = call;
+    // Preparation replaced the model's arguments with the resolved request the
+    // approval card showed. Anything else never went through approval.
+    if (!asRecord(args.previous) || !("provider" in args) || !("model" in args)) {
+      return call.finish({ error: "This default-model change needs the owner's approval." });
+    }
+    const prepared = await fleetPrepareDeps(deps, run);
+    const result = await applyDefaultModelChange(
+      prepared,
+      { userId: run.userId, spaceId: run.spaceId },
       args,
     );
     return call.finish(result);

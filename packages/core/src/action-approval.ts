@@ -103,6 +103,8 @@ const EXPLICIT_APPROVAL_BUILTIN_TOOLS = new Set([
   "restart_host",
   // A model switch decides which provider receives the owner's conversations.
   "app_set_model",
+  // The default model decides what every bot without its own model runs.
+  "app_set_default_model",
 ]);
 
 const READ_ONLY_CONNECTOR_PATTERN = /(^|[_-])(get|list|search|find|read)([_-]|$)/i;

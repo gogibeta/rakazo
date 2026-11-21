@@ -2,7 +2,7 @@ import type { ConnectorCall, ConnectorTool } from "@rakazo/adapter-kit";
 import { BOT_INSTRUCTIONS_MAX_LENGTH, BotSecretAuth } from "@rakazo/contracts";
 import { redactSecrets } from "@rakazo/core";
 import { prepareAgentConnectionResponse } from "./agent-connections.js";
-import { prepareOwnBotModelChange } from "./app-model.js";
+import { prepareDefaultModelChange, prepareOwnBotModelChange } from "./app-model.js";
 import type { FleetCardSummary } from "./approval-ask.js";
 import type { TerminatingToolResult } from "./approval-effect.js";
 import {
@@ -411,6 +411,27 @@ export async function prepareToolRequest(
     args = prepared.canonical;
     request.fleetSummary = prepared.summary;
   }
+  if (name === "app_set_default_model" && nextApprovedTool !== name) {
+    // The account's default model is the owner's setting: their run, their
+    // approval. Resolve the name now; an approved replay runs the stored
+    // request and never resolves it again.
+    if (isSubagentToolExecution(executionId))
+      return refusal("helper_app_model", "Helpers cannot change the default model.");
+    if (!ctx.source.ownerStartedRun)
+      return refusal(
+        "run_not_owner_started",
+        "Default-model changes need a run the owner started.",
+      );
+    if (!(await neverAsks(ctx)) && (await ctx.trust.receivedOutsideMessage()))
+      return refusal(
+        "outside_message_blocks_app_model",
+        "Changes to the default model are blocked for the rest of this run because it received a channel or webhook message.",
+      );
+    const prepared = await prepareDefaultModelChange(await fleetPrepareDeps(deps, run), run, args);
+    if (!prepared.ok) return refusal("app_model_request_invalid", prepared.error);
+    args = prepared.canonical;
+    request.fleetSummary = prepared.summary;
+  }
   if (isFleetApprovalTool(name) && nextApprovedTool !== name) {
     // Resolve names, members, model and schedule now; an approved replay runs the stored
     // request above and never resolves them again.
@@ -588,6 +609,7 @@ export async function prepareToolRequest(
     name === "respond_agent_connection" ||
     name === "update_bot" ||
     name === "app_set_model" ||
+    name === "app_set_default_model" ||
     isFleetApprovalTool(name)
   )
     request.effectRequest = args;
