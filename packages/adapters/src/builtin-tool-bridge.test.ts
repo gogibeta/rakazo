@@ -60,7 +60,7 @@ describe("built-in tool bridge", () => {
     // the history tools point at files from earlier messages; a watch says it takes no other timing;
     // read_file takes a line range; ask_user carries the content being decided about;
     // search_history lists earlier tool work by kind without a keyword;
-    // list_wallets is named among find_tool's deferred areas.
+    // list_wallets and call_connection are named among find_tool's deferred areas.
     // send_to_chat_apps is listed so a bot asked to message its owner finds it.
     // Budget covers the pinned set's serialized size after the app-model tools' descriptions
     // landed (33,438 bytes at the time of writing).
