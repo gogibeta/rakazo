@@ -12,6 +12,7 @@ import { ChevronLeft, ChevronRight, XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalRulesSettings } from "../components/ApprovalRulesSettings";
 import { computersAreUnavailable } from "../components/ComputersUnavailableHint";
+import { CustomConnectionsSettings } from "../components/CustomConnectionsSettings";
 import { HostRestartSettings } from "../components/HostRestartSettings";
 import { PlanUsage } from "../components/PlanUsage";
 import { ProxiesSettings } from "../components/ProxiesSettings";
@@ -450,6 +451,7 @@ export function SettingsOverlay({
                   {section === "vault" ? <VaultSettings scope="account" /> : null}
                   {section === "proxies" ? <ProxiesSettings /> : null}
                   {section === "wallets" ? <WalletsSettings /> : null}
+                  {section === "connections" ? <CustomConnectionsSettings /> : null}
                   {section === "messaging" && messagingEnabled ? <MessagingSettingsPanel /> : null}
                   {section === "wallet" && paymentWalletProvider ? (
                     <PaymentWalletSettingsPanel provider={paymentWalletProvider} />
