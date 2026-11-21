@@ -26,12 +26,10 @@ import {
   accountDeactivated,
   activateModelCredentialKey,
   appendEventInTransaction,
-  appliedModelRole,
   availableInSpace,
   cancelDeactivatedAccountRuns,
   cancelRunsInTransaction,
   createPendingSteeringRun,
-  createToolLimitContinuation,
   effectiveMemoryScope,
   isPartialReplyClientNonce,
   listModelCredentialKeys,
@@ -129,7 +127,6 @@ import { usesNativeShell } from "./native-shell.js";
 import { createPaidServiceProvider } from "./paid-services-factory.js";
 import { paymentWalletConnected } from "./payment-wallets.js";
 import { restoreComputerModels } from "./pi-runtime-computer-mode.js";
-import { spentToolCallBudget } from "./pi-runtime-tools.js";
 import { loadPurchaseRedactions } from "./purchase-service.js";
 import { loadReplyContext, messageToAgentHistoryText } from "./reply-context.js";
 import { backOffRoutineAfterAccountError } from "./routine-backoff.js";
@@ -257,6 +254,25 @@ async function verbatimMcpServersForRun(
   return { ids: servers.map((server) => server.id), slugs: servers.map((server) => server.slug) };
 }
 
+/**
+ * The attempt row a failed setup retries under. Setup can fail before its attempt row was
+ * created, and a write that failed may still have committed with only its reply lost, so an
+ * existing row for this fence is reused rather than a second one being added.
+ */
+async function setupAttemptId(deps: ExecutorDeps, runId: string, fence: number): Promise<string> {
+  // The database may be the thing that failed, so neither lookup may throw. The retry path
+  // needs an id it can mark; a row it cannot find or create only costs that marker, and the
+  // run itself is still requeued.
+  const existing = await deps.prisma.attempt
+    .findFirst({ where: { runId, fence }, select: { id: true } })
+    .catch(() => null);
+  if (existing) return existing.id;
+  const created = await deps.prisma.attempt
+    .create({ data: { runId, fence, status: "running" }, select: { id: true } })
+    .catch(() => null);
+  return created?.id ?? "";
+}
+
 export function createRunExecutor(executorDeps: ExecutorDeps) {
   const contextStrategy = executorDeps.contextStrategy ?? DEFAULT_CONTEXT_STRATEGY;
   const web = executorDeps.web ?? createWebProvider();
@@ -338,102 +354,109 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
       const claimed = await claimRun(deps, run, workerId);
       if (!claimed) return;
       const { fence, current } = claimed;
-      const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
-        where: { id: run.botId },
-        select: {
-          computerId: true,
-          computerSwitching: true,
-          computer: { select: { scope: true } },
-        },
-      });
-      if (!leaseTarget.computerId) throw new Error("Bot has no computer");
-      // A background helper never uses the computer, so it neither waits for a switch nor holds
-      // the bot's next turn.
-      const backgroundHelper = run.trigger === BACKGROUND_HELPER_TRIGGER;
-      if (leaseTarget.computerSwitching && !backgroundHelper) {
-        await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
-        return;
-      }
-      if (takeoverResume) {
-        try {
-          await settleReleasedTakeoverCards(
-            deps.prisma,
-            {
-              spaceId: run.spaceId,
-              threadId: run.threadId,
-              botId: run.botId,
-              runId,
-              reason: takeoverResume.checkpoint,
-              lease: { owner: workerId, fence },
-            },
-            (threadId, seq) => deps.events.notify(threadId, seq),
-          );
-        } catch (error) {
-          // A newer claim owns the run and its takeover cards.
-          if (error instanceof RunHistoryWriteError) return;
-          throw error;
-        }
-      }
+      // Setup before the turn (the bot lookup, the computer lease, the attempt row) can fail
+      // after the claim, and nothing renews or releases the claim yet. Left unhandled, the
+      // failure escapes with the run still marked running and no worker on it, so the user's
+      // message shows the bot as working forever. Route it through the same retry path as any
+      // other setup failure; the attempt row it needs is created here when the normal one
+      // never ran.
+      let attempt: { id: string };
       let computerLease: ComputerExecutionLease | null = null;
+      let executionStartedAt: Date;
+      let firstLateSince: Date | undefined;
       try {
-        computerLease = backgroundHelper
-          ? null
-          : await acquireComputerExecutionLease(deps.prisma, {
+        const leaseTarget = await deps.prisma.bot.findUniqueOrThrow({
+          where: { id: run.botId },
+          select: {
+            computerId: true,
+            computerSwitching: true,
+            computer: { select: { scope: true } },
+          },
+        });
+        if (!leaseTarget.computerId) throw new Error("Bot has no computer");
+        // A background helper never uses the computer, so it neither waits for a switch nor holds
+        // the bot's next turn.
+        const backgroundHelper = run.trigger === BACKGROUND_HELPER_TRIGGER;
+        if (leaseTarget.computerSwitching && !backgroundHelper) {
+          await requeueComputerRun(deps, runId, workerId, fence, resumeCheckpoint, heldForTakeover);
+          return;
+        }
+        if (takeoverResume) {
+          try {
+            await settleReleasedTakeoverCards(
+              deps.prisma,
+              {
+                spaceId: run.spaceId,
+                threadId: run.threadId,
+                botId: run.botId,
+                runId,
+                reason: takeoverResume.checkpoint,
+                lease: { owner: workerId, fence },
+              },
+              (threadId, seq) => deps.events.notify(threadId, seq),
+            );
+          } catch (error) {
+            // A newer claim owns the run and its takeover cards.
+            if (error instanceof RunHistoryWriteError) return;
+            throw error;
+          }
+        }
+        try {
+          computerLease = backgroundHelper
+            ? null
+            : await acquireComputerExecutionLease(deps.prisma, {
+                computerId: leaseTarget.computerId,
+                runId,
+                botId: run.botId,
+                workerId,
+                runFence: fence,
+              });
+          if (!computerLease && !backgroundHelper && leaseTarget.computer?.scope === "dedicated") {
+            computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
               computerId: leaseTarget.computerId,
               runId,
               botId: run.botId,
               workerId,
               runFence: fence,
             });
-        if (!computerLease && !backgroundHelper && leaseTarget.computer?.scope === "dedicated") {
-          computerLease = await acquireDedicatedScreenLeaseFence(deps.prisma, {
-            computerId: leaseTarget.computerId,
+          }
+        } catch (error) {
+          if (!(error instanceof ComputerBusyError)) throw error;
+          // Maintenance or suspension sends no release, so only a held lease waits for one.
+          const heldByAnotherRun = await deps.prisma.computerExecutionLease.findFirst({
+            where: {
+              computerId: leaseTarget.computerId,
+              botId: run.botId,
+              runId: { not: runId },
+              expiresAt: { gt: new Date() },
+            },
+            select: { id: true },
+          });
+          await requeueComputerRun(
+            deps,
             runId,
-            botId: run.botId,
             workerId,
-            runFence: fence,
-          });
+            fence,
+            resumeCheckpoint,
+            heldForTakeover,
+            Boolean(heldByAnotherRun),
+          );
+          return;
         }
-      } catch (error) {
-        if (!(error instanceof ComputerBusyError)) throw error;
-        // Maintenance or suspension sends no release, so only a held lease waits for one.
-        const heldByAnotherRun = await deps.prisma.computerExecutionLease.findFirst({
-          where: {
-            computerId: leaseTarget.computerId,
-            botId: run.botId,
-            runId: { not: runId },
-            expiresAt: { gt: new Date() },
-          },
-          select: { id: true },
-        });
-        await requeueComputerRun(
-          deps,
-          runId,
-          workerId,
-          fence,
-          resumeCheckpoint,
-          heldForTakeover,
-          Boolean(heldByAnotherRun),
-        );
-        return;
-      }
-      let attempt: { id: string };
-      // Resumed attempts keep the first start, so lateness reflects when the run began.
-      const executionStartedAt = current.startedAt ?? new Date();
-      // Classified with the first start, so a retry, resume or later schedule edit keeps it.
-      let firstLateSince: Date | undefined;
-      if (!current.startedAt && run.trigger === "routine" && run.routineId && run.clientNonce) {
-        try {
-          const routine = await deps.prisma.routine.findUnique({
-            where: { id: run.routineId },
-            select: { crons: true, timezone: true },
-          });
-          if (routine) firstLateSince = lateRoutineRunDueAt(run, routine, executionStartedAt);
-        } catch {
-          // Lateness is optional context; a lookup failure must not prevent a run.
+        // Resumed attempts keep the first start, so lateness reflects when the run began.
+        executionStartedAt = current.startedAt ?? new Date();
+        // Classified with the first start, so a retry, resume or later schedule edit keeps it.
+        if (!current.startedAt && run.trigger === "routine" && run.routineId && run.clientNonce) {
+          try {
+            const routine = await deps.prisma.routine.findUnique({
+              where: { id: run.routineId },
+              select: { crons: true, timezone: true },
+            });
+            if (routine) firstLateSince = lateRoutineRunDueAt(run, routine, executionStartedAt);
+          } catch {
+            // Lateness is optional context; a lookup failure must not prevent a run.
+          }
         }
-      }
-      try {
         // Acquiring the computer can requeue a busy run. Count that wait as queue
         // time, and only stamp execution once this attempt can use its computer.
         const executionStarted = await deps.prisma.run.updateMany({
@@ -452,7 +475,26 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         });
       } catch (error) {
         await releaseComputerExecutionLease(deps.prisma, computerLease).catch(() => undefined);
-        throw error;
+        await retryRunSetup(
+          deps,
+          run,
+          {
+            // The attempt row the retry path needs may never have been created, and the failed
+            // write may have committed with its reply lost: reuse this fence's row if it exists.
+            id: await setupAttemptId(deps, runId, fence),
+            workerId,
+            fence,
+          },
+          {
+            resumeCheckpoint,
+            heldForTakeover,
+            dispatchHandedOff: false,
+            leaseValid: true,
+            secrets: [...(deps.secrets ?? [])],
+          },
+          error,
+        );
+        return;
       }
 
       // A newer claim of this run now rejects this attempt's history writes.
@@ -733,6 +775,9 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         const discoveredPromise = deps.connector
           ? deps.connector.discoverTools(context)
           : Promise.resolve([]);
+        // Awaited much later: if a step in between throws, an unhandled rejection here would
+        // stop the process. Mark it handled now; the real await still sees the error.
+        void discoveredPromise.catch(() => undefined);
         // Group threads and spaces several people share: who wrote each message, so the model can
         // tell the bots and the people apart. A personal space's direct chat stays plain turns.
         const people = await loadSpacePeople(
@@ -2064,34 +2109,6 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                     resolveConnectedModel(run, provider, modelId, (values) =>
                       runSecrets.push(...values),
                     ),
-              resolveSubagentModel: scripted
-                ? undefined
-                : async () => {
-                    // The member's helper model — the subagent role — when they set one. A
-                    // helper runs it instead of this run's model; an unset or unrunnable
-                    // choice answers null, so the helper follows this run's model.
-                    const { primary } = await appliedModelRole(deps.prisma, run, "subagent");
-                    if (!primary) return null;
-                    try {
-                      return await resolveConnectedModel(
-                        run,
-                        primary.provider,
-                        primary.modelId,
-                        (values) => runSecrets.push(...values),
-                        false,
-                        primary.thinkingLevel ?? null,
-                        primary.credentialId,
-                      );
-                    } catch (error) {
-                      getLogger().warn("subagent model unavailable; helper follows the run model", {
-                        runId: run.id,
-                        "model.provider": primary.provider,
-                        "model.id": primary.modelId,
-                        error,
-                      });
-                      return null;
-                    }
-                  },
               onToolCompleted: (completion) => {
                 if (effects.restoredPending?.executionId === completion.executionId)
                   effects.restoredPending = undefined;
@@ -2142,7 +2159,6 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           );
           if (await consumeRunEvents(ctx, runtimeEvents)) return;
           if (await interruptedByShutdown()) return;
-          await handOffIfToolLimitStopped(ctx);
           await completeRun(ctx);
         } catch (turnError) {
           if (await interruptedByShutdown()) return;
@@ -2194,45 +2210,6 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
       }
     },
   };
-}
-
-/**
- * When the tool-call fuse stopped this turn, queue the run that carries on.
- *
- * The fuse bounds one turn's cost, so a task that needs more than the fuse used to stop dead and
- * wait for the owner to type "continue" — often mid-build, and sometimes right after the bot had
- * announced a commit that then silently never happened. A continuation keeps every turn bounded
- * while letting the task finish on its own, which is the behaviour the owner asked for.
- *
- * Only the tool-call bound is handed off. The token and cost bounds are operator policy about how
- * much a run may spend; silently starting another run after one hits them would defeat them.
- *
- * Best effort: a continuation that cannot be created must not stop the run from finalizing, so a
- * failure here is logged and the run completes as it would have without this.
- */
-async function handOffIfToolLimitStopped(ctx: RunContext): Promise<void> {
-  const { deps, run } = ctx;
-  const budget = spentToolCallBudget(ctx.runId);
-  if (budget?.exceeded !== "tool_calls") return;
-  try {
-    const progress = ctx.state.reply.assistantTurnText;
-    const continuationId = await deps.prisma.$transaction(async (tx) => {
-      const created = await createToolLimitContinuation(tx, run, progress);
-      return created?.runId ?? null;
-    });
-    // No event here: the successor is only queued, and `run.started` belongs to the turn that
-    // actually begins. The stopped run's own `run.completed`, written by the caller right after
-    // this, is what tells a connected client the thread moved on.
-    if (!continuationId) return;
-    await deps.jobs.enqueue(runContinueJob(continuationId));
-    getLogger().info("run.tool_limit.continued", {
-      "run.id": run.id,
-      "run.continuation": continuationId,
-      "run.tool_calls": budget.toolCalls.used,
-    });
-  } catch (error) {
-    getLogger().error("run.tool_limit.continuation_failed", error);
-  }
 }
 
 /**
