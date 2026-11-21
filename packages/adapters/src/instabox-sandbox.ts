@@ -8,6 +8,7 @@ import type {
   RemoteDesktopSdk,
 } from "./remote-desktop-sandbox.js";
 import { RemoteDesktopSandboxProvider } from "./remote-desktop-sandbox.js";
+import { deleteUnreferencedMachine } from "./sandbox-cleanup.js";
 import {
   isSandboxGoneError,
   isSandboxUnsafeStopError,
@@ -68,7 +69,8 @@ export interface InstaboxMachine {
 export interface InstaboxApi {
   create(template: string, metadata: Record<string, string>): Promise<InstaboxMachine>;
   connect(id: string, resume: boolean): Promise<InstaboxMachine>;
-  kill(id: string): Promise<boolean>;
+  /** `timeoutMs` bounds each request and the wait for the delete to finish. */
+  kill(id: string, timeoutMs?: number): Promise<boolean>;
 }
 
 /** The SDK loads only when an instabox computer is used, never in the default runtime. */
@@ -78,7 +80,14 @@ export async function nativeInstaboxApi(apiKey: string): Promise<InstaboxApi> {
     // Without the vault, the account's own secrets never reach a bot's computer.
     create: (template, metadata) => Sandbox.create(template, { apiKey, metadata, vault: false }),
     connect: (id, resume) => Sandbox.connect(id, { apiKey, resume }),
-    kill: (id) => Sandbox.kill(id, { apiKey }),
+    kill: (id, timeoutMs) =>
+      Sandbox.kill(id, {
+        apiKey,
+        ...(timeoutMs !== undefined && {
+          requestTimeoutMs: timeoutMs,
+          operationTimeoutMs: timeoutMs,
+        }),
+      }),
   };
 }
 
@@ -150,7 +159,9 @@ export function instaboxSdk(
         return await openDesktop(machine, true, pause(machine));
       } catch (error) {
         // Nothing has the new computer's reference yet, so nothing else would delete it.
-        await (await api()).kill(machine.sandboxId).catch(() => false);
+        await deleteUnreferencedMachine("instabox", machine.sandboxId, async (_signal, timeoutMs) =>
+          (await api()).kill(machine.sandboxId, timeoutMs),
+        );
         throw error;
       }
     },
@@ -406,13 +417,14 @@ async function runJob(
   }
 }
 
-/** Retries the kill, then pauses the computer. Only a delivered signal counts as stopped. */
+/** Retries a kill that fails, then pauses the computer. */
 async function confirmJobStopped(job: InstaboxJob, pause: () => Promise<void>): Promise<void> {
   let cause: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      if (await job.kill()) return;
-      cause = new Error("instabox job kill was not confirmed");
+      // false: every process had already exited, so the job is stopped either way.
+      await job.kill();
+      return;
     } catch (failure) {
       cause = failure;
     }

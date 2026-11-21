@@ -39,7 +39,7 @@ export class InstaboxEmulator implements InstaboxApi {
   rateLimited = 0;
   /** Jobs whose kill was attempted after their wait gave up. */
   readonly killedJobs: string[] = [];
-  /** Each `job.kill`. An Error rejects; false means the signal was not confirmed. */
+  /** Each `job.kill`. An Error rejects; false means every process had already exited. */
   jobKill: () => boolean | Error = () => true;
   private sequence = 0;
 
