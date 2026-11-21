@@ -1270,6 +1270,88 @@ describe("Pi runtime ordered model fallback", () => {
     );
   });
 
+  it("finishes on a backup after a mid-run capacity 429 and still delivers steering sent during it", async () => {
+    // Item 43's acceptance, both halves in one run: the primary dies of a capacity error
+    // mid-task, the turn continues on the backup, and a message the owner sent while the run
+    // was in flight is still answered by the run that survives.
+    //
+    // The steering must arrive *after* the failure, not before it: claiming it up front would
+    // prove nothing, because a run that never failed would have delivered it too.
+    const input = request([
+      { provider: backupA.provider, id: backupA.id, apiKey: "fake-backup-a" },
+    ]);
+    const steeringCalls: string[][] = [];
+    // Models the owner typing while the run is in flight: nothing is waiting at the first
+    // turn boundary, and the message appears afterwards. Delivered once, like the durable
+    // claim it stands in for.
+    let typed = false;
+    let delivered = false;
+    input.claimSteering = vi.fn(async (seen: string[]) => {
+      steeringCalls.push([...seen]);
+      if (steeringCalls.length > 1) typed = true;
+      if (!typed || delivered) return [];
+      delivered = true;
+      return [
+        {
+          id: "steer-1",
+          messageId: "message-steer-1",
+          text: "Also rename the output file.",
+          origin: "user" as const,
+        },
+      ];
+    });
+    let primaryCalls = 0;
+    const servedBy: string[] = [];
+    const contexts: { messages?: unknown[] }[] = [];
+    providerState.stream.mockImplementation(
+      (target: Model<"openai-completions">, context: { messages?: unknown[] }) => {
+        servedBy.push(target.provider);
+        contexts.push(context);
+        if (target.provider === primary.provider) {
+          primaryCalls += 1;
+          if (primaryCalls === 1) {
+            // The run gets real work done before the provider goes away.
+            const call = {
+              type: "toolCall" as const,
+              id: "write-once",
+              name: "write_effect",
+              arguments: { value: "first step" },
+            };
+            return stream(target, message(target, [call], "toolUse"));
+          }
+          return stream(
+            target,
+            message(target, [], "error", "429 Model 'DeepSeek-V4.1-Flash' is at capacity"),
+          );
+        }
+        return stream(
+          target,
+          message(target, [{ type: "text", text: "Renamed and finished." }], "stop"),
+        );
+      },
+    );
+
+    const events = await run(input);
+
+    // The primary served the first turn and then died; the backup finished the run.
+    expect(servedBy).toEqual([primary.provider, primary.provider, backupA.provider]);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "usage", provider: backupA.provider, model: backupA.id }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "text", text: "Renamed and finished." }),
+    );
+    expect(events).not.toContainEqual(
+      expect.objectContaining({ type: "error", error: expect.stringContaining("capacity") }),
+    );
+    // The claim ran more than once: the first boundary had nothing, a later one had the message.
+    expect(steeringCalls.length).toBeGreaterThan(1);
+    // The steering reached the model that actually served the rest of the run, so the owner
+    // never had to send it again.
+    const backupTurn = contexts.at(-1);
+    expect(JSON.stringify(backupTurn?.messages)).toContain("Also rename the output file.");
+  });
+
   it("keeps the primary on a healthy response and leaves an empty chain unchanged", async () => {
     providerState.stream.mockImplementation((target: Model<"openai-completions">) =>
       stream(target, message(target, [{ type: "text", text: "Primary response." }], "stop")),
