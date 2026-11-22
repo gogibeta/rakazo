@@ -65,6 +65,8 @@ export async function pauseRunForTakeover(
         leaseOwner: null,
         leaseExpiresAt: null,
         checkpoint: released ? run.checkpoint : null,
+        // Due now, and set, so the legacy retry trigger does not delay the answered run.
+        wakeAt: released ? new Date() : undefined,
       },
     });
     if (paused.count !== 1) return null;
