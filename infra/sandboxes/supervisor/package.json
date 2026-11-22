@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./computer-spec": "./src/computer-spec.ts"
+    "./computer-spec": "./src/computer-spec.ts",
+    "./host-resources": "./src/host-resources.ts"
   },
   "scripts": {
     "dev": "node ../../../scripts/dev-watch.mjs src/index.ts",
