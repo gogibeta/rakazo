@@ -3,6 +3,9 @@ import { withKeyedLock } from "./supervisor-logic.js";
 const botLifecycleLocks = new Map<string, Promise<unknown>>();
 const computerScreenLocks = new Map<string, Promise<unknown>>();
 const spaceComputerLocks = new Map<string, Promise<unknown>>();
+const ramAdmissionLocks = new Map<string, Promise<unknown>>();
+// Single key: the RAM budget is host-wide, so admission is one global critical section.
+const RAM_ADMISSION_KEY = "host";
 
 // Serialize create/delete for one bot so DELETE cannot remove a per-bot network
 // while POST still needs it between ensureBotNetwork and container attach.
@@ -27,4 +30,11 @@ export async function withSpaceComputerLock<T>(
   task: () => Promise<T>,
 ): Promise<T> {
   return withKeyedLock(spaceComputerLocks, spaceId, task);
+}
+
+// Serialize the host-wide RAM admission count+create so two Spaces admitting at
+// the same time cannot each see a free slot and both create, oversubscribing the
+// host. Always the innermost lock: never take a bot or Space lock while holding it.
+export async function withRamAdmissionLock<T>(task: () => Promise<T>): Promise<T> {
+  return withKeyedLock(ramAdmissionLocks, RAM_ADMISSION_KEY, task);
 }
