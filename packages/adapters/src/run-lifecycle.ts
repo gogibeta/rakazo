@@ -276,7 +276,9 @@ export async function writeComputerRunRequeue(
   };
   const releasedHold = {
     status: "queued" as const,
-    wakeAt: retryAt,
+    // With no retry timer a queued run is due now. Set, so the legacy retry trigger does not
+    // stamp a delay that makes the release, which starts only due runs, pass over it.
+    wakeAt: retryAt ?? new Date(),
     error,
     leaseOwner: null,
     leaseExpiresAt: null,
@@ -289,12 +291,10 @@ export async function writeComputerRunRequeue(
     data: releasedHold,
   });
   if (preserve.count === 1) return true;
+  const requeue = computerRunRequeueData(resumeCheckpoint, error, heldForTakeover);
   const planned = await deps.prisma.run.updateMany({
     where: { ...whereLease, checkpoint: null },
-    data: {
-      ...computerRunRequeueData(resumeCheckpoint, error, heldForTakeover),
-      wakeAt: releasedHold.wakeAt,
-    },
+    data: { ...requeue, wakeAt: requeue.status === "queued" ? releasedHold.wakeAt : retryAt },
   });
   if (planned.count === 1) return true;
   const retried = await deps.prisma.run.updateMany({
@@ -515,14 +515,18 @@ export async function retryRunSetup(
     retryAt,
   );
   if (released) {
-    await deps.prisma.attempt.update({
-      where: { id: attempt.id },
-      data: {
-        status: "setup_failed",
-        error: retryForever ? null : "Run setup failed; retrying",
-        finishedAt: new Date(),
-      },
-    });
+    // No row only when the setup failure was itself a database failure that stopped the row
+    // from being created; the run is requeued either way, so this marker is best-effort.
+    if (attempt.id) {
+      await deps.prisma.attempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: "setup_failed",
+          error: retryForever ? null : "Run setup failed; retrying",
+          finishedAt: new Date(),
+        },
+      });
+    }
     if (retryForever || dispatchHandedOff) {
       await deps.jobs.enqueue({
         ...runContinueJob(runId),
