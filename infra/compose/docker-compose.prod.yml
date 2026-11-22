@@ -129,6 +129,10 @@ x-app-environment: &app-environment # Runtime
   RAKAZO_LOCAL_REASONING_MODELS:
   RAKAZO_LOCAL_CONTEXT_WINDOW:
   RAKAZO_LOCAL_MAX_TOKENS:
+  # Off unless set to 1. A pass-through entry is how the owner turns typing a
+  # wallet secret into a page back on; without it the switch could not be
+  # reached from outside the container.
+  RAKAZO_FILL_WALLET:
   RAKAZO_OPENAI_COMPATIBLE_VISION_MODELS:
   RAKAZO_OPENAI_COMPAT_ALLOW_PUBLIC:
   RAKAZO_OPENAI_COMPAT_PRIVATE_HOSTS:

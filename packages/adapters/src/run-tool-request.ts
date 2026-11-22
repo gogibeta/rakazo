@@ -55,6 +55,7 @@ import { argumentGiven, dropUnchangedOwnBotArgs } from "./update-bot-patch.js";
 import { findUserWallet } from "./user-wallets.js";
 import type { VaultCardUse } from "./vault-card-use.js";
 import { cardUseSummary, requestedCardUse, vaultCardUseOf } from "./vault-card-use.js";
+import { FILL_WALLET_REFUSAL, fillWalletEnabled } from "./wallet-fill-policy.js";
 import type { WalletUse } from "./wallet-use.js";
 import { requestedWalletUse, walletUseOf, walletUseSummary } from "./wallet-use.js";
 
@@ -505,6 +506,9 @@ export async function prepareToolRequest(
     const wantedWallet = name === "browser_act" ? requestedWalletUse(rest.actions) : undefined;
     if (wantedWallet && "error" in wantedWallet) return wantedWallet;
     if (wantedWallet) {
+      // Refused before the approval card: asking the owner to approve a fill that can never
+      // happen is worse than saying it is off. One reversible flag, no code deleted.
+      if (!fillWalletEnabled()) return refusal("wallet_fill_disabled", FILL_WALLET_REFUSAL);
       if (wantedCard) {
         return refusal(
           "wallet_and_card_together",

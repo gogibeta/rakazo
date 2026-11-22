@@ -5,6 +5,7 @@ import { replyGuidanceForOfferedTools } from "./run-replies.js";
 import type { UserComputerState } from "./run-tools-user-computer.js";
 import { SCHEDULE_TOOL_NAMES } from "./schedule-tools.js";
 import { DESKTOP_HELD_FOR_TAKEOVER_MESSAGE } from "./takeover-resume.js";
+import { fillWalletEnabled } from "./wallet-fill-policy.js";
 
 /** Added to the turn prompt when the user spoke this message on a live voice call. */
 const VOICE_CALL_BASE_INSTRUCTION =
@@ -206,7 +207,9 @@ function secretGuidance(disabled?: ReadonlySet<string>): string[] {
   }
   if (builtinOffered(disabled, "list_wallets") && builtinOffered(disabled, "browser_act")) {
     clauses.push(
-      "For the user's crypto wallets, use list_wallets to see names and addresses, and browser_act fill_wallet to type a wallet's key or seed phrase into a page; the user approves each fill, and you never see the value.",
+      fillWalletEnabled()
+        ? "For the user's crypto wallets, use list_wallets to see names and addresses, and browser_act fill_wallet to type a wallet's key or seed phrase into a page; the user approves each fill, and you never see the value."
+        : "For the user's crypto wallets, use list_wallets to see names and addresses. Typing a wallet's key or seed phrase into a page is switched off in this build, so do not try fill_wallet or another way to type the secret: say the wallet cannot be filled into the page.",
     );
   }
   if (builtinOffered(disabled, "generate_secret")) {
