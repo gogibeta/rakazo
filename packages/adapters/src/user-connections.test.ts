@@ -11,6 +11,7 @@ const KEY = "test-only-api-key-12345";
 
 type Row = {
   id: string;
+  userId: string;
   name: string;
   baseUrl: string;
   authStyle: string;
@@ -20,6 +21,7 @@ type Row = {
 
 const bearerRow: Row = {
   id: "c1",
+  userId: "user-1",
   name: "GitHub",
   baseUrl: "https://api.example.com",
   authStyle: "bearer",
@@ -32,13 +34,16 @@ const privateResolver = async () => [{ address: "10.0.0.5", family: 4 as const }
 
 function fixture(row: Row = bearerRow, responseBody: unknown = { ok: true }) {
   const secretStore = { load: vi.fn(async () => KEY) };
+  // Both lookups honour the owner: a row is visible only to the user who saved
+  // it, so a lookup or listing for anyone else finds nothing.
+  const findFirst = vi.fn(async ({ where }: { where: { userId: string; name: string } }) =>
+    where.userId === row.userId && where.name === row.name ? row : null,
+  );
+  const findMany = vi.fn(async ({ where }: { where: { userId: string } }) =>
+    where.userId === row.userId ? [row] : [],
+  );
   const prisma = {
-    userCustomConnection: {
-      findFirst: vi.fn(async ({ where }: { where: { userId: string; name: string } }) =>
-        where.name === row.name ? row : null,
-      ),
-      findMany: vi.fn(async () => [row]),
-    },
+    userCustomConnection: { findFirst, findMany },
   } as unknown as PrismaClient;
   const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(responseBody));
   const registerRedactions = vi.fn();
@@ -51,7 +56,7 @@ function fixture(row: Row = bearerRow, responseBody: unknown = { ok: true }) {
     remote: { fetch, resolveHostname: publicResolver },
     registerRedactions,
   };
-  return { input, fetch, secretStore, registerRedactions };
+  return { input, prisma, fetch, secretStore, registerRedactions, findFirst, findMany };
 }
 
 function calledRequest(fetch: ReturnType<typeof fixture>["fetch"]) {
@@ -61,7 +66,7 @@ function calledRequest(fetch: ReturnType<typeof fixture>["fetch"]) {
 
 describe("custom connection calls", () => {
   it("adds the key as a bearer token and returns the JSON response", async () => {
-    const { input, fetch, registerRedactions } = fixture();
+    const { input, fetch, registerRedactions, findFirst } = fixture();
     const result = await callUserConnection({
       ...input,
       request: { method: "GET", path: "/user" },
@@ -72,6 +77,8 @@ describe("custom connection calls", () => {
     expect(headers.get("authorization")).toBe(`Bearer ${KEY}`);
     // The key's forms join the run's redaction set before anything returns.
     expect(registerRedactions).toHaveBeenCalledWith(expect.arrayContaining([KEY]));
+    // The lookup is scoped to the acting user, not the name alone.
+    expect(findFirst).toHaveBeenCalledWith({ where: { userId: "user-1", name: "GitHub" } });
   });
 
   it("redacts the key when the service echoes it back", async () => {
@@ -136,6 +143,11 @@ describe("custom connection calls", () => {
     expect(result).toEqual({
       error: "The service redirected the request; redirects are not followed.",
     });
+    // The redirect is refused at the transport, not followed: the request goes
+    // out with redirects off, and it carries the caller's abort signal.
+    const [, init] = fetch.mock.calls[0]!;
+    expect(init).toMatchObject({ redirect: "manual", method: "GET" });
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("reports an unknown connection name without fetching", async () => {
@@ -150,8 +162,8 @@ describe("custom connection calls", () => {
   });
 
   it("lists only names and metadata, never the key", async () => {
-    const { input } = fixture();
-    const listed = await listUserConnections(input.prisma, "user-1");
+    const { prisma, findMany } = fixture();
+    const listed = await listUserConnections(prisma, "user-1");
     expect(listed).toEqual([
       {
         name: "GitHub",
@@ -163,6 +175,26 @@ describe("custom connection calls", () => {
     ]);
     expect(JSON.stringify(listed)).not.toContain(KEY);
     expect(JSON.stringify(listed)).not.toContain("secretCipher");
+    // The listing is scoped to the acting user.
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: "user-1" } }));
+  });
+
+  it("never serves one user's connection to another user", async () => {
+    const { input, prisma, fetch, findFirst, findMany } = fixture();
+    // The same connection name under a different owner is not found, and
+    // nothing is fetched on its behalf.
+    const other = await callUserConnection({
+      ...input,
+      userId: "user-2",
+      request: { method: "GET", path: "/" },
+    });
+    expect("error" in other && other.error).toContain("No connection is saved under this name");
+    expect(findFirst).toHaveBeenCalledWith({ where: { userId: "user-2", name: "GitHub" } });
+    expect(fetch).not.toHaveBeenCalled();
+
+    const listed = await listUserConnections(prisma, "user-2");
+    expect(listed).toEqual([]);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: "user-2" } }));
   });
 
   it("tests a connection by status only, discarding the body", async () => {

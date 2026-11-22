@@ -1,6 +1,19 @@
+import { ORPCError } from "@orpc/server";
+import {
+  CustomConnectionAddInput,
+  CustomConnectionRemoveInput,
+  CustomConnectionTestInput,
+} from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterContext } from "./context.js";
 import { customConnectionsRoutes } from "./custom-connections.js";
+
+// The input schema each route's contract binds, in packages/contracts/src/rpc.ts.
+const INPUT_SCHEMAS = {
+  add: CustomConnectionAddInput,
+  remove: CustomConnectionRemoveInput,
+  test: CustomConnectionTestInput,
+};
 
 const KEY = "test-only-api-key-12345";
 
@@ -16,10 +29,30 @@ type Row = {
   updatedAt: Date;
 };
 
-/** The route handlers with the oRPC builder stubbed to hand them back bare. */
+/**
+ * The route handlers with an oRPC builder stub that applies the route's
+ * contract input schema before handing the call to the handler — the same
+ * validation the real oRPC layer performs, so a test that drives a route
+ * proves the contract schema actually runs ahead of it.
+ */
 function routes(prisma: unknown, secrets: unknown) {
-  const procedure = { handler: (fn: unknown) => fn };
-  const family = new Proxy({}, { get: () => procedure });
+  const procedureFor = (name: string) => ({
+    handler: (fn: unknown) => {
+      const schema = INPUT_SCHEMAS[name as keyof typeof INPUT_SCHEMAS];
+      if (!schema) return fn;
+      return async (call: { context: unknown; input?: unknown }) => {
+        const parsed = schema.safeParse(call.input ?? {});
+        if (!parsed.success) {
+          throw new ORPCError("BAD_REQUEST", { message: parsed.error.issues[0]?.message });
+        }
+        return (fn as (next: { context: unknown; input: unknown }) => Promise<unknown>)({
+          ...call,
+          input: parsed.data,
+        });
+      };
+    },
+  });
+  const family = new Proxy({}, { get: (_target, name) => procedureFor(String(name)) });
   const authed = new Proxy({}, { get: () => family });
   return customConnectionsRoutes({ deps: { prisma, secrets }, authed } as unknown as RouterContext)
     .customConnections as unknown as Record<
@@ -186,5 +219,71 @@ describe("custom connection routes", () => {
     await expect(api.remove!({ context, input: { connectionId: "c1" } })).rejects.toThrow(
       /not found/i,
     );
+  });
+
+  it("validates the add input against the contract schema", async () => {
+    const store = connectionStore();
+    const api = routes(store.prisma, store.secrets);
+    // Plain HTTP is refused before anything is stored.
+    await expect(
+      api.add!({
+        context,
+        input: { name: "Local", baseUrl: "http://api.example.com", authStyle: "bearer" },
+      }),
+    ).rejects.toThrow(/HTTPS/);
+    // A link-local metadata address is refused too.
+    await expect(
+      api.add!({
+        context,
+        input: { name: "Metadata", baseUrl: "https://169.254.169.254", authStyle: "bearer" },
+      }),
+    ).rejects.toThrow(/public host/);
+    expect(store.rows()).toEqual([]);
+    expect(store.secrets.put).not.toHaveBeenCalled();
+  });
+
+  it("loads the sealed key for the owner's test and never returns it", async () => {
+    const store = connectionStore();
+    const api = routes(store.prisma, store.secrets);
+    // A host that fails resolution fast, so the call stops at the transport
+    // while still exercising the real load path.
+    await api.add!({
+      context,
+      input: { name: "GitHub", baseUrl: "https://api.invalid", authStyle: "bearer", apiKey: KEY },
+    });
+    const result = await api.test!({ context, input: { connectionId: "c1" } });
+    // The sealed key is read back only here, keyed to this row's record id.
+    expect(store.secrets.load).toHaveBeenCalledWith("v2:sealed-value", "c1");
+    // Only the outcome leaves the route; the key and its sealed form appear nowhere.
+    const seen = JSON.stringify(result);
+    expect(seen).not.toContain(KEY);
+    expect(seen).not.toContain("v2:sealed-value");
+    expect(seen).not.toContain("secretCipher");
+    expect(result).toMatchObject({ status: null, error: expect.any(String) });
+  });
+
+  it("scopes test and remove to the owning user", async () => {
+    const store = connectionStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({
+      context,
+      input: {
+        name: "GitHub",
+        baseUrl: "https://api.github.com",
+        authStyle: "bearer",
+        apiKey: KEY,
+      },
+    });
+    const other = { actor: { userId: "v", spaceId: "s" }, signal: undefined };
+    // Another user can neither reach this connection's key nor delete it.
+    await expect(api.test!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
+      /not found/i,
+    );
+    await expect(api.remove!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
+      /not found/i,
+    );
+    // The row survives the refused remove, and its key was never read.
+    expect(store.rows()).toHaveLength(1);
+    expect(store.secrets.load).not.toHaveBeenCalled();
   });
 });

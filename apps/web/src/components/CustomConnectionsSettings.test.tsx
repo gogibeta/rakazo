@@ -53,6 +53,11 @@ const savedConnection = {
   createdAt: "2026-12-16T00:00:00.000Z",
 };
 
+// The API never returns the key. This extra field stands in for one that
+// leaked into the response anyway, so the list test proves the row renders
+// only its saved status — never a secret value.
+const savedConnectionWithKey = { ...savedConnection, apiKey: "ghp_secret" };
+
 let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
@@ -87,12 +92,14 @@ function button(text: string) {
 }
 
 it("lists saved connections with their base URL and key status, and never a key", async () => {
-  connectionsApi.list.mockResolvedValue({ connections: [savedConnection] });
+  connectionsApi.list.mockResolvedValue({ connections: [savedConnectionWithKey] });
   await act(async () => root.render(<CustomConnectionsSettings />));
   expect(host.textContent).toContain("GitHub");
   expect(host.textContent).toContain("https://api.github.com");
   expect(host.textContent).toContain("Key saved");
   expect(host.textContent).toContain("Connected. Your bots can call the GitHub API.");
+  // A key riding on the response (which the API never sends) must not reach the page.
+  expect(host.textContent).not.toContain("ghp_secret");
   expect(host.textContent).not.toContain("ghp_");
 });
 
@@ -112,6 +119,8 @@ it("fills the form from the GitHub preset, so only the token is typed", async ()
     authName: null,
     apiKey: "ghp_example",
   });
+  // The key control is cleared once the connection is saved.
+  expect(host.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("");
 });
 
 it("adds a custom service with header auth", async () => {
@@ -149,11 +158,20 @@ it("adds a custom service with header auth", async () => {
 
 it("tests a connection and shows only the status", async () => {
   connectionsApi.list.mockResolvedValue({ connections: [savedConnection] });
-  connectionsApi.test.mockResolvedValue({ status: 200, error: null });
+  connectionsApi.test.mockResolvedValue({
+    status: 200,
+    error: "LEAKED-ERROR-DETAIL",
+    requestId: "req-SECRET-DETAIL",
+    headers: { "x-internal": "SECRET-INTERNAL" },
+  });
   await act(async () => root.render(<CustomConnectionsSettings />));
   await act(async () => button("Test")?.click());
   expect(connectionsApi.test).toHaveBeenCalledWith({ connectionId: "conn-1" });
   expect(host.textContent).toContain("Reachable — HTTP 200");
+  // Only the outcome is shown — none of the response's other fields reach the page.
+  expect(host.textContent).not.toContain("LEAKED-ERROR-DETAIL");
+  expect(host.textContent).not.toContain("req-SECRET-DETAIL");
+  expect(host.textContent).not.toContain("SECRET-INTERNAL");
 });
 
 it("removes a connection from the list", async () => {
