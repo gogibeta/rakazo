@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { observationToolResult } from "./computer-tools.js";
-import type { ToolCallWindowEntry } from "./tool-loop.js";
+import type { FailedToolCall, ToolCallWindowEntry } from "./tool-loop.js";
 import {
   advanceOverLimitActionCalls,
   advanceToolCallLoopGuard,
@@ -10,6 +10,8 @@ import {
   MAX_CONSECUTIVE_OVER_LIMIT_ACTION_CALLS,
   MAX_WINDOWED_REPEATED_TOOL_CALLS,
   overLimitStopText,
+  repeatedFailedCallRefusal,
+  repeatedFailedCallText,
   settleToolCallWindow,
   toolCallStreakLength,
   toolCallWindowKeys,
@@ -567,5 +569,57 @@ describe("overLimitStopText", () => {
     expect(text).toContain("with too many actions 4 times in a row");
     expect(text).not.toContain("same input");
     expect(isLoopGuardStopText(text)).toBe(true);
+  });
+});
+
+describe("repeatedFailedCallRefusal", () => {
+  const argsHash = "a".repeat(64);
+  const refused = (code: string): FailedToolCall => ({ toolName: "shell", argsHash, code });
+
+  it("refuses the identical call again after a refusal", () => {
+    // A refusal is decided before the tool runs, so the same call reaches the same decision.
+    expect(repeatedFailedCallRefusal(refused("browser_restarted"), "shell", argsHash)).toBe(
+      "browser_restarted",
+    );
+    expect(repeatedFailedCallRefusal(refused("killed_by_maintenance"), "shell", argsHash)).toBe(
+      "killed_by_maintenance",
+    );
+    // No code list to keep in step: any refusal qualifies, including ones added later.
+    expect(repeatedFailedCallRefusal(refused("spending_limit"), "shell", argsHash)).toBe(
+      "spending_limit",
+    );
+  });
+
+  it("does not refuse a different tool, or the same tool with different arguments", () => {
+    expect(
+      repeatedFailedCallRefusal(refused("browser_restarted"), "browser_navigate", argsHash),
+    ).toBeUndefined();
+    expect(
+      repeatedFailedCallRefusal(refused("browser_restarted"), "shell", "b".repeat(64)),
+    ).toBeUndefined();
+  });
+
+  it("does not refuse when nothing was refused before", () => {
+    expect(repeatedFailedCallRefusal(undefined, "shell", argsHash)).toBeUndefined();
+  });
+});
+
+describe("repeatedFailedCallText", () => {
+  it("names the tool, the code, and that the same call reaches the same decision", () => {
+    const text = repeatedFailedCallText("browser_navigate", "browser_restarted");
+    expect(text).toContain("`browser_navigate` was already refused");
+    expect(text).toContain("(browser_restarted)");
+    expect(text).toContain("reaches the same decision");
+    expect(text).toContain("change the arguments or take a different approach");
+    // The model must not read this as an invitation to make the identical call again.
+    expect(text).not.toContain("try again");
+  });
+
+  it("carries the code for any refusal, not only the ones named in the queue", () => {
+    // The code is passed through rather than mapped, so a refusal added later still reads right.
+    expect(repeatedFailedCallText("shell", "killed_by_maintenance")).toContain(
+      "(killed_by_maintenance)",
+    );
+    expect(repeatedFailedCallText("shell", "spending_limit")).toContain("(spending_limit)");
   });
 });

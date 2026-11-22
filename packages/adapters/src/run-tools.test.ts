@@ -354,3 +354,74 @@ describe("daily check-in dispatch restriction", () => {
     ).toEqual({ code: "daily_check_in_tool_not_allowed" });
   });
 });
+
+describe("51c: a repeated refused call is not retried blind", () => {
+  // These refusals are decided before the tool runs, so the identical call reaches the identical
+  // decision. Refusing the repeat saves the model a call it can learn nothing from.
+  const disabled = "tool_disabled_probe";
+
+  function contextWithDisabled(name: string) {
+    const ctx = dispatchContext(false);
+    (ctx.tools.disabled as Set<string>).add(name);
+    return ctx;
+  }
+
+  it("refuses the same call again, naming the code, after a refusal", async () => {
+    const ctx = contextWithDisabled(disabled);
+    const args = { target: "https://example.com" };
+
+    await expect(applyTool(ctx as never, disabled, args, "call-1")).resolves.toEqual({
+      error: "This tool is disabled for this bot.",
+    });
+    // The same call with the same arguments: turned away before it reaches its tool again.
+    const repeat = await applyTool(ctx as never, disabled, args, "call-2");
+    expect(repeat).toEqual({
+      error: expect.stringContaining("was already refused with these exact arguments"),
+    });
+    expect(repeat).toEqual({ error: expect.stringContaining("(tool_disabled)") });
+  });
+
+  it("allows the same tool with different arguments", async () => {
+    const ctx = contextWithDisabled(disabled);
+
+    await applyTool(ctx as never, disabled, { target: "https://a.example" }, "call-1");
+    const other = await applyTool(
+      ctx as never,
+      disabled,
+      { target: "https://b.example" },
+      "call-2",
+    );
+    // The plain refusal, not the repeat refusal: a different call is not a blind retry.
+    expect(other).toEqual({ error: "This tool is disabled for this bot." });
+  });
+
+  it("allows a different tool after a refusal", async () => {
+    const ctx = contextWithDisabled(disabled);
+    const other = "another_disabled_probe";
+    (ctx.tools.disabled as Set<string>).add(other);
+
+    await applyTool(ctx as never, disabled, { a: 1 }, "call-1");
+    const second = await applyTool(ctx as never, other, { a: 1 }, "call-2");
+    expect(second).toEqual({ error: "This tool is disabled for this bot." });
+  });
+
+  it("forgets the refusal once another call happens in between", async () => {
+    // The memory covers the immediately next call only: anything in between may have changed the
+    // thing the refusal was about, so a later repeat is judged fresh rather than called blind.
+    const ctx = contextWithDisabled(disabled);
+    await applyTool(ctx as never, disabled, { a: 1 }, "call-1");
+    await applyTool(ctx as never, "some_other_tool", { b: 2 }, "call-2");
+    const later = await applyTool(ctx as never, disabled, { a: 1 }, "call-3");
+    expect(later).toEqual({ error: "This tool is disabled for this bot." });
+  });
+
+  it("does not refuse a repeat after a failure with no refusal code", async () => {
+    const ctx = dispatchContext(false);
+    // An unknown name resolves to a plain { error } with no code: a tool that ran and failed, not a
+    // refusal. Its retry must not be refused, because such a failure may be transient.
+    const first = await applyTool(ctx as never, "not_a_real_tool_name", {}, "call-1");
+    expect(first).toEqual({ error: expect.stringContaining("unknown tool") });
+    const repeat = await applyTool(ctx as never, "not_a_real_tool_name", {}, "call-2");
+    expect(repeat).toEqual({ error: expect.stringContaining("unknown tool") });
+  });
+});

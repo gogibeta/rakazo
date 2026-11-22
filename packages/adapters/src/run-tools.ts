@@ -48,6 +48,7 @@ import {
 import { walletTools } from "./run-tools-wallets.js";
 import { strategicInitiativeToolAllowed } from "./strategic-initiative.js";
 import { logToolRefusal } from "./tool-completion-audit.js";
+import { repeatedFailedCallRefusal, repeatedFailedCallText } from "./tool-loop.js";
 import { refusal, refusalCode } from "./tool-refusal.js";
 import { argumentGiven } from "./update-bot-patch.js";
 
@@ -139,6 +140,31 @@ function gateResultStatus(result: unknown): ToolEventStatus {
   const code = refusalCode(result);
   if (code) return GATE_DENIAL_CODES.has(code) ? "denied" : "refused";
   return isToolError(result) ? "failed" : "succeeded";
+}
+
+/**
+ * Remembers a refusal so the identical call repeated can be turned away before its tool runs again.
+ *
+ * Only pre-gate turn-aways are recorded. A refusal that comes from the approval gate is left out
+ * because the gate already handles a repeat itself and more strictly — `refuseOwnerSettingsChange`
+ * ends the turn on the second one — and a plain repeat refusal here would pre-empt that with
+ * something weaker. A tool that ran and failed carries no code at all, so a transient failure stays
+ * retryable, which is what its own error handling expects.
+ */
+function noteToolFailure(
+  ctx: RunContext,
+  name: string,
+  args: Record<string, unknown>,
+  result: unknown,
+  status: ToolEventStatus,
+): void {
+  if (status !== "failed" && status !== "refused" && status !== "denied") {
+    ctx.state.lastFailedToolCall = undefined;
+    return;
+  }
+  const code = refusalCode(result);
+  if (code === undefined) return;
+  ctx.state.lastFailedToolCall = { toolName: name, argsHash: toolArgsHash(args), code };
 }
 
 /** Record one dispatch outcome in the run's tool events. A record, never a gate: the write cannot fail the call. */
@@ -248,8 +274,29 @@ async function dispatchTool(
       status: "refused",
       startedAt,
     });
+    // Remembered here and not at the gate: this is the turn-away my own guard may later repeat.
+    noteToolFailure(ctx, target ?? name, args, refused, "refused");
     return refused;
   };
+  // A repeat of a call whose refusal is decided before its tool runs is turned away here, ahead of
+  // the checks below, because those checks would otherwise answer it identically again and the
+  // model would learn nothing.
+  //
+  // Only the immediately next call counts. Anything in between may have changed the thing that
+  // caused the refusal — a read that found nothing, then a write that created it — so the memory
+  // is dropped here and the call proceeds on its own merits. Skipped once the owner-settings path
+  // has taken over the run: that path ends the turn on a repeat, which is stricter than this.
+  if (!ctx.state.ownerSettingsRefused) {
+    const repeatedFailure = repeatedFailedCallRefusal(
+      ctx.state.lastFailedToolCall,
+      name,
+      toolArgsHash(args),
+    );
+    ctx.state.lastFailedToolCall = undefined;
+    if (repeatedFailure) {
+      return refuse(refusal(repeatedFailure, repeatedFailedCallText(name, repeatedFailure)));
+    }
+  }
   if (!strategicInitiativeToolAllowed(name, ctx.run)) {
     return refuse(
       refusal(
@@ -316,18 +363,21 @@ async function dispatchTool(
       effectId: gate.effectId,
       result: status === "succeeded" || status === "failed" ? gate.result : undefined,
     });
+    // Not remembered: the gate owns repeats, and its own repeat handling is stricter.
     return gate.result;
   }
   if (!gate.call.applied) {
     try {
       const result = await toolHandler(gate.call.name)(ctx, gate.call);
+      const failed = isToolError(result);
       await recordDispatchToolEvent(ctx, {
         toolName: gate.call.name,
         args: gate.call.args,
-        status: isToolError(result) ? "failed" : "succeeded",
+        status: failed ? "failed" : "succeeded",
         startedAt,
         result,
       });
+      noteToolFailure(ctx, gate.call.name, gate.call.args, result, failed ? "failed" : "succeeded");
       return result;
     } catch (error) {
       await recordDispatchToolEvent(ctx, {
@@ -336,6 +386,7 @@ async function dispatchTool(
         status: "failed",
         startedAt,
       });
+      noteToolFailure(ctx, gate.call.name, gate.call.args, error, "failed");
       throw error;
     }
   }
@@ -358,6 +409,13 @@ async function dispatchTool(
       effectId: gate.call.applied.effect.id,
       result,
     });
+    noteToolFailure(
+      ctx,
+      gate.call.name,
+      gate.call.args,
+      result,
+      outcome === "success" ? "succeeded" : "failed",
+    );
   }
 }
 

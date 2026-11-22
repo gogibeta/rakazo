@@ -161,6 +161,55 @@ export function advanceToolCallLoopGuard(
   };
 }
 
+/**
+ * What a call's earlier failure in this attempt is remembered as.
+ */
+export interface FailedToolCall {
+  toolName: string;
+  /** sha256 of the canonical args — the same hash tool events record as `argsHash`. */
+  argsHash: string;
+  /**
+   * The refusal code the failure carried. Its presence is what makes a repeat blind: a refusal is
+   * a decision made before the tool ran, so the identical call reaches the identical decision and
+   * learns nothing. A tool that ran and failed returns a plain `{ error }` with no code, and that
+   * failure may be transient, so it is not refused here.
+   */
+  code: string;
+}
+
+/**
+ * Whether a repeat of this exact call would only repeat its failure. `previous` is the last failed
+ * call of this attempt; a repeat is refused when it is the same tool with the same arguments and
+ * that failure was a refusal rather than a tool that ran and failed.
+ *
+ * No list of codes is kept, deliberately. There is no shared failure taxonomy to key one on — the
+ * tools return prose — and a hand-maintained list would silently miss every code added later. The
+ * distinction that matters is structural: a refusal carries a code because the call was turned
+ * away before its tool ran, so re-running it unchanged reaches the same turn-away. That covers the
+ * codes 51c names without naming them here: when step 42's restart handler raises
+ * `browser_restarted`, or the reclaimer raises `killed_by_maintenance`, the repeat is refused with
+ * no change to this file.
+ *
+ * A tool that ran and failed is a different matter: a busy service, a timeout or a dropped
+ * connection may genuinely succeed next time, and refusing a retry that would have worked is worse
+ * than allowing one that fails again. Those keep the loop guard's accounting, which counts repeats
+ * and stops a run that keeps making them.
+ */
+export function repeatedFailedCallRefusal(
+  previous: FailedToolCall | undefined,
+  toolName: string,
+  argsHash: string,
+): string | undefined {
+  if (!previous || previous.toolName !== toolName || previous.argsHash !== argsHash)
+    return undefined;
+  return previous.code;
+}
+
+/** The message a refused repeat carries: what was decided, and that the same call will not help. */
+export function repeatedFailedCallText(toolName: string, code: string): string {
+  return `\`${toolName}\` was already refused with these exact arguments (${code}). Making the same call again reaches the same decision, so change the arguments or take a different approach.`;
+}
+
 // The streak guard only sees consecutive repeats, so an A/B/A/B cycle of two alternating
 // calls escapes it. The window keeps the run's last calls so a repeat interleaved with
 // other calls is caught too. Only interleaved recurrences count toward the windowed
