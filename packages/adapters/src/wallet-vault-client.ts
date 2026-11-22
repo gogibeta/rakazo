@@ -41,6 +41,9 @@ const CLIENT_ERROR_MESSAGES: Record<WalletVaultClientErrorCode, string> = {
   proposal_not_signable: "The proposal is no longer available to sign.",
   proposal_tampered: "The proposal does not match its recorded fingerprint.",
   wallet_key_mismatch: "The wallet key does not match the proposal's recorded sender.",
+  wallet_key_unreadable: "The wallet's stored key could not be read as a signing key.",
+  legacy_path_ambiguous:
+    "This wallet's key came from a seed phrase, whose account path is not recorded, so it cannot be signed from here.",
   signing_not_enabled: "Wallet signing is not available yet.",
   fill_not_enabled: "Wallet filling is not available yet.",
   unauthorized: "The vault refused the service credential.",

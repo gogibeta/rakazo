@@ -621,3 +621,96 @@ describe("wallet vault unlock/lock serialization", () => {
     expect((await service.status("u1")).unlocked).toBe(true);
   });
 });
+
+describe("migrated wallets sign through the vault's key reader (W-3)", () => {
+  // The migration sealed the secret exactly as the owner typed it. These are
+  // the text forms a pre-migration wallet could hold, plus the raw control.
+  const KEY_HEX = Buffer.from(KEY).toString("hex");
+  const PHRASE_12 =
+    "abandon ability able about above absent absorb abstract absurd abuse access accident";
+  const PHRASE_24 = `${"abandon ".repeat(23)}art`;
+
+  it("signs a 0x-hex text key the migration sealed", async () => {
+    const h = harness();
+    await seedProposal(h, {
+      userId: "u1",
+      proposalId: "p1",
+      walletId: WALLET_ID,
+      key: Buffer.from(`0x${KEY_HEX}`, "utf8"),
+      senderKey: KEY,
+    });
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    const signed = await h.service.sign({ userId: "u1", grantId, proposalId: "p1" });
+    expect(signed.signedTransaction.startsWith("0x02")).toBe(true);
+    expect(signed.from).toBe(FROM);
+  });
+
+  it("signs a bare-hex text key the migration sealed", async () => {
+    const h = harness();
+    await seedProposal(h, {
+      userId: "u1",
+      proposalId: "p1",
+      walletId: WALLET_ID,
+      key: Buffer.from(KEY_HEX, "utf8"),
+      senderKey: KEY,
+    });
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    const signed = await h.service.sign({ userId: "u1", grantId, proposalId: "p1" });
+    expect(signed.from).toBe(FROM);
+  });
+
+  it("signs a key the migration already stored as 32 raw bytes", async () => {
+    const h = harness();
+    await seedProposal(h, { userId: "u1", proposalId: "p1", walletId: WALLET_ID, key: KEY });
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    const signed = await h.service.sign({ userId: "u1", grantId, proposalId: "p1" });
+    expect(signed.from).toBe(FROM);
+  });
+
+  it("refuses a seed phrase as an ambiguous path, not an unreadable key", async () => {
+    const h = harness();
+    await seedProposal(h, {
+      userId: "u1",
+      proposalId: "p1",
+      walletId: WALLET_ID,
+      key: Buffer.from(PHRASE_12, "utf8"),
+      senderKey: KEY,
+    });
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    expect(await codeOf(h.service.sign({ userId: "u1", grantId, proposalId: "p1" }))).toBe(
+      "legacy_path_ambiguous",
+    );
+  });
+
+  it("refuses a phrase whose recorded sender is another account rather than guessing a path", async () => {
+    const h = harness();
+    await seedProposal(h, {
+      userId: "u1",
+      proposalId: "p1",
+      walletId: WALLET_ID,
+      key: Buffer.from(PHRASE_24, "utf8"),
+      // A different account the phrase could reach under some path. Refusing
+      // as ambiguous — not wallet_key_mismatch — shows no path was guessed.
+      senderKey: KEY_OTHER,
+    });
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    expect(await codeOf(h.service.sign({ userId: "u1", grantId, proposalId: "p1" }))).toBe(
+      "legacy_path_ambiguous",
+    );
+  });
+
+  it("refuses a secret that is neither raw bytes, hex, nor a phrase", async () => {
+    const h = harness();
+    await seedProposal(h, {
+      userId: "u1",
+      proposalId: "p1",
+      walletId: WALLET_ID,
+      key: Buffer.from("not-a-key", "utf8"),
+      senderKey: KEY,
+    });
+    const { grantId } = await h.service.unlock("u1", PASSWORD);
+    expect(await codeOf(h.service.sign({ userId: "u1", grantId, proposalId: "p1" }))).toBe(
+      "wallet_key_unreadable",
+    );
+  });
+});
