@@ -440,6 +440,47 @@ describe("a reply cut off by a dropped connection", () => {
     expect(JSON.stringify(note)).toContain("cut off by a connection error");
   });
 
+  it("quotes the cut reply's last words so the model can repeat them", async () => {
+    providerState.stream
+      .mockImplementationOnce(() => cutReply(plain, "It asks you nothing"))
+      .mockImplementation(() => streamedReply(plain, "Revoke the token if you haven't."));
+    await run(request(plain));
+    const context = providerState.stream.mock.calls[1]?.[1] as {
+      messages: Array<{ content: unknown }>;
+    };
+    const note = context.messages.at(-1) as { content: string };
+    expect(note.content).toContain("cut off by a connection error");
+    expect(note.content).toContain('It ended with: "It asks you nothing"');
+    expect(note.content).toContain("repeating those last words");
+  });
+
+  // The reported corruption: a continuation that opens with the next word joins the two
+  // fragments with nothing between them ("…nothingRevoke the token…"). Quoting the cut's last
+  // words and dropping the repeat is what keeps the sentence's spacing and punctuation.
+  it("keeps the sentence punctuation when the continuation repeats the cut words", async () => {
+    providerState.stream
+      .mockImplementationOnce(() => cutReply(plain, "It asks you nothing"))
+      .mockImplementation(() =>
+        streamedReply(plain, "It asks you nothing. Revoke the token if you haven't."),
+      );
+    const events = await run(request(plain));
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      text: "It asks you nothing. Revoke the token if you haven't.",
+    });
+  });
+
+  // A cut that lands inside a word leaves a final fragment shorter than the join's old
+  // four-character floor, so the repeat the model was asked for went undropped and the
+  // fragment came out doubled ("We could AgAgree…"). The requested repeat matches it.
+  it("completes a short cut word without duplicating it", async () => {
+    providerState.stream
+      .mockImplementationOnce(() => cutReply(plain, "We could Ag"))
+      .mockImplementation(() => streamedReply(plain, "Agree on Friday."));
+    const events = await run(request(plain));
+    expect(events.at(-1)).toEqual({ type: "done", text: "We could Agree on Friday." });
+  });
+
   it("drops the repeat from a continuation that arrives only on the completed message", async () => {
     providerState.stream
       .mockImplementationOnce(() => cutReply(plain, "Part one. Part tw"))
