@@ -64,6 +64,25 @@ describe("unsupportedToolClaims", () => {
     expect(unsupportedToolClaims("Web fetch (succeeded) did not happen.", [])).toEqual([]);
   });
 
+  it("catches the counted and mixed shapes the app itself prints", () => {
+    // `toolStepsHistoryText` prints `Web fetch ×3 (succeeded)` for a repeated step and
+    // `(2 succeeded, 1 failed)` for mixed results. These are exactly the lines the model
+    // copies, so missing either would leave the most likely forgery unguarded.
+    expect(unsupportedToolClaims("Web fetch ×3 (succeeded): done.", [])).toHaveLength(1);
+    expect(unsupportedToolClaims("Web fetch x2 (succeeded)", [])).toHaveLength(1);
+    expect(unsupportedToolClaims("Web search (2 succeeded, 1 failed)", [])).toHaveLength(1);
+  });
+
+  it("does not read a mixed outcome's own 'failed' as a denial", () => {
+    // The word "failed" inside `(2 succeeded, 1 failed)` is a result count. Treating it
+    // as a negation would protect a fabricated step — the opposite of the intent.
+    expect(unsupportedToolClaims("Web search (2 succeeded, 1 failed): partial.", [])).toHaveLength(
+      1,
+    );
+    // A real denial beside the step still protects it.
+    expect(unsupportedToolClaims("Web search (succeeded) was not attempted.", [])).toEqual([]);
+  });
+
   it("does not match ordinary prose that names no tool", () => {
     for (const text of [
       "I searched the web and found three sources.",

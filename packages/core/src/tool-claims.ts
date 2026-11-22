@@ -24,6 +24,21 @@ export const TOOL_STEP_LABELS: readonly string[] = BUILTIN_TOOL_NAMES.map(humani
 const OUTCOME_WORDS = ["succeeded", "failed", "stopped"] as const;
 
 /**
+ * The outcome text the app prints inside the parentheses. Two shapes exist:
+ * a single word (`succeeded`), and the counted form for mixed results
+ * (`2 succeeded, 1 failed`). Both must be matched or the guard misses the exact
+ * lines `toolStepsHistoryText` teaches the model.
+ */
+const OUTCOME_IN_PARENS = `(?:\\d+\\s+)?(?:${OUTCOME_WORDS.join("|")})(?:\\s*,\\s*(?:\\d+\\s+)?(?:${OUTCOME_WORDS.join("|")}))*`;
+
+/**
+ * A count the app prints between the label and its outcome: `Web fetch ×3 (succeeded)`.
+ * The multiplication sign is the one `toolStepsHistoryText` uses; `x` is accepted too
+ * because a model retyping the line often substitutes it.
+ */
+const STEP_COUNT = `(?:\\s*[×x]\\s*\\d+)?`;
+
+/**
  * Words that flip a step-shaped phrase into an honest report of failure. A reply
  * that says "Web fetch failed" or "could not save the file" is telling the truth
  * about a failure; matching it would punish exactly the behaviour we want.
@@ -66,14 +81,22 @@ function proseOnly(text: string): string {
     .replace(/^\s*>[^\n]*$/gm, " ");
 }
 
-/** Whether the sentence around `at` denies that the action happened. */
+/**
+ * Whether the sentence around `at` denies that the action happened.
+ *
+ * The step's own outcome text is removed first: `(2 succeeded, 1 failed)` is a result
+ * count, not a denial, and its "failed" would otherwise protect a fabricated step.
+ */
 function isNegated(text: string, at: number, length: number): boolean {
   // Look at the sentence the label sits in: a negation in a neighbouring
   // sentence ("Nothing worked. Web fetch (succeeded)") belongs to the other one.
   const start = Math.max(0, text.lastIndexOf(".", at) + 1);
   const endAt = text.indexOf(".", at + length);
   const end = endAt === -1 ? text.length : endAt;
-  const sentence = text.slice(start, end).toLowerCase();
+  const sentence = text
+    .slice(start, end)
+    .replace(new RegExp(`\\(\\s*${OUTCOME_IN_PARENS}\\s*\\)`, "gi"), " ")
+    .toLowerCase();
   return NEGATIONS.some((word) => sentence.includes(word));
 }
 
@@ -94,7 +117,10 @@ export function unsupportedToolClaims(text: string, calledLabels: Iterable<strin
     // the label at the head of a list line, which is how `toolStepsHistoryText`
     // prints a step whose outcome was not recorded.
     const patterns = [
-      new RegExp(`\\b${escapeRegex(label)}\\s*\\(\\s*(?:${OUTCOME_WORDS.join("|")})\\s*\\)`, "i"),
+      new RegExp(
+        `\\b${escapeRegex(label)}${STEP_COUNT}\\s*\\(\\s*${OUTCOME_IN_PARENS}\\s*\\)`,
+        "i",
+      ),
       new RegExp(`^\\s*[-*]\\s+${escapeRegex(label)}\\b`, "im"),
     ];
     const hits = patterns
