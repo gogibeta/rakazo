@@ -1703,6 +1703,81 @@ describe("Pi connector tool dispatch", () => {
     expect(events.at(-1)).toEqual({ type: "done", text: "Done.Done." });
   });
 
+  it("fails the turn when the reply claims a tool step this run never made", async () => {
+    // The PR #97 retest transcript: a bot answered with the app's own step wording
+    // having called nothing like it. Here the run really did call the destination
+    // tool, but the reply claims a web fetch that never happened.
+    fakeAgentState.mode = "tools-then-final-text";
+    fakeAgentState.finalDelta = "Web fetch (succeeded): I pulled the pricing page.";
+    fakeAgentState.terminalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "Web fetch (succeeded): I pulled the pricing page." }],
+      stopReason: "stop",
+    };
+
+    const consume = async () => {
+      for await (const _event of new PiAgentRuntime().run(
+        {
+          botId: "b",
+          threadId: "t",
+          runId: "fabricated-claim",
+          prompt: "what does the pricing page say?",
+          instructions: "Use the destination tool, then tell the user what happened.",
+          history: [],
+          tools: [destinationTool],
+          model: { provider: "test", id: "dispatch-test-model" },
+          executeTool: vi.fn(async () => ({ ok: true })),
+        },
+        { signal: new AbortController().signal },
+      )) {
+        // drain
+      }
+    };
+
+    await expect(consume()).rejects.toThrow(/no such tool call is in this run/);
+  });
+
+  it("passes a reply whose tool step really ran this run", async () => {
+    // A tool named for a real built-in, so the reply's step line matches a label the
+    // guard knows. With a made-up name the test would pass vacuously.
+    const rememberTool: ConnectorTool = {
+      ...destinationTool,
+      name: "remember",
+      description: "Save a durable fact",
+    };
+    fakeAgentState.mode = "tools-then-final-text";
+    fakeAgentState.invoke = { name: "remember", args: { collection: "notes", title: "t" } };
+    fakeAgentState.finalDelta = "Remember (succeeded): saved it.";
+    fakeAgentState.terminalMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "Remember (succeeded): saved it." }],
+      stopReason: "stop",
+    };
+
+    const events: unknown[] = [];
+    for await (const event of new PiAgentRuntime().run(
+      {
+        botId: "b",
+        threadId: "t",
+        runId: "real-claim",
+        prompt: "save it",
+        instructions: "Use the remember tool, then tell the user what happened.",
+        history: [],
+        tools: [rememberTool],
+        model: { provider: "test", id: "dispatch-test-model" },
+        executeTool: vi.fn(async () => ({ ok: true })),
+      },
+      { signal: new AbortController().signal },
+    )) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      text: "I will check the destination first.Remember (succeeded): saved it.",
+    });
+  });
+
   it("emits only the final suffix that extends a streamed prefix", async () => {
     fakeAgentState.mode = "tools-then-final-text";
     fakeAgentState.finalDelta = "The inbox";

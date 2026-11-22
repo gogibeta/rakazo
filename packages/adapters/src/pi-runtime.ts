@@ -20,10 +20,13 @@ import type {
 } from "@rakazo/adapter-kit";
 import { ModelAccountError, ModelOutputError, TransientModelError } from "@rakazo/adapter-kit";
 import {
+  humanizeToolName,
   MISSING_TOOL_FINAL_RESPONSE_ERROR,
   MODEL_IMAGE_INPUT_ERROR,
   MODEL_OUTPUT_CUT_ERROR,
   modelFallbackFailure,
+  unsupportedToolClaims,
+  unsupportedToolClaimText,
 } from "@rakazo/core";
 import { getLogger } from "@rakazo/logging";
 import {
@@ -895,10 +898,16 @@ export class PiAgentRuntime implements AgentRuntime {
           queue.push({ type: "text", text });
         };
         let toolWorkPendingFinal = false;
+        // Every tool this run actually reached, by display label. The claim guard compares the
+        // final reply against this: a step line for a tool that never appears here is fabricated.
+        const calledToolLabels = new Set<string>();
         // Text streamed before this point is tool-turn narration. Only text after
         // it counts as the final reply, including when the completed message omits it.
         let streamedBeforePendingFinal = 0;
         agent.subscribe(async (event) => {
+          if (event.type === "tool_execution_start") {
+            calledToolLabels.add(humanizeToolName(event.toolName));
+          }
           if (event.type === "tool_execution_end" && isTerminatingReplyResult(event.result)) {
             terminatedReply = terminatingReplyText(event.result) ?? terminatedReply;
           }
@@ -1342,6 +1351,14 @@ export class PiAgentRuntime implements AgentRuntime {
             streamed = request.emptyResponseText?.trim() || "No response. Try again.";
             queue.push({ type: "text", text: streamed });
           }
+        }
+        // A reply that announces a step for a tool this run never reached is fabricated:
+        // the model copied the app's own step wording out of its history (see
+        // tool-claims.ts). Fail the turn the same way a missing final answer does, so the
+        // run is retried rather than shipping the claim to the user.
+        if (!host.pausePending) {
+          const claimed = unsupportedToolClaims(streamed, calledToolLabels);
+          if (claimed.length > 0) throw new ModelOutputError(unsupportedToolClaimText(claimed));
         }
         queue.push(streamed.trim() ? { type: "done", text: streamed } : { type: "done" });
       } catch (error) {
