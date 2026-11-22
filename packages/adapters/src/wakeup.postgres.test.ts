@@ -60,6 +60,19 @@ async function waitFor(assertion: () => void, timeoutMs = 10_000): Promise<void>
   await vi.waitFor(assertion, { timeout: timeoutMs, interval: 25 });
 }
 
+/** The worker row for one queued job, or undefined once it has completed and been removed. */
+async function jobState(
+  key: string,
+): Promise<{ attempts: number; locked_at: Date | string | null } | undefined> {
+  const result = await testPool().query<{
+    attempts: number;
+    locked_at: Date | null;
+  }>("select attempts, locked_at from graphile_worker._private_jobs where key = $1", [key]);
+  const row = result.rows[0];
+  if (!row) return undefined;
+  return { attempts: Number(row.attempts), locked_at: row.locked_at };
+}
+
 describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
   it("starts a fifth agent while four agents wait on model work", async () => {
     const publisher = new GraphileJobPublisher(testPool());
@@ -831,10 +844,11 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
     installLogger(createLogger({ service: "rakazo-worker", sinks: [sink] }));
     const gaveUp = () =>
       sink.events.filter(
-        (event) => event.message === "job.gave_up" && event["job.type"] === "secret.cleanup",
+        (event) =>
+          event.message === "job.gave_up" && event["job.type"] === "messaging.credential-cleanup",
       );
     const target = handlers({
-      "secret.cleanup": async () => {
+      "messaging.credential-cleanup": async () => {
         throw new Error("intentional contract-test failure");
       },
     });
@@ -842,8 +856,8 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
     try {
       await host.start(target);
       await publisher.enqueue({
-        name: "secret.cleanup",
-        payload: { kind: "secret_row", recordId: `record-${ref}`, ref },
+        name: "messaging.credential-cleanup",
+        payload: { installationId: `install-${ref}`, ref },
         replaceKey: key,
         maxAttempts: 2,
       });
@@ -861,7 +875,7 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
       expect(gaveUp()).toEqual([
         expect.objectContaining({
           level: "error",
-          "job.type": "secret.cleanup",
+          "job.type": "messaging.credential-cleanup",
           "job.id": expect.any(String),
           "job.attempts": 2,
           "job.max_attempts": 2,
@@ -890,7 +904,7 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
     installLogger(createLogger({ service: "rakazo-worker", sinks: [sink] }));
     let tries = 0;
     const target = handlers({
-      "secret.cleanup": async () => {
+      "messaging.credential-cleanup": async () => {
         tries += 1;
         if (tries === 1) throw new Error("intentional contract-test failure");
       },
@@ -898,8 +912,8 @@ describePostgres("Graphile background jobs (PostgreSQL contract)", () => {
     try {
       await host.start(target);
       await publisher.enqueue({
-        name: "secret.cleanup",
-        payload: { kind: "secret_row", recordId: `record-${ref}`, ref },
+        name: "messaging.credential-cleanup",
+        payload: { installationId: `install-${ref}`, ref },
         replaceKey: key,
         maxAttempts: 2,
       });
