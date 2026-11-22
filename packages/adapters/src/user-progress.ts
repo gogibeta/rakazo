@@ -22,6 +22,55 @@ export function narrationStatusLine(text: string): string {
 }
 
 /**
+ * A step that runs this long without finishing is indistinguishable from a hang: the thread
+ * shows the same working line the whole time. Past it the run says what it is still doing.
+ */
+export const PROGRESS_HEARTBEAT_AFTER_MS = 2 * 60_000;
+
+/** Once beats start they repeat on this gap, so a long step keeps reporting without flooding. */
+export const PROGRESS_HEARTBEAT_EVERY_MS = 5 * 60_000;
+
+/**
+ * The working line for a step that has outrun `PROGRESS_HEARTBEAT_AFTER_MS`: what is running and
+ * how long it has been. Undefined while the step is young enough that the ordinary working line
+ * is honest, and when nothing is running at all (a model call with no tool in flight still gets
+ * a beat from the caller's own silence, with no activity text).
+ *
+ * `elapsedMs` is the age of the step, not of the run: a run that spent ten minutes on earlier
+ * steps does not report a step that started a moment ago.
+ */
+export function progressHeartbeatLine(
+  activity: string | undefined,
+  elapsedMs: number,
+): string | undefined {
+  if (!activity || elapsedMs < PROGRESS_HEARTBEAT_AFTER_MS) return undefined;
+  return narrationStatusLine(`${activity} · ${formatElapsed(elapsedMs)}`);
+}
+
+/** "3m 20s" — long steps are read in minutes, so no tenths below them. */
+function formatElapsed(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
+}
+
+/**
+ * Whether a step that has been running for `elapsedMs` owes a beat now, given when the last one
+ * went out. `lastBeatElapsedMs` is the step's age when the previous beat was sent, or undefined
+ * when none has. The first beat is due at `PROGRESS_HEARTBEAT_AFTER_MS`; later ones are spaced
+ * `PROGRESS_HEARTBEAT_EVERY_MS` apart, so a long step keeps reporting without flooding.
+ */
+export function progressHeartbeatDue(
+  elapsedMs: number,
+  lastBeatElapsedMs: number | undefined,
+): boolean {
+  if (elapsedMs < PROGRESS_HEARTBEAT_AFTER_MS) return false;
+  if (lastBeatElapsedMs === undefined) return true;
+  return elapsedMs - lastBeatElapsedMs >= PROGRESS_HEARTBEAT_EVERY_MS;
+}
+
+/**
  * How a message the person sends while the bot works reaches the model: it knows the message
  * came mid-task. The answer goes through message_user, because a plain-text answer ends the
  * turn and the task with it; without that tool it is only asked to take the message into account.
