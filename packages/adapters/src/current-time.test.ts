@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCurrentTimeInstruction } from "./current-time.js";
+import { formatCurrentTimeInstruction, previousMessageAt } from "./current-time.js";
 
 describe("formatCurrentTimeInstruction", () => {
   it("anchors the present moment in UTC with the weekday and no sub-second noise", () => {
@@ -35,6 +35,39 @@ describe("formatCurrentTimeInstruction", () => {
     expect(formatCurrentTimeInstruction(at, "Not/AZone")).toContain(utc);
   });
 
+  it("does not tell the model to re-judge everything against the anchor", () => {
+    expect(formatCurrentTimeInstruction(new Date("2026-09-17T14:55:41Z"))).not.toContain(
+      "Treat this as the present moment",
+    );
+  });
+
+  it("says when the previous message was sent after a pause, in the user's time zone", () => {
+    const line = formatCurrentTimeInstruction(
+      new Date("2026-11-12T08:54:00Z"),
+      "Europe/Athens",
+      new Date("2026-11-11T21:42:00Z"),
+    );
+    expect(line).toContain("Wednesday, 2026-11-11 23:42 (UTC+02:00), 11 hours earlier");
+  });
+
+  it("counts long pauses in days and falls back to UTC", () => {
+    const line = formatCurrentTimeInstruction(
+      new Date("2026-11-12T08:54:00Z"),
+      null,
+      new Date("2026-11-09T08:00:00Z"),
+    );
+    expect(line).toContain("Monday, 2026-11-09 08:00 (UTC), 3 days earlier");
+  });
+
+  it("says nothing about the previous message within the hour", () => {
+    const line = formatCurrentTimeInstruction(
+      new Date("2026-11-12T08:54:00Z"),
+      "Europe/Athens",
+      new Date("2026-11-12T08:00:00Z"),
+    );
+    expect(line).not.toContain("earlier");
+  });
+
   it("defaults to the real clock", () => {
     const before = Date.now();
     const line = formatCurrentTimeInstruction();
@@ -42,5 +75,42 @@ describe("formatCurrentTimeInstruction", () => {
     expect(match).not.toBeNull();
     const stamped = Date.parse(`${match![1]}Z`);
     expect(Math.abs(stamped - before)).toBeLessThan(5_000);
+  });
+});
+
+describe("previousMessageAt", () => {
+  it("takes the newest message other than the current turn, in any order", () => {
+    const messages = [
+      { id: "now", createdAt: new Date("2026-11-12T08:54:00Z") },
+      { id: "b", createdAt: new Date("2026-11-11T21:42:00Z") },
+      { id: "a", createdAt: new Date("2026-11-11T21:40:00Z") },
+    ];
+    expect(previousMessageAt(messages, "now")?.toISOString()).toBe("2026-11-11T21:42:00.000Z");
+  });
+
+  it("is undefined for a first message", () => {
+    expect(previousMessageAt([{ id: "now", createdAt: new Date() }], "now")).toBe(undefined);
+  });
+
+  it("reads the compacted-history shape: optional ids and string timestamps", () => {
+    const messages = [
+      { id: "now", createdAt: "2026-11-12T08:54:00.000Z" },
+      { id: "b", createdAt: "2026-11-11T21:42:00.000Z" },
+      { createdAt: "2026-11-11T21:44:00.000Z" },
+    ];
+    expect(previousMessageAt(messages, "now")?.toISOString()).toBe("2026-11-11T21:44:00.000Z");
+  });
+
+  it("does not skip an id-less message when there is no current turn to exclude", () => {
+    const messages = [{ createdAt: "2026-11-11T21:42:00.000Z" }];
+    expect(previousMessageAt(messages, undefined)?.toISOString()).toBe("2026-11-11T21:42:00.000Z");
+  });
+
+  it("ignores an unparseable timestamp rather than treating it as the latest", () => {
+    const messages = [
+      { id: "b", createdAt: "not-a-date" },
+      { id: "a", createdAt: "2026-11-11T21:42:00.000Z" },
+    ];
+    expect(previousMessageAt(messages, undefined)?.toISOString()).toBe("2026-11-11T21:42:00.000Z");
   });
 });
