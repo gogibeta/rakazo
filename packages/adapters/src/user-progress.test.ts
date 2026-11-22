@@ -18,6 +18,10 @@ import {
   midTurnProgressBudgetAllows,
   NARRATION_STATUS_MAX_LENGTH,
   narrationStatusLine,
+  PROGRESS_HEARTBEAT_AFTER_MS,
+  PROGRESS_HEARTBEAT_EVERY_MS,
+  progressHeartbeatDue,
+  progressHeartbeatLine,
   USER_PROGRESS_MESSAGE_MAX_LENGTH,
   userProgressClientNonce,
 } from "./user-progress.js";
@@ -111,6 +115,68 @@ describe("midTurnProgressBudgetAllows", () => {
     const age = MID_TURN_PROGRESS_MIN_TURN_AGE_MS * 10;
     expect(midTurnProgressBudgetAllows(MID_TURN_PROGRESS_MAX_PER_RUN, age)).toBe(false);
     expect(midTurnProgressBudgetAllows(MID_TURN_PROGRESS_MAX_PER_RUN + 1, age)).toBe(false);
+  });
+});
+
+describe("progressHeartbeatDue", () => {
+  it("stays quiet while a step is young enough to be ordinary work", () => {
+    expect(progressHeartbeatDue(PROGRESS_HEARTBEAT_AFTER_MS - 1, undefined)).toBe(false);
+    // The threshold is inclusive: the first beat lands exactly on it.
+    expect(progressHeartbeatDue(PROGRESS_HEARTBEAT_AFTER_MS, undefined)).toBe(true);
+  });
+
+  it("spaces later beats instead of reporting on every tick", () => {
+    const first = PROGRESS_HEARTBEAT_AFTER_MS;
+    expect(progressHeartbeatDue(first + 1_000, first)).toBe(false);
+    expect(progressHeartbeatDue(first + PROGRESS_HEARTBEAT_EVERY_MS - 1, first)).toBe(false);
+    expect(progressHeartbeatDue(first + PROGRESS_HEARTBEAT_EVERY_MS, first)).toBe(true);
+  });
+
+  it("never beats twice for one threshold, however long the step runs", () => {
+    // Ten minutes of ticks against a five-minute gap: one beat at the threshold, one after it.
+    let beats = 0;
+    let last: number | undefined;
+    for (let elapsed = 0; elapsed <= 10 * 60_000; elapsed += 1_000) {
+      if (!progressHeartbeatDue(elapsed, last)) continue;
+      beats += 1;
+      last = elapsed;
+    }
+    expect(beats).toBe(2);
+  });
+});
+
+describe("progressHeartbeatLine", () => {
+  it("says nothing about a step that is still young", () => {
+    expect(progressHeartbeatLine("Running: pnpm build", PROGRESS_HEARTBEAT_AFTER_MS - 1)).toBe(
+      undefined,
+    );
+  });
+
+  it("names what is running and how long it has been", () => {
+    expect(progressHeartbeatLine("Running: pnpm build", 3 * 60_000 + 20_000)).toBe(
+      "Running: pnpm build · 3m 20s",
+    );
+  });
+
+  it("counts the step's own age, not the run's", () => {
+    // The threshold is two minutes, so a step that started a moment ago says nothing even when
+    // the run itself has been going for an hour.
+    expect(progressHeartbeatLine("Running: sleep", 90_000)).toBe(undefined);
+    expect(progressHeartbeatLine("Running: sleep", PROGRESS_HEARTBEAT_AFTER_MS)).toBe(
+      "Running: sleep · 2m 00s",
+    );
+  });
+
+  it("says nothing when no step is running, however long the silence", () => {
+    // A model call with no tool in flight has no activity to name; inventing one would be a lie.
+    expect(progressHeartbeatLine(undefined, 30 * 60_000)).toBe(undefined);
+  });
+
+  it("keeps the working line within the status cap", () => {
+    // The cap is the content; narrationStatusLine's own ellipsis is added after it.
+    const long = `Running: ${"x".repeat(400)}`;
+    const line = progressHeartbeatLine(long, 3 * 60_000);
+    expect(line).toBe(`${long.slice(0, NARRATION_STATUS_MAX_LENGTH)}…`);
   });
 });
 

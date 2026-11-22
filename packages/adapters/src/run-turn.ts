@@ -39,7 +39,7 @@ import {
   HISTORY_WINDOW_SIZE,
   shouldEnqueueCompaction,
 } from "./history-compaction.js";
-import { connectorStepNames } from "./pi-runtime-tools.js";
+import { connectorStepNames, describeToolActivity } from "./pi-runtime-tools.js";
 import {
   backOffRoutineAfterAccountError,
   clearRoutineBackoff,
@@ -118,12 +118,97 @@ import {
   clampUserProgressMessage,
   extractNarrationText,
   finalBlocksAfterMidTurnProgress,
+  progressHeartbeatDue,
+  progressHeartbeatLine,
   STEERING_RESET_MIN_GAP_MS,
   STEERING_RESETS_MAX_PER_RUN,
   USER_PROGRESS_MESSAGE_MAX_LENGTH,
 } from "./user-progress.js";
 
 type RuntimeEvent<T extends AgentRuntimeEvent["type"]> = Extract<AgentRuntimeEvent, { type: T }>;
+
+/**
+ * Says what a long step is still doing, on the working line, so a slow build cannot be mistaken
+ * for a hang. A step is the span between the events that end one: a tool call starts it, and the
+ * next event that moves the turn on ends it.
+ *
+ * Beats are for the person watching. They go out as `activity` progress, which is the working
+ * line rather than a chat bubble: an interim message would join the durable transcript and be
+ * answered like something the bot said, which a timer tick is not.
+ */
+export function createProgressHeartbeat(ctx: RunContext) {
+  const { deps, run, thread, bot, runId } = ctx;
+  /** What a long model call is doing when no tool is in flight to name. */
+  const MODEL_CALL_ACTIVITY = "Thinking";
+  /** What the current step is doing, or undefined when nothing is running. */
+  let activity: string | undefined;
+  let stepStartedAt = 0;
+  /** The step's age when the last beat went out; undefined until the step has had one. */
+  let lastBeatElapsedMs: number | undefined;
+  let stopped = false;
+  let inFlight = false;
+
+  return {
+    /** A tool call began: it is now the thing a long silence is spent on. */
+    start(toolName: string, args: Record<string, unknown>) {
+      activity = describeToolActivity(toolName, args, (name) => ctx.tools.connector.get(name));
+      stepStartedAt = Date.now();
+      // The step is new, so its first beat is a full threshold away even if the last one just
+      // went out for the step before it.
+      lastBeatElapsedMs = undefined;
+    },
+    /**
+     * The model call that follows has begun. A reasoning call can run for minutes without a tool
+     * in flight, and that silence is the one the item reports: no activity to name, but the
+     * working line must still say time is passing rather than nothing at all.
+     */
+    awaitingModel() {
+      activity = MODEL_CALL_ACTIVITY;
+      stepStartedAt = Date.now();
+      lastBeatElapsedMs = undefined;
+    },
+    /** Anything that moves the turn on: whatever was running has finished or been superseded. */
+    end() {
+      activity = undefined;
+    },
+    stop() {
+      stopped = true;
+    },
+    async tick() {
+      // A beat that is still being written must not overlap the next tick.
+      if (stopped || inFlight || !activity) return;
+      // Every other live publisher holds back on these runs, and a beat replaces the working
+      // line: a scripted run would overwrite the label a spec is reading.
+      if (ctx.scripted || isBackgroundRunTrigger(run.trigger)) return;
+      const now = Date.now();
+      const elapsedMs = now - stepStartedAt;
+      if (!progressHeartbeatDue(elapsedMs, lastBeatElapsedMs)) return;
+      const text = progressHeartbeatLine(activity, elapsedMs);
+      if (!text) return;
+      inFlight = true;
+      lastBeatElapsedMs = elapsedMs;
+      try {
+        await deps.events.append({
+          spaceId: run.spaceId,
+          threadId: thread.id,
+          botId: bot.id,
+          type: "thread.progress",
+          runId,
+          // Not `reset`: a beat replaces only the working line, and the text already streamed
+          // into the reply must survive it.
+          payload: { text, activity: true },
+        });
+      } catch (error) {
+        // A beat is a courtesy; losing one must never fail the run it describes.
+        if (!(error instanceof RunHistoryWriteError)) {
+          getLogger().error("progress heartbeat", error);
+        }
+      } finally {
+        inFlight = false;
+      }
+    },
+  };
+}
 
 /**
  * Stream the runtime's events into the thread. Returns true when the attempt stopped before
@@ -159,7 +244,10 @@ export async function consumeRunEvents(
   };
   // A quiet model call or a long tool streams no events, so Stop would otherwise go unseen
   // until the next event or heartbeat. The shared throttle keeps this at one read a second.
+  // The same tick reports progress: a step that outruns PROGRESS_HEARTBEAT_AFTER_MS would
+  // otherwise leave the working line unchanged for minutes, which reads as a hang.
   let watching = true;
+  const heartbeat = createProgressHeartbeat(ctx);
   const watch = setInterval(() => {
     void runLeaseLost(ctx, () => watching)
       .then((lost) => {
@@ -167,6 +255,7 @@ export async function consumeRunEvents(
         if (lost && watching) ctx.abortController.abort();
       })
       .catch(() => {});
+    void heartbeat.tick();
   }, 1_000);
   watch.unref?.();
   try {
@@ -182,6 +271,10 @@ export async function consumeRunEvents(
         throw new Error("Daily check-ins cannot start a computer or helper.");
       }
       if (event.type === "thinking") {
+        // The model call is the step: a reasoning call can run for minutes with no tool in
+        // flight, which is the silence the item reports.
+        if (event.active) heartbeat.awaitingModel();
+        else heartbeat.end();
         await publishThinking(event.active);
         continue;
       }
@@ -203,8 +296,10 @@ export async function consumeRunEvents(
         reply.assistantTurnText = "";
       }
       if (event.type === "text") {
+        heartbeat.end();
         await streamText(ctx, event);
       } else if (event.type === "turn") {
+        heartbeat.end();
         reply.assistantTurnBreakPending = true;
       } else if (event.type === "steered") {
         await onSteered(ctx, event);
@@ -217,6 +312,9 @@ export async function consumeRunEvents(
         await pauseForTakeover(ctx, event);
         return true;
       } else if (event.type === "tool") {
+        // Started before the call is handled: the call is what a long silence is spent on, and
+        // `onToolCalled` itself can block for the whole duration of a scripted tool.
+        heartbeat.start(event.name, event.args);
         if (await onToolCalled(ctx, event)) return true;
       } else if (event.type === "subagent") {
         await publishSubagent(ctx, event);
@@ -230,6 +328,7 @@ export async function consumeRunEvents(
           operationId: runId,
         });
       } else if (event.type === "done") {
+        heartbeat.end();
         recordExplicitNoResponse(reply, event.text ?? "");
         if (!reply.assembled && event.text) {
           if (reply.publishedMidTurnUserMessage || reply.discardedMidTurnNarration) {
@@ -247,6 +346,7 @@ export async function consumeRunEvents(
   } finally {
     watching = false;
     clearInterval(watch);
+    heartbeat.stop();
     // Run completion clears thinking too; never let this replace the turn's own outcome.
     await publishThinking(false).catch(() => {});
   }
