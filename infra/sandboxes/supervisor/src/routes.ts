@@ -59,12 +59,18 @@ import { assertComputerHomeWritable } from "./home-ownership.js";
 import {
   assertBotHomePath,
   ComputerIdentityError,
+  countRunningManagedContainers,
   countSpaceContainers,
   findBotContainer,
   isRakazoContainer,
   managedContainer,
 } from "./identity.js";
-import { withBotLifecycleLock, withComputerScreenLock, withSpaceComputerLock } from "./locks.js";
+import {
+  withBotLifecycleLock,
+  withComputerScreenLock,
+  withRamAdmissionLock,
+  withSpaceComputerLock,
+} from "./locks.js";
 import {
   computerNetworkName,
   ensureBotNetwork,
@@ -75,6 +81,7 @@ import {
   removeUnusedComputerNetwork,
 } from "./networks.js";
 import { allowPrivateBrowserHosts, navigableUrl } from "./page-browser-navigation.js";
+import { resolveRamAdmissionLimit } from "./ram-admission.js";
 import { publishedScreenUrl } from "./readiness.js";
 import { limitSupervisorRequestBody, supervisorFileWriteSchema } from "./request-limits.js";
 import {
@@ -287,12 +294,29 @@ app.post("/computers", async (c) => {
       // take the lock so a temporary free slot cannot be stolen by another bot's create.
       // Lock order is always bot → space; never take a bot lock while holding a space lock.
       const spaceComputerLimit = resolveSpaceComputerLimit();
+      // Host-wide memory budget. Replacements skip it like the Space cap: the bot
+      // already has its slot, and swapping its container does not raise concurrency.
+      const ramAdmissionLimit = resolveRamAdmissionLimit();
       const createComputer = async () => {
         if (!existing && spaceComputerLimit > 0) {
           const currentCount = await countSpaceContainers(body.spaceId);
           if (currentCount >= spaceComputerLimit) {
             return c.json(
               { error: `Computer limit reached for space (max: ${spaceComputerLimit})` },
+              429,
+            );
+          }
+        }
+        if (!existing && ramAdmissionLimit > 0) {
+          const runningComputers = await countRunningManagedContainers();
+          if (runningComputers >= ramAdmissionLimit) {
+            return c.json(
+              {
+                error:
+                  `Host memory budget reached: ${runningComputers} computers already running ` +
+                  `(max: ${ramAdmissionLimit}). Start fewer bots, or raise the budget by ` +
+                  "measuring real service peaks (RAKAZO_SERVICE_MEMORY_PEAKS) on this host.",
+              },
               429,
             );
           }
@@ -372,8 +396,14 @@ app.post("/computers", async (c) => {
         });
       };
 
-      if (spaceComputerLimit > 0) {
-        return await withSpaceComputerLock(body.spaceId, createComputer);
+      // The RAM budget is host-wide, so its count+create must be a global critical
+      // section: two Spaces admitting at once could each see a free slot and both
+      // create, oversubscribing the host. The global lock is the innermost one —
+      // never take a bot or Space lock while holding it.
+      if (spaceComputerLimit > 0 || ramAdmissionLimit > 0) {
+        return await withSpaceComputerLock(body.spaceId, () =>
+          withRamAdmissionLock(createComputer),
+        );
       }
       return await createComputer();
     });

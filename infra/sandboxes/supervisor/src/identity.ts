@@ -33,6 +33,38 @@ export async function countSpaceContainers(spaceId: string): Promise<number> {
   return count;
 }
 
+/**
+ * Count managed computers across every Space, for the host-wide RAM admission
+ * budget. Only running containers count: a stopped computer holds no memory, so
+ * counting it would refuse a fresh bot the host can actually afford. This is a
+ * different question from countSpaceContainers, which is a slot cap and so
+ * deliberately includes stopped computers.
+ */
+export async function countRunningManagedContainers(): Promise<number> {
+  const listed = await docker.listContainers();
+  let count = 0;
+  for (const item of listed) {
+    if (await isManagedComputerContainer(item)) count++;
+  }
+  return count;
+}
+
+async function isManagedComputerContainer(item: Docker.ContainerInfo): Promise<boolean> {
+  const labels = item.Labels;
+  if (labels) {
+    if (labels["rakazo.managed"] === "true" || item.Image === COMPUTER_IMAGE) return true;
+    // Image may be an ID after the tag moved — confirm via inspect.
+  }
+  try {
+    const info = await docker.getContainer(item.Id).inspect();
+    const infoLabels = info.Config?.Labels ?? {};
+    return infoLabels["rakazo.managed"] === "true" || info.Config?.Image === COMPUTER_IMAGE;
+  } catch {
+    // Container might have been removed concurrently
+    return false;
+  }
+}
+
 async function isManagedSpaceContainer(
   item: Docker.ContainerInfo,
   spaceId: string,
