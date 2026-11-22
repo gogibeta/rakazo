@@ -24,6 +24,7 @@ import {
 } from "./run-tool-selection.js";
 import { appTools } from "./run-tools-app.js";
 import { computerTools, pageBrowserTool } from "./run-tools-computer.js";
+import { connectionTools } from "./run-tools-connections.js";
 import { emailTools } from "./run-tools-email.js";
 import { feedbackTools } from "./run-tools-feedback.js";
 import { fileTools } from "./run-tools-files.js";
@@ -62,6 +63,7 @@ const TOOL_HANDLERS = new Map<string, ToolHandler>([
   ...Object.entries(secretTools),
   ...Object.entries(walletTools),
   ...Object.entries(hostTools),
+  ...Object.entries(connectionTools),
   ...Object.entries(fleetTools),
   ...Object.entries(appTools),
   [USER_COMPUTER_SHELL_TOOL, userComputerShell],

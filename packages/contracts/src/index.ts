@@ -18,6 +18,7 @@ export * from "./builtin-tools.js";
 export * from "./client-build.js";
 export * from "./computer.js";
 export * from "./connector-errors.js";
+export * from "./custom-connections.js";
 export * from "./desktop.js";
 export * from "./domain.js";
 export * from "./events.js";

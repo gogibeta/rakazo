@@ -266,6 +266,18 @@ describeWithDatabase("API authorization and resource isolation", () => {
         "wallets/changeVaultPassword",
         { currentPassword: "not-a-real-password", newPassword: "also-not-a-real-one" },
       ],
+      ["customConnections/list"],
+      [
+        "customConnections/add",
+        {
+          name: "Test",
+          baseUrl: "https://api.example.com",
+          authStyle: "bearer",
+          apiKey: "not-a-real-key",
+        },
+      ],
+      ["customConnections/remove", { connectionId: "missing-connection" }],
+      ["customConnections/test", { connectionId: "missing-connection" }],
       ["deployment/get"],
       ["deployment/update", { signupsEnabled: true }],
       ["deployment/hostStatus"],
