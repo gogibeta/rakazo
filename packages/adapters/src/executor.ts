@@ -2214,7 +2214,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
  * Best effort: a continuation that cannot be created must not stop the run from finalizing, so a
  * failure here is logged and the run completes as it would have without this.
  */
-async function handOffIfToolLimitStopped(ctx: RunContext): Promise<void> {
+export async function handOffIfToolLimitStopped(ctx: RunContext): Promise<void> {
   const { deps, run } = ctx;
   const budget = spentToolCallBudget(ctx.runId);
   if (budget?.exceeded !== "tool_calls") return;
