@@ -65,6 +65,8 @@ export type WalletVaultServiceErrorCode =
   | "proposal_not_signable"
   | "proposal_tampered"
   | "wallet_key_mismatch"
+  | "wallet_key_unreadable"
+  | "legacy_path_ambiguous"
   | "signing_not_enabled"
   | "fill_not_enabled";
 
@@ -82,6 +84,9 @@ const ERROR_MESSAGES: Record<WalletVaultServiceErrorCode, string> = {
   proposal_not_signable: "The proposal is no longer available to sign.",
   proposal_tampered: "The proposal does not match its recorded fingerprint.",
   wallet_key_mismatch: "The wallet key does not match the proposal's recorded sender.",
+  wallet_key_unreadable: "The wallet's stored key could not be read as a signing key.",
+  legacy_path_ambiguous:
+    "This wallet's key came from a seed phrase, whose account path is not recorded, so it cannot be signed from here.",
   signing_not_enabled: "Wallet signing is not available yet.",
   fill_not_enabled: "Wallet filling is not available yet.",
 };
@@ -94,6 +99,32 @@ export class WalletVaultServiceError extends Error {
     this.name = "WalletVaultServiceError";
     this.code = code;
   }
+}
+
+const HEX_KEY_64 = /^[0-9a-fA-F]{64}$/;
+const WORD_TOKEN = /^[A-Za-z]+$/;
+
+/**
+ * The 32 raw bytes secp256k1 signs with, from whatever the sealed secret held.
+ *
+ * Wallets migrated off the server seal kept their secret exactly as it was
+ * typed: a 0x-hex string, bare hex, or a seed phrase. The curve needs 32 raw
+ * bytes, so hex text is decoded here and everything else is refused with a
+ * typed error rather than handed to the curve to misread.
+ */
+export function walletSigningKey(opened: Buffer): Buffer {
+  if (opened.length === 32) return opened;
+  const text = opened.toString("utf8").trim();
+  const hex = text.startsWith("0x") || text.startsWith("0X") ? text.slice(2) : text;
+  if (HEX_KEY_64.test(hex)) return Buffer.from(hex, "hex");
+  if (isSeedPhrase(text)) throw new WalletVaultServiceError("legacy_path_ambiguous");
+  throw new WalletVaultServiceError("wallet_key_unreadable");
+}
+
+/** A BIP-39-sized run of words: readable, but its derivation path was never stored. */
+function isSeedPhrase(text: string): boolean {
+  const words = text.split(/\s+/).filter(Boolean);
+  return words.length >= 12 && words.length <= 24 && words.every((word) => WORD_TOKEN.test(word));
 }
 
 /**
@@ -499,11 +530,20 @@ export function createWalletVaultService(deps: {
         userId: input.userId,
       });
       if (!envelope) throw new WalletVaultServiceError("wallet_not_found");
-      const privateKey = await openWalletKeyWithPassword({
+      const opened = await openWalletKeyWithPassword({
         walletId: proposal.walletId,
         envelope,
         password: grant.passwordMaterial.toString("utf8"),
       });
+      let privateKey: Buffer;
+      try {
+        privateKey = walletSigningKey(opened);
+      } catch (error) {
+        opened.fill(0);
+        throw error;
+      }
+      // The reader may have decoded a fresh buffer; the sealed bytes are no longer needed.
+      if (privateKey !== opened) opened.fill(0);
       try {
         const signed = signEip1559Transaction(
           {
