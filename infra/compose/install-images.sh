@@ -149,7 +149,7 @@ required_files=("$COMPOSE_FILE" "$ENV_EXAMPLE")
 # because it is what every other download is checked against: a manifest that could be
 # swapped would verify anything. Regenerate this constant with
 # infra/compose/write-download-checksums.sh and update it here when those files change.
-readonly SHA256SUMS_SHA256="4bc2cdc4db8b6413b60508e879c4193524e742c68720d720edd026e355c2b4b2"
+readonly SHA256SUMS_SHA256="dae8f82e6ea5d9ddf48f0e31c024442400018ce8ab12601f7a613bd769ccb8a0"
 if [[ "$offline" == true ]]; then
   for filename in "${required_files[@]}"; do
     [[ -f "$filename" ]] || fail "--offline requires local ${filename}; copy it into the working directory first."
