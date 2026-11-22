@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   verifyWalletVaultPassword,
   WalletVaultNotConfiguredError,
@@ -6,9 +7,22 @@ import type { WalletVaultClient } from "@rakazo/adapters/wallet-vault-client";
 import { WalletVaultClientError } from "@rakazo/adapters/wallet-vault-client";
 import { createVaultSqlShim } from "@rakazo/adapters/wallet-vault-fake";
 import type { PrismaClient } from "@rakazo/db";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RouterContext } from "./context.js";
 import { walletsRoutes } from "./wallets.js";
+
+// W-2 records a security event on removal and restore. The real recorder needs a
+// request context and a database; these tests only need to see what it was told.
+const recorded = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock("@rakazo/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@rakazo/db")>();
+  return {
+    ...actual,
+    recordSecurityEvent: vi.fn(async (event: Record<string, unknown>) => {
+      recorded.push(event);
+    }),
+  };
+});
 
 // The well-known public Hardhat test account #0: a published test vector.
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -25,6 +39,8 @@ type Row = {
   keyCiphertext: string | null;
   passwordWrap: string | null;
   migrationStatus: string;
+  removedAt: Date | null;
+  removedName: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -116,13 +132,22 @@ function walletStore() {
         }: {
           data: Omit<
             Row,
-            "id" | "createdAt" | "updatedAt" | "keyCiphertext" | "passwordWrap" | "migrationStatus"
+            | "id"
+            | "createdAt"
+            | "updatedAt"
+            | "keyCiphertext"
+            | "passwordWrap"
+            | "migrationStatus"
+            | "removedAt"
+            | "removedName"
           >;
         }) => {
           const row: Row = {
             keyCiphertext: null,
             passwordWrap: null,
             migrationStatus: "legacy_server_only",
+            removedAt: null,
+            removedName: null,
             ...data,
             id: `w${++next}`,
             createdAt: new Date("2026-09-01T00:00:00.000Z"),
@@ -146,6 +171,10 @@ function walletStore() {
               if (condition && typeof condition === "object" && "in" in condition) {
                 return (condition as { in: unknown[] }).in.includes(value);
               }
+              // `{ not: null }` is how the restore path asks for removed rows.
+              if (condition && typeof condition === "object" && "not" in condition) {
+                return value !== (condition as { not: unknown }).not;
+              }
               return value === condition;
             });
           let count = 0;
@@ -163,17 +192,49 @@ function walletStore() {
         return row;
       }),
       findFirst: vi.fn(
-        async ({ where }: { where: { userId: string; name?: string; id?: string } }) =>
-          rows.find(
-            (row) =>
-              row.userId === where.userId &&
-              (where.name === undefined || row.name === where.name) &&
-              (where.id === undefined || row.id === where.id),
-          ) ?? null,
+        async ({
+          where,
+          select,
+        }: {
+          where: {
+            userId: string;
+            name?: string;
+            id?: string;
+            removedAt?: null | { not: null };
+          };
+          select?: Record<string, boolean>;
+        }) => {
+          const row =
+            rows.find(
+              (entry) =>
+                entry.userId === where.userId &&
+                (where.name === undefined || entry.name === where.name) &&
+                (where.id === undefined || entry.id === where.id) &&
+                (where.removedAt === undefined ||
+                  (where.removedAt === null ? entry.removedAt === null : entry.removedAt !== null)),
+            ) ?? null;
+          if (!row || !select) return row;
+          // Honour `select`, the way Prisma does: a caller that asks for two
+          // fields must not receive the sealed secret alongside them.
+          return Object.fromEntries(
+            Object.keys(select)
+              .filter((key) => select[key])
+              .map((key) => [key, row[key as keyof Row]]),
+          );
+        },
       ),
-      findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
-        rows.filter((row) => row.userId === where.userId),
+      findMany: vi.fn(async ({ where }: { where: { userId: string; removedAt?: null } }) =>
+        rows.filter(
+          (row) =>
+            row.userId === where.userId &&
+            (where.removedAt === undefined || row.removedAt === where.removedAt),
+        ),
       ),
+      findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
+        const row = rows.find((entry) => entry.id === where.id);
+        if (!row) throw new Error("not found");
+        return row;
+      }),
       delete: vi.fn(async ({ where }: { where: { id: string } }) => {
         rows = rows.filter((row) => row.id !== where.id);
       }),
@@ -184,6 +245,61 @@ function walletStore() {
       }),
     },
     userWalletUse: { findMany: vi.fn(async () => []) },
+    // The removal-confirmation table: tokens are stored by digest, so the double
+    // hashes the token the caller holds the same way the real code does.
+    walletRemovalConfirmation: (() => {
+      type TokenRow = {
+        id: string;
+        userId: string;
+        walletId: string;
+        tokenHash: string;
+        expiresAt: Date;
+        consumedAt: Date | null;
+      };
+      let tokenRows: TokenRow[] = [];
+      let tokenNext = 0;
+      const digest = (token: string) => createHash("sha256").update(token).digest("hex");
+      return {
+        create: vi.fn(async ({ data }: { data: Omit<TokenRow, "id" | "consumedAt"> }) => {
+          const row: TokenRow = { ...data, id: `t${++tokenNext}`, consumedAt: null };
+          tokenRows.push(row);
+          return row;
+        }),
+        findFirst: vi.fn(
+          async ({ where }: { where: { tokenHash: string; userId: string; walletId: string } }) =>
+            tokenRows.find(
+              (row) =>
+                row.tokenHash === where.tokenHash &&
+                row.userId === where.userId &&
+                row.walletId === where.walletId,
+            ) ?? null,
+        ),
+        updateMany: vi.fn(
+          async ({
+            where,
+            data,
+          }: {
+            where: { id: string; consumedAt?: null };
+            data: { consumedAt: Date };
+          }) => {
+            const row = tokenRows.find((entry) => entry.id === where.id);
+            // Honour `where` exactly, the way Prisma does. The previous version
+            // checked `consumedAt` unconditionally, which made the double stricter
+            // than the code: deleting the condition from the source left the test
+            // passing. Now the guard must be in the code to be observed.
+            if (!row) return { count: 0 };
+            if (where.consumedAt === null && row.consumedAt !== null) return { count: 0 };
+            row.consumedAt = data.consumedAt;
+            return { count: 1 };
+          },
+        ),
+        rows: () => tokenRows,
+        digest,
+        reset: () => {
+          tokenRows = [];
+        },
+      };
+    })(),
     walletVault: {
       findUnique: vi.fn(async ({ where }: { where: { userId: string } }) =>
         vaultRows.has(where.userId) ? { ...vaultRows.get(where.userId)! } : null,
@@ -456,6 +572,8 @@ describe("wallets routes", () => {
       keyCiphertext: null,
       passwordWrap: null,
       migrationStatus: "legacy_server_only",
+      removedAt: null,
+      removedName: null,
       createdAt: new Date("2026-09-01T00:00:00.000Z"),
       updatedAt: new Date("2026-09-01T00:00:00.000Z"),
     });
@@ -506,5 +624,347 @@ describe("wallets routes", () => {
         input: { walletId, password },
       }),
     ).rejects.toThrow(/Wallet not found/);
+  });
+});
+
+/** Remove a wallet the way the UI does: ask for a token, then spend it. */
+async function removeWithToken(
+  api: Record<string, (call: { context: unknown; input?: unknown }) => Promise<unknown>>,
+  context: { actor: { userId: string; spaceId: string }; signal: undefined },
+  walletId: string,
+) {
+  const confirmation = (await api.requestRemove!({ context, input: { walletId } })) as {
+    token: string;
+  };
+  return api.remove!({ context, input: { walletId, confirmationToken: confirmation.token } });
+}
+
+describe("W-2: removing a wallet is a soft delete", () => {
+  // `recorded` is module-level so the mock can see it; each case starts empty.
+  beforeEach(() => {
+    recorded.length = 0;
+  });
+
+  it("keeps the row and the secret, releases the name, and audits the removal", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    recorded.length = 0;
+
+    const result = await removeWithToken(api, context, "w1");
+    expect(result).toEqual({ ok: true });
+
+    // The row is still there with its sealed secret: the whole point of W-2 is
+    // that a removal no longer destroys the only server-side copy of the key.
+    const row = store.rows()[0]!;
+    expect(row.secretCipher).toBe("v2:sealed-value");
+    expect(row.removedAt).toBeInstanceOf(Date);
+    expect(row.removedName).toBe("burner");
+    // The name is released so a new wallet may take it, and the row is left
+    // holding something recognisably not a name anyone chose.
+    expect(row.name).toBe("removed:w1");
+
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        type: "wallet.removed",
+        userId: "u",
+        metadata: { walletId: "w1", chain: "evm", name: "burner" },
+      }),
+    ]);
+    // Nothing secret reaches the audit event.
+    expect(JSON.stringify(recorded)).not.toContain(KEY.slice(2));
+  });
+
+  it("hides a removed wallet from list, uses, migrate and get, but keeps it restorable", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await removeWithToken(api, context, "w1");
+
+    expect(await api.list!({ context })).toEqual({ wallets: [] });
+    await expect(api.uses!({ context, input: { walletId: "w1" } })).rejects.toThrow(
+      /Wallet not found/,
+    );
+    await expect(
+      api.migrate!({ context, input: { walletId: "w1", password: "correct horse battery" } }),
+    ).rejects.toThrow(/Wallet not found/);
+
+    // Restoring brings it back under its old name, with the secret intact.
+    const restored = await api.restore!({ context, input: { walletId: "w1" } });
+    expect(restored).toMatchObject({ id: "w1", name: "burner", address: ADDRESS });
+    expect(store.rows()[0]).toMatchObject({ removedAt: null, removedName: null, name: "burner" });
+    expect(await api.list!({ context })).toEqual({
+      wallets: [expect.objectContaining({ id: "w1", name: "burner" })],
+    });
+    expect(recorded.map((event) => event.type)).toEqual(["wallet.removed", "wallet.restored"]);
+  });
+
+  it("lets the name be reused after removal, and refuses to restore over the new wallet", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await removeWithToken(api, context, "w1");
+
+    // The name was released, so this must not trip the duplicate-name check.
+    await expect(
+      api.add!({ context, input: { name: "burner", secret: KEY } }),
+    ).resolves.toMatchObject({ name: "burner" });
+
+    // Restoring the old wallet would collide, and the owner gets something they
+    // can act on rather than a unique-constraint error surfacing as a 500.
+    await expect(api.restore!({ context, input: { walletId: "w1" } })).rejects.toThrow(
+      /already exists/,
+    );
+    expect(store.rows().filter((row) => row.removedAt === null)).toHaveLength(1);
+  });
+
+  it("reports a second removal as not found instead of rewriting the released name", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await removeWithToken(api, context, "w1");
+    const firstRemovedAt = store.rows()[0]!.removedAt;
+
+    // A removed wallet cannot even get a token: `requestRemove` filters on
+    // `removedAt: null`, so the second attempt is refused before any write.
+    await expect(api.requestRemove!({ context, input: { walletId: "w1" } })).rejects.toThrow(
+      /Wallet not found/,
+    );
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: "any-token" } }),
+    ).rejects.toThrow(/Wallet not found/);
+    // Unchanged: the loser of the race did not touch the row.
+    expect(store.rows()[0]!.removedAt).toBe(firstRemovedAt);
+    expect(recorded.filter((event) => event.type === "wallet.removed")).toHaveLength(1);
+  });
+
+  it("reports not found when the row is removed between the read and the write", async () => {
+    // The plain second-removal case above is caught by `findFirst` filtering on
+    // `removedAt: null`, so it never exercises the guard on the write itself.
+    // This drives the real race: the read still sees a live row, and by the time
+    // the write runs another caller has removed it. Without the write's own
+    // `removedAt: null` condition this would rewrite the name the winner
+    // released and log a second removal that never happened.
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    const nameBefore = store.rows()[0]!.name;
+    // The read still sees a live row; the write is made to lose the race the way
+    // a concurrent removal would. The double honours `where` so that dropping the
+    // `removedAt: null` condition makes it match and report a write that happened.
+    const updateMany = store.prisma.userWallet.updateMany as unknown as {
+      mockImplementationOnce: (
+        fn: (args: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => Promise<{ count: number }>,
+      ) => void;
+    };
+    updateMany.mockImplementationOnce(async ({ where }) => {
+      // Simulate the other caller having removed it already.
+      store.rows()[0]!.removedAt = new Date();
+      const matches =
+        (where.removedAt === undefined || store.rows()[0]!.removedAt === null) &&
+        (where.id === undefined || store.rows()[0]!.id === where.id);
+      return { count: matches ? 1 : 0 };
+    });
+
+    // A real token for a live wallet, so this fails on the write's own
+    // condition rather than on the token.
+    const { token } = (await api.requestRemove!({ context, input: { walletId: "w1" } })) as {
+      token: string;
+    };
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: token } }),
+    ).rejects.toThrow(/Wallet not found/);
+    // The row is untouched: the loser of the race did not rewrite the name the
+    // winner released, and no second removal was logged.
+    expect(store.rows()[0]!.name).toBe(nameBefore);
+    expect(recorded.filter((event) => event.type === "wallet.removed")).toHaveLength(0);
+  });
+
+  it("does not let another user remove or restore a wallet", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    const other = { actor: { userId: "other", spaceId: "s" }, signal: undefined };
+
+    await expect(
+      api.remove!({ context: other, input: { walletId: "w1", confirmationToken: "any" } }),
+    ).rejects.toThrow(/Wallet not found/);
+    expect(store.rows()[0]!.removedAt).toBeNull();
+
+    await removeWithToken(api, context, "w1");
+    await expect(api.restore!({ context: other, input: { walletId: "w1" } })).rejects.toThrow(
+      /Removed wallet not found/,
+    );
+    expect(store.rows()[0]!.removedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("W-2: a removal needs a single-use token", () => {
+  beforeEach(() => {
+    recorded.length = 0;
+  });
+
+  it("refuses a removal with no token, with a wrong token, or with a token for another wallet", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await api.add!({ context, input: { name: "second", secret: KEY } });
+
+    // No token at all.
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: "" } }),
+    ).rejects.toThrow();
+    // A token nobody issued.
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: "not-a-real-token" } }),
+    ).rejects.toThrow(/not valid for this wallet/);
+    // A real token, but issued for a different wallet.
+    const forSecond = (await api.requestRemove!({ context, input: { walletId: "w2" } })) as {
+      token: string;
+    };
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: forSecond.token } }),
+    ).rejects.toThrow(/not valid for this wallet/);
+
+    // Nothing was removed by any of those.
+    expect(store.rows().every((row) => row.removedAt === null)).toBe(true);
+    expect(recorded.filter((event) => event.type === "wallet.removed")).toHaveLength(0);
+  });
+
+  it("spends a token once: the same token cannot remove a second wallet", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await api.add!({ context, input: { name: "second", secret: KEY } });
+    const { token } = (await api.requestRemove!({ context, input: { walletId: "w1" } })) as {
+      token: string;
+    };
+
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: token } }),
+    ).resolves.toEqual({ ok: true });
+    // Replaying the same token is refused, even though the wallet it names is
+    // now removed and the lookup would fail anyway — the point is the token.
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: token } }),
+    ).rejects.toThrow(/Wallet not found|not valid/);
+    expect(recorded.filter((event) => event.type === "wallet.removed")).toHaveLength(1);
+  });
+
+  it("refuses an expired token", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    const { token } = (await api.requestRemove!({ context, input: { walletId: "w1" } })) as {
+      token: string;
+    };
+    // Age the token past its five minutes rather than waiting.
+    const tokenRow = (
+      store.prisma.walletRemovalConfirmation as unknown as {
+        rows: () => Array<{ expiresAt: Date }>;
+      }
+    )
+      .rows()
+      .find((row) => row.expiresAt instanceof Date);
+    tokenRow!.expiresAt = new Date(Date.now() - 1000);
+
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: token } }),
+    ).rejects.toThrow(/expired/);
+    expect(store.rows()[0]!.removedAt).toBeNull();
+  });
+
+  it("returns the wallet's name and address with the token, so the owner can check it", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+
+    const confirmation = (await api.requestRemove!({
+      context,
+      input: { walletId: "w1" },
+    })) as { token: string; expiresAt: string; wallet: { name: string; address: string } };
+
+    expect(confirmation.wallet).toEqual({ name: "burner", address: ADDRESS });
+    // Five minutes, not longer.
+    const ttl = Date.parse(confirmation.expiresAt) - Date.now();
+    expect(ttl).toBeGreaterThan(4 * 60 * 1000);
+    expect(ttl).toBeLessThanOrEqual(5 * 60 * 1000 + 1000);
+    // The token is opaque and never derived from the wallet.
+    expect(confirmation.token).not.toContain("w1");
+    expect(JSON.stringify(confirmation)).not.toContain(KEY);
+  });
+
+  it("does not issue a token for another user's wallet, or for a removed one", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    const other = { actor: { userId: "other", spaceId: "s" }, signal: undefined };
+
+    await expect(api.requestRemove!({ context: other, input: { walletId: "w1" } })).rejects.toThrow(
+      /Wallet not found/,
+    );
+    await removeWithToken(api, context, "w1");
+    await expect(api.requestRemove!({ context, input: { walletId: "w1" } })).rejects.toThrow(
+      /Wallet not found/,
+    );
+  });
+});
+
+describe("W-2: a token is spent exactly once", () => {
+  beforeEach(() => {
+    recorded.length = 0;
+  });
+
+  it("refuses the second use of a token even while its wallet is still live", async () => {
+    // The replay case in the block above cannot reach the token logic: the first
+    // removal makes the wallet disappear, so the second call is refused by the
+    // wallet lookup. This drives the consumption path itself — two tokens for the
+    // same wallet, one of them spent, and the spent one replayed while the wallet
+    // is still there.
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+
+    const spent = (await api.requestRemove!({ context, input: { walletId: "w1" } })) as {
+      token: string;
+    };
+    // Consume it without removing: the confirmation is what is being tested.
+    const { consumeWalletRemovalConfirmation } = await import(
+      "@rakazo/adapters/wallet-removal-confirmation"
+    );
+    await consumeWalletRemovalConfirmation({
+      prisma: store.prisma as unknown as PrismaClient,
+      userId: "u",
+      walletId: "w1",
+      token: spent.token,
+    });
+
+    // The wallet is still live, so the lookup succeeds and the refusal can only
+    // come from the token being spent.
+    expect(store.rows()[0]!.removedAt).toBeNull();
+    await expect(
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: spent.token } }),
+    ).rejects.toThrow(/not valid for this wallet/);
+    expect(store.rows()[0]!.removedAt).toBeNull();
+  });
+
+  it("lets two callers race one token and exactly one win", async () => {
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    const { token } = (await api.requestRemove!({ context, input: { walletId: "w1" } })) as {
+      token: string;
+    };
+
+    const results = await Promise.allSettled([
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: token } }),
+      api.remove!({ context, input: { walletId: "w1", confirmationToken: token } }),
+    ]);
+    expect(results.filter((entry) => entry.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((entry) => entry.status === "rejected")).toHaveLength(1);
+    expect(recorded.filter((event) => event.type === "wallet.removed")).toHaveLength(1);
   });
 });

@@ -293,6 +293,12 @@ export function WalletsSettings() {
   const [secret, setSecret] = useState("");
   const [pending, setPending] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  /** The token plus the wallet it names, waiting for the owner to confirm. */
+  const [confirmRemoval, setConfirmRemoval] = useState<{
+    walletId: string;
+    token: string;
+    label: string;
+  } | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyId, setHistoryId] = useState<string | null>(null);
@@ -345,9 +351,33 @@ export function WalletsSettings() {
     setRemovingId(wallet.id);
     setError(null);
     try {
-      await rpc.wallets.remove({ walletId: wallet.id });
-      setWallets((current) => (current ?? []).filter((entry) => entry.id !== wallet.id));
-      if (historyId === wallet.id) setHistoryId(null);
+      // Removing asks for a single-use token first. The token comes back with the
+      // wallet's name and address, which is what the owner is shown before the
+      // removal goes through — a removal request on its own names nothing.
+      const confirmation = await rpc.wallets.requestRemove({ walletId: wallet.id });
+      setConfirmRemoval({
+        walletId: wallet.id,
+        token: confirmation.token,
+        label: `${confirmation.wallet.name} (${confirmation.wallet.address})`,
+      });
+    } catch (caught) {
+      setError(errorText(caught, t`Could not remove the wallet`));
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  /** The owner confirmed the wallet named in the token: spend it. */
+  async function confirmRemove() {
+    if (!confirmRemoval) return;
+    const { walletId, token } = confirmRemoval;
+    setRemovingId(walletId);
+    setError(null);
+    try {
+      await rpc.wallets.remove({ walletId, confirmationToken: token });
+      setWallets((current) => (current ?? []).filter((entry) => entry.id !== walletId));
+      if (historyId === walletId) setHistoryId(null);
+      setConfirmRemoval(null);
     } catch (caught) {
       setError(errorText(caught, t`Could not remove the wallet`));
     } finally {
@@ -475,6 +505,39 @@ export function WalletsSettings() {
                   </Button>
                 </div>
               </div>
+              {confirmRemoval?.walletId === wallet.id ? (
+                <fieldset
+                  aria-label={t`Confirm removal`}
+                  className="mt-2 space-y-2 rounded-lg border border-border bg-muted/40 px-3 py-2"
+                >
+                  <p className="text-body-sm text-foreground">
+                    <Trans>Remove this wallet? Its key is kept, so this can be undone.</Trans>
+                  </p>
+                  <p className="break-all text-body-sm text-muted-foreground">
+                    {confirmRemoval.label}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      disabled={removingId === wallet.id}
+                      onClick={() => void confirmRemove()}
+                    >
+                      {removingId === wallet.id ? <Spinner /> : null}
+                      <Trans>Remove</Trans>
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setConfirmRemoval(null)}
+                    >
+                      <Trans>Keep it</Trans>
+                    </Button>
+                  </div>
+                </fieldset>
+              ) : null}
               {wallet.migrationStatus === "password_protected" ? (
                 <p className="pt-1 text-body-sm text-muted-foreground">
                   <Trans>Password protected</Trans>

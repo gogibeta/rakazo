@@ -162,7 +162,7 @@ describe("vault store proposal and envelope reads", () => {
     mocks.userWallet.findFirst.mockResolvedValue(null);
     expect(await store.readWalletKeyEnvelope({ walletId: "w1", userId: "u1" })).toBeNull();
     expect(mocks.userWallet.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: "w1", userId: "u1" } }),
+      expect.objectContaining({ where: { id: "w1", userId: "u1", removedAt: null } }),
     );
   });
 

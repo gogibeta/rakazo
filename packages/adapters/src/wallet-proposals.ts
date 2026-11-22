@@ -383,7 +383,7 @@ export async function createWalletProposal(input: {
   }
 
   const wallet = await input.prisma.userWallet.findFirst({
-    where: { id: proposal.walletId, userId: input.userId },
+    where: { id: proposal.walletId, userId: input.userId, removedAt: null },
     select: { id: true, userId: true, name: true, address: true, migrationStatus: true },
   });
   if (!wallet) throw new WalletProposalError("wallet_not_found");

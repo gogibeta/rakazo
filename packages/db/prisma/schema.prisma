@@ -69,6 +69,7 @@ model User {
   wallets                     UserWallet[]
   walletUses                  UserWalletUse[]
   walletProposals             WalletProposal[]
+  walletRemovalConfirmations  WalletRemovalConfirmation[]
   walletVault                 WalletVault?
   vaultUnlocks                VaultUnlock[]
   voiceCredentials            UserVoiceCredential[]
@@ -952,17 +953,53 @@ model UserWallet {
   /// "legacy_server_only" until migration wraps its key under the owner's
   /// wallet password ("password_protected"), or "migration_failed".
   migrationStatus String @default("legacy_server_only")
+  /// Set when the owner removes the wallet. The row and its secret stay, so a
+  /// removal can be undone; every read filters on this being null, and the
+  /// name is released so the owner can add a new wallet under the same name.
+  removedAt    DateTime?
+  /// The name the wallet held before removal. `name` is rewritten to a
+  /// placeholder on removal because `@@unique([userId, name])` would otherwise
+  /// keep the owner from reusing it. Restoring puts this back.
+  removedName  String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   uses         UserWalletUse[]
   proposals    WalletProposal[]
+  removalConfirmations WalletRemovalConfirmation[]
 
   @@unique([userId, name])
   /// The key a proposal's composite foreign key points at, so a proposal's
   /// wallet provably belongs to the proposal's owner in the database itself.
   @@unique([userId, id])
   @@index([userId, createdAt])
+  /// Listing live wallets is the hot path; removed ones are looked up by id.
+  @@index([userId, removedAt])
   @@map("user_wallets")
+}
+
+/// A one-shot proof that the owner meant to remove a particular wallet. Removing a
+/// wallet is the one irreversible-looking action in Settings, so a request carrying
+/// only a wallet id is not enough: the owner first asks for a token, is shown the
+/// wallet's name and address, and sends the token back with the removal. Only the
+/// token's SHA-256 is stored, so a database copy cannot be replayed.
+model WalletRemovalConfirmation {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId    String
+  /// Bound with userId, so the token is provably this owner's wallet.
+  wallet      UserWallet @relation(fields: [walletId, userId], references: [id, userId], onDelete: Cascade)
+  /// SHA-256 of the token handed to the client; the token itself is never stored.
+  tokenHash   String    @unique
+  /// Short-lived: a confirmation that sits around is one the owner forgot about.
+  expiresAt   DateTime
+  /// Set in the same write that consumes it, so a token cannot be used twice.
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([walletId])
+  @@map("wallet_removal_confirmations")
 }
 
 /// One proposed EVM transaction a bot asked its owner to sign. Immutable in

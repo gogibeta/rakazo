@@ -43,7 +43,7 @@ export function createPrismaVaultStore(prisma: PrismaClient): WalletVaultStore {
     async walletMigrationStatus(userId, walletId) {
       return asTenant(userId, async () => {
         const row = await prisma.userWallet.findFirst({
-          where: { id: walletId, userId },
+          where: { id: walletId, userId, removedAt: null },
           select: { migrationStatus: true },
         });
         return row?.migrationStatus ?? null;
@@ -117,7 +117,7 @@ export function createPrismaVaultStore(prisma: PrismaClient): WalletVaultStore {
     async readWalletKeyEnvelope(input) {
       return asTenant(input.userId, async () => {
         const row = await prisma.userWallet.findFirst({
-          where: { id: input.walletId, userId: input.userId },
+          where: { id: input.walletId, userId: input.userId, removedAt: null },
           select: { keyCiphertext: true, passwordWrap: true },
         });
         if (!row?.keyCiphertext || !row.passwordWrap) return null;

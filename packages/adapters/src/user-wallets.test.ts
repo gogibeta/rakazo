@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { resolveUserWalletFill } from "./user-wallets.js";
+import { listUserWallets, resolveUserWalletFill } from "./user-wallets.js";
 
 // The well-known public Hardhat test account #0: a published test vector.
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -74,5 +74,34 @@ describe("resolveUserWalletFill and migration", () => {
       savedAt: SAVED_AT,
     });
     expect(result).toMatchObject({ text: KEY, walletId: "w1" });
+  });
+});
+
+describe("listUserWallets", () => {
+  // A bot plans with the live wallets only. A removed wallet still exists so the
+  // owner can restore it, but offering it to a bot would let a run propose
+  // against a wallet the owner believes is gone.
+  it("asks for live wallets only, and maps just the public fields", async () => {
+    const findMany = vi.fn(async () => [
+      {
+        id: "w1",
+        name: "burner",
+        chain: "evm",
+        address: ADDRESS,
+        secretCipher: "v2:sealed",
+        removedAt: null,
+        removedName: null,
+      },
+    ]);
+    const prisma = { userWallet: { findMany } } as unknown as PrismaClient;
+
+    expect(await listUserWallets(prisma, "u1")).toEqual([
+      { id: "w1", name: "burner", chain: "evm", address: ADDRESS },
+    ]);
+    // The filter is what keeps a removed wallet out; without it the query
+    // returns it and a bot can plan with it.
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: "u1", removedAt: null } }),
+    );
   });
 });

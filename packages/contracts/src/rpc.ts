@@ -235,7 +235,9 @@ import {
 import {
   WalletAddInput,
   WalletMigrateInput,
+  WalletRemovalConfirmationSchema,
   WalletRemoveInput,
+  WalletRequestRemoveInput,
   WalletSummarySchema,
   WalletUseSummarySchema,
   WalletUsesInput,
@@ -553,6 +555,10 @@ export const appContract = {
     list: oc.output(z.object({ wallets: z.array(WalletSummarySchema) })),
     add: oc.input(WalletAddInput).output(WalletSummarySchema),
     remove: oc.input(WalletRemoveInput).output(z.object({ ok: z.literal(true) })),
+    /** Issue the single-use token `remove` needs, with the wallet's name and address. */
+    requestRemove: oc.input(WalletRequestRemoveInput).output(WalletRemovalConfirmationSchema),
+    /** Undo a removal. The secret was kept, so a restore returns a usable wallet. */
+    restore: oc.input(WalletRequestRemoveInput).output(WalletSummarySchema),
     migrate: oc.input(WalletMigrateInput).output(WalletSummarySchema),
     uses: oc.input(WalletUsesInput).output(z.object({ uses: z.array(WalletUseSummarySchema) })),
     vaultStatus: oc.output(WalletVaultStatusSchema),

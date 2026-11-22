@@ -15,6 +15,7 @@ const rpcMock = vi.hoisted(() => ({
     changeVaultPassword: vi.fn(),
     add: vi.fn(),
     remove: vi.fn(),
+    requestRemove: vi.fn(),
     migrate: vi.fn(),
     uses: vi.fn(),
   },
@@ -82,6 +83,12 @@ async function render() {
   });
   return { container, root };
 }
+
+/** The confirmation block's own buttons — both it and the row say "Remove". */
+const confirmButton = (container: HTMLElement, name: string) =>
+  [...container.querySelectorAll<HTMLButtonElement>("fieldset button")].find(
+    (candidate) => candidate.textContent === name,
+  );
 
 const button = (container: HTMLElement, name: string) =>
   [...container.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -178,4 +185,99 @@ it("shows no unlock section before a wallet password exists", async () => {
     container.remove();
     vi.unstubAllGlobals();
   }
+});
+
+const oneWallet = {
+  wallets: [
+    {
+      id: "w1",
+      name: "burner",
+      address: "0xabc",
+      chain: "evm",
+      migrationStatus: "legacy_server_only",
+      createdAt: "2026-11-01T00:00:00.000Z",
+    },
+  ],
+};
+
+it("asks before removing, then removes with the token it was given", async () => {
+  rpcMock.wallets.list.mockResolvedValue(oneWallet);
+  rpcMock.wallets.vaultStatus.mockResolvedValue(locked);
+  rpcMock.wallets.requestRemove.mockResolvedValue({
+    token: "tok-1",
+    expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    wallet: { name: "burner", address: "0xabc" },
+  });
+  rpcMock.wallets.remove.mockResolvedValue({ ok: true });
+  const { container, root } = await render();
+
+  // One click does not remove anything: it only asks for a confirmation.
+  await act(async () => {
+    button(container, "Remove")!.click();
+  });
+  expect(rpcMock.wallets.requestRemove).toHaveBeenCalledWith({ walletId: "w1" });
+  expect(rpcMock.wallets.remove).not.toHaveBeenCalled();
+
+  // The confirmation names the wallet, so the owner can see what they are about
+  // to remove rather than trusting a stale list.
+  const fieldset = container.querySelector("fieldset");
+  expect(fieldset).not.toBeNull();
+  expect(fieldset!.textContent).toContain("burner");
+  expect(fieldset!.textContent).toContain("kept");
+
+  // The second click spends the token.
+  await act(async () => {
+    confirmButton(container, "Remove")!.click();
+  });
+  expect(rpcMock.wallets.remove).toHaveBeenCalledWith({
+    walletId: "w1",
+    confirmationToken: "tok-1",
+  });
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+it("does not remove when the confirmation is dismissed", async () => {
+  rpcMock.wallets.list.mockResolvedValue(oneWallet);
+  rpcMock.wallets.vaultStatus.mockResolvedValue(locked);
+  rpcMock.wallets.requestRemove.mockResolvedValue({
+    token: "tok-1",
+    expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    wallet: { name: "burner", address: "0xabc" },
+  });
+  const { container, root } = await render();
+
+  await act(async () => {
+    button(container, "Remove")!.click();
+  });
+  await act(async () => {
+    confirmButton(container, "Keep it")!.click();
+  });
+  expect(rpcMock.wallets.remove).not.toHaveBeenCalled();
+  expect(container.querySelector("fieldset")).toBeNull();
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
+});
+
+it("says why a removal was refused instead of pretending it worked", async () => {
+  rpcMock.wallets.list.mockResolvedValue(oneWallet);
+  rpcMock.wallets.vaultStatus.mockResolvedValue(locked);
+  rpcMock.wallets.requestRemove.mockRejectedValue(new Error("Confirmation expired. Try again."));
+  const { container, root } = await render();
+
+  await act(async () => {
+    button(container, "Remove")!.click();
+  });
+  // No confirmation is offered when no token could be issued.
+  expect(container.querySelector("fieldset")).toBeNull();
+  expect(container.textContent).toContain("Confirmation expired");
+  expect(rpcMock.wallets.remove).not.toHaveBeenCalled();
+  await act(async () => {
+    root.unmount();
+  });
+  container.remove();
 });
