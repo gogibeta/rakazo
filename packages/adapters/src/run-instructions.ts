@@ -327,6 +327,9 @@ function toolUsageLine(parts: {
       ? "When the user only needs to see something on the computer screen, such as a QR code, take a screenshot and use attach_file to send it into the chat. Use request_takeover when the user must provide protected input or human judgment, or operate the screen."
       : undefined,
     "Use destination_write only for connected destination records.",
+    // Belt and braces beside the structural guard in pi-runtime: the guard blocks a
+    // fabricated step line, this tells the model the rule up front so it rarely writes one.
+    'Never state that a tool ran unless its call is in this run: a step line such as "Web fetch (succeeded)" only belongs in a reply when that tool actually ran here. To report a failure, say what failed.',
   ].filter((clause): clause is string => Boolean(clause));
   return `${parts.computerInstruction} ${clauses.join(" ")}`;
 }
