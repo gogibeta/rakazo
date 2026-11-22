@@ -47,7 +47,7 @@ import { secretPausedToolResult } from "./run-secret.js";
 import type { createRunTrustLoaders } from "./run-trust.js";
 import type { inferScript } from "./scripted-runtime.js";
 import { providerToolCallId, runToolCallIds } from "./tool-call-ids.js";
-import type { LoopGuardStreak, ToolCallWindowEntry } from "./tool-loop.js";
+import type { FailedToolCall, LoopGuardStreak, ToolCallWindowEntry } from "./tool-loop.js";
 import type { ToolRefusal } from "./tool-refusal.js";
 import { refusal } from "./tool-refusal.js";
 import { restoreTurnCheckpoint, unresolvedTurnCheckpointCalls } from "./turn-checkpoint.js";
@@ -184,6 +184,12 @@ export interface RunState {
   toolCallWindow: ToolCallWindowEntry[];
   /** Result fingerprints of finished calls, read when the next call is tracked. */
   toolResults: Map<string, string>;
+  /**
+   * The last failed call of this attempt, so an identical repeat of a failure the call cannot get
+   * past is refused before its tool runs again. One entry: the check is "is this the call that
+   * just failed", not a history.
+   */
+  lastFailedToolCall?: FailedToolCall;
   /** Calls refused before their tool ran, by execution id, for the log of a loop one causes. */
   toolRefusals?: Map<string, ToolRefusal>;
   /** Consecutive `computer_act`/`browser_act` batches over the action limit, this one included. */
