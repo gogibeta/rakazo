@@ -493,3 +493,50 @@ describe("purchase detection for the page tools", () => {
     expect(await prepareToolRequest(ctx, replay)).toBeUndefined();
   });
 });
+
+describe("fill_wallet is off unless the operator turns it on", () => {
+  const walletFill = {
+    name: "browser_act",
+    args: {
+      actions: [
+        {
+          kind: "fill_wallet",
+          ref: "e1",
+          wallet: "Main",
+          site: "https://app.example.test",
+          purpose: "connect",
+        },
+      ],
+    },
+  } as unknown as ToolRequest;
+
+  it("refuses before any approval card, so the owner is never asked for a fill that cannot happen", async () => {
+    const ctx = contextWith(vi.fn(async () => ({ purchase: null })));
+    const request = { ...walletFill, args: { ...walletFill.args } } as unknown as ToolRequest;
+    const result = await prepareToolRequest(ctx, request);
+    expect(result).toMatchObject({ error: expect.stringContaining("switched off") });
+    // No card: the request never reached the approval stage.
+    expect((request as { fleetSummary?: unknown }).fleetSummary).toBeUndefined();
+    expect((request as { walletUse?: unknown }).walletUse).toBeUndefined();
+  });
+
+  it("asks for the card again once the flag is on, so the change is reversible", async () => {
+    vi.stubEnv("RAKAZO_FILL_WALLET", "1");
+    try {
+      const ctx = contextWith(
+        vi.fn(async () => ({ purchase: null })),
+        {
+          // The wallet lookup runs before the card; a missing row is the "no such wallet"
+          // refusal, which is past the flag and therefore proves the flag no longer refuses.
+          deps: { prisma: { userWallet: { findFirst: async () => null } } },
+        },
+      );
+      const request = { ...walletFill, args: { ...walletFill.args } } as unknown as ToolRequest;
+      const result = await prepareToolRequest(ctx, request);
+      expect(result).toMatchObject({ error: expect.stringContaining("No wallet is saved") });
+      expect(result).not.toMatchObject({ error: expect.stringContaining("switched off") });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
