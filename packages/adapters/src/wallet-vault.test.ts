@@ -1,6 +1,10 @@
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { verifyPassword } from "./wallet-envelope.js";
+import {
+  createWalletKeyEnvelope,
+  openWalletKeyWithPassword,
+  verifyPassword,
+} from "./wallet-envelope.js";
 import { createVaultSqlShim } from "./wallet-vault-fake.js";
 import {
   changeWalletVaultPassword,
@@ -30,9 +34,21 @@ type VaultRow = {
   lockedUntil: Date | null;
 };
 
+/** A user wallet, as the password change sees it: envelope plus migration state. */
+type UserWalletRow = {
+  id: string;
+  userId: string;
+  name: string;
+  secretCipher: string;
+  keyCiphertext: string | null;
+  passwordWrap: string | null;
+  migrationStatus: string;
+};
+
 /** The vault table in memory, with the transaction Prisma would run. */
 function vaultStore() {
   const rows = new Map<string, VaultRow>();
+  const wallets = new Map<string, UserWalletRow>();
   const apply = (row: VaultRow, data: Record<string, unknown>) => {
     const record = row as unknown as Record<string, unknown>;
     for (const [key, value] of Object.entries(data)) {
@@ -97,10 +113,56 @@ function vaultStore() {
         },
       ),
     },
+    userWallet: {
+      findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const out: UserWalletRow[] = [];
+        for (const row of wallets.values()) {
+          if (where.userId !== undefined && row.userId !== where.userId) continue;
+          if (
+            where.migrationStatus !== undefined &&
+            row.migrationStatus !== where.migrationStatus
+          ) {
+            continue;
+          }
+          const wrap = where.passwordWrap as { not?: unknown } | undefined;
+          if (wrap?.not === null && row.passwordWrap === null) continue;
+          out.push({ ...row });
+        }
+        return out;
+      }),
+      update: vi.fn(
+        async ({ where, data }: { where: { id: string }; data: Partial<UserWalletRow> }) => {
+          const row = wallets.get(where.id);
+          if (!row) throw new Error(`no wallet ${where.id}`);
+          Object.assign(row, data);
+          return { ...row };
+        },
+      ),
+    },
     ...createVaultSqlShim(rows),
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
+    // A real transaction rolls back when the callback throws, so a change that
+    // fails mid-re-wrap leaves no trace. Emulate that here by snapshotting deep
+    // copies of both tables and restoring them if the callback rejects — the
+    // snapshot must be a copy, since the model methods mutate rows in place.
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const vaultSnapshot = [...rows.entries()].map(
+        ([key, value]) => [key, structuredClone(value)] as const,
+      );
+      const walletSnapshot = [...wallets.entries()].map(
+        ([key, value]) => [key, structuredClone(value)] as const,
+      );
+      try {
+        return await fn(client);
+      } catch (error) {
+        rows.clear();
+        for (const [key, value] of vaultSnapshot) rows.set(key, value as VaultRow);
+        wallets.clear();
+        for (const [key, value] of walletSnapshot) wallets.set(key, value as UserWalletRow);
+        throw error;
+      }
+    }),
   };
-  return { prisma: client as unknown as PrismaClient, rows };
+  return { prisma: client as unknown as PrismaClient, rows, wallets, client };
 }
 
 describe("wallet vault password state", () => {
@@ -317,4 +379,147 @@ describe("wallet vault unlock verification", () => {
     });
     expect(store.rows.get("u1")!.failedAttempts).toBe(0);
   }, 30_000);
+});
+
+describe("wallet password change re-wraps every migrated wallet (W-1)", () => {
+  const WALLET_A = "caaaaaaaaaaaaaaaaaaaaaaaa";
+  const WALLET_B = "cbbbbbbbbbbbbbbbbbbbbbbbb";
+  const WALLET_LEGACY = "ccccccccccccccccccccccccc";
+  const PRIVATE_KEY = Buffer.from("ab".repeat(32), "hex");
+
+  /** A wallet whose key is envelope-wrapped under `password`, in the fake store. */
+  async function addMigratedWallet(
+    store: ReturnType<typeof vaultStore>,
+    walletId: string,
+    password: string,
+  ) {
+    const envelope = await createWalletKeyEnvelope({
+      walletId,
+      privateKey: PRIVATE_KEY,
+      password,
+    });
+    store.wallets.set(walletId, {
+      id: walletId,
+      userId: "u1",
+      name: walletId,
+      secretCipher: "",
+      keyCiphertext: envelope.keyCiphertext,
+      passwordWrap: envelope.passwordWrap,
+      migrationStatus: "password_protected",
+    });
+  }
+
+  function envelopeOf(store: ReturnType<typeof vaultStore>, walletId: string) {
+    const row = store.wallets.get(walletId)!;
+    return { keyCiphertext: row.keyCiphertext!, passwordWrap: row.passwordWrap! };
+  }
+
+  it("re-wraps every migrated wallet, so the new password opens them and the old does not", async () => {
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    await addMigratedWallet(store, WALLET_A, PASSWORD);
+    await addMigratedWallet(store, WALLET_B, PASSWORD);
+
+    await changeWalletVaultPassword(store.prisma, "u1", {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+    });
+
+    for (const walletId of [WALLET_A, WALLET_B]) {
+      const opened = await openWalletKeyWithPassword({
+        walletId,
+        envelope: envelopeOf(store, walletId),
+        password: NEW_PASSWORD,
+      });
+      expect(opened.equals(PRIVATE_KEY)).toBe(true);
+      await expect(
+        openWalletKeyWithPassword({
+          walletId,
+          envelope: envelopeOf(store, walletId),
+          password: PASSWORD,
+        }),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("leaves a wallet that was never migrated alone", async () => {
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    store.wallets.set(WALLET_LEGACY, {
+      id: WALLET_LEGACY,
+      userId: "u1",
+      name: "legacy",
+      secretCipher: "sealed-server-copy",
+      keyCiphertext: null,
+      passwordWrap: null,
+      migrationStatus: "legacy_server_only",
+    });
+
+    await changeWalletVaultPassword(store.prisma, "u1", {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+    });
+
+    const row = store.wallets.get(WALLET_LEGACY)!;
+    expect(row.migrationStatus).toBe("legacy_server_only");
+    expect(row.secretCipher).toBe("sealed-server-copy");
+    expect(row.keyCiphertext).toBeNull();
+    expect(row.passwordWrap).toBeNull();
+  });
+
+  it("rolls the whole change back when one envelope cannot be re-wrapped", async () => {
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    await addMigratedWallet(store, WALLET_A, PASSWORD);
+    await addMigratedWallet(store, WALLET_B, PASSWORD);
+    const epochAfterSetup = store.rows.get("u1")!.passwordEpoch;
+    // B's wrap was made under a different password, so the change cannot open it
+    // with the current one. Failing closed strands nothing: the password keeps
+    // working and the owner investigates, instead of losing B for good.
+    const other = await createWalletKeyEnvelope({
+      walletId: WALLET_B,
+      privateKey: PRIVATE_KEY,
+      password: "a-different-password",
+    });
+    store.wallets.get(WALLET_B)!.passwordWrap = other.passwordWrap;
+
+    await expect(
+      changeWalletVaultPassword(store.prisma, "u1", {
+        currentPassword: PASSWORD,
+        newPassword: NEW_PASSWORD,
+      }),
+    ).rejects.toThrow();
+
+    // Nothing moved: the old verifier is still in place, the epoch did not
+    // advance, and the wallet that would have re-wrapped fine is as it started.
+    const vaultRow = store.rows.get("u1")!;
+    expect(vaultRow.passwordEpoch).toBe(epochAfterSetup);
+    expect(await verifyPassword(vaultRow.verifier, PASSWORD)).toBe(true);
+    const stillOld = await openWalletKeyWithPassword({
+      walletId: WALLET_A,
+      envelope: envelopeOf(store, WALLET_A),
+      password: PASSWORD,
+    });
+    expect(stillOld.equals(PRIVATE_KEY)).toBe(true);
+    await expect(
+      openWalletKeyWithPassword({
+        walletId: WALLET_A,
+        envelope: envelopeOf(store, WALLET_A),
+        password: NEW_PASSWORD,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("still moves the epoch when there are no wallets to re-wrap", async () => {
+    const store = vaultStore();
+    await setupWalletVaultPassword(store.prisma, "u1", PASSWORD);
+    const epochAfterSetup = store.rows.get("u1")!.passwordEpoch;
+
+    await changeWalletVaultPassword(store.prisma, "u1", {
+      currentPassword: PASSWORD,
+      newPassword: NEW_PASSWORD,
+    });
+
+    expect(store.rows.get("u1")!.passwordEpoch).toBe(epochAfterSetup + 1);
+  });
 });

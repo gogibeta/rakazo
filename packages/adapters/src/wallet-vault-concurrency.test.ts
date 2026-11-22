@@ -114,6 +114,14 @@ function vaultStore() {
         },
       ),
     },
+    // The password change re-wraps migrated wallets (W-1). These tests set up no
+    // wallets, so the model is present and simply finds no envelopes to move.
+    userWallet: {
+      findMany: vi.fn(async () => []),
+      update: vi.fn(async ({ where }: { where: { id: string } }) => {
+        throw new Error(`no wallet ${where.id}`);
+      }),
+    },
     ...createVaultSqlShim(rows),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
