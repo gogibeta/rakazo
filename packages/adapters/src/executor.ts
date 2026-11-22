@@ -94,7 +94,7 @@ import {
   persistLivePluginConnections,
   selectRunConnections,
 } from "./connection-context.js";
-import { formatCurrentTimeInstruction } from "./current-time.js";
+import { formatCurrentTimeInstruction, previousMessageAt } from "./current-time.js";
 import { resolveDeploymentModel } from "./deployment-model.js";
 import type { ExecutorDeps } from "./executor-deps.js";
 import type { FleetRun } from "./fleet-tools.js";
@@ -1651,7 +1651,11 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
           // A hang-up turn is read, not heard: no spoken-reply constraint.
           voiceCall && !callEndRun ? voiceCallInstruction(disabledBuiltinTools) : undefined,
           // Per-turn, not in the system prompt: the timestamp changes every call and would break the cacheable prefix.
-          formatCurrentTimeInstruction(deps.now?.() ?? new Date(), userTimeZone),
+          formatCurrentTimeInstruction(
+            deps.now?.() ?? new Date(),
+            userTimeZone,
+            previousMessageAt(history, currentTurnMessage?.id),
+          ),
           // Recalled memory is also per-turn: it is recomputed against each new message,
           // so at the head of history it would change the first history message on every
           // turn and break the cacheable prefix behind it. It rides here instead, beside
