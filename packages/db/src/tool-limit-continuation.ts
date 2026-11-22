@@ -27,6 +27,12 @@ export interface ToolLimitContinuation {
  * The model pin is copied from the run that stopped, so a continuation does not silently change
  * which provider serves the thread mid-task.
  *
+ * The continuation is also linked into its run's chain (`continuesRunId`, `chainRootTaskId`). A
+ * fuse can split one task across many runs, and today nothing records that they belong together,
+ * so a view has to guess a box per task. The chain root is copied verbatim from the run that
+ * stopped rather than derived, so a chain that has already been continued twice keeps the first
+ * task's id and never re-roots itself midway.
+ *
  * Returns null when a continuation must not be created: the thread already has a live run (two
  * would fight over the same computer), or the stopped run is no longer running (it was cancelled
  * or taken over while the turn was ending).
@@ -39,6 +45,8 @@ export async function createToolLimitContinuation(
     threadId: string;
     botId: string;
     userId: string;
+    taskId: string;
+    chainRootTaskId?: string | null;
     modelProvider?: string | null;
     modelId?: string | null;
     thinkingLevel?: string | null;
@@ -91,6 +99,10 @@ export async function createToolLimitContinuation(
       userId: run.userId,
       status: "queued",
       trigger: "resume",
+      // The predecessor is the run that stopped, and the chain root is whatever it says it is —
+      // its own task id for a first continuation, the original task for any later one.
+      continuesRunId: run.id,
+      chainRootTaskId: run.chainRootTaskId ?? run.taskId,
       ...pin,
     },
     select: { id: true, taskId: true },
@@ -114,6 +126,8 @@ export async function handOffToolLimitContinuation(
     threadId: string;
     botId: string;
     userId: string;
+    taskId: string;
+    chainRootTaskId?: string | null;
     modelProvider?: string | null;
     modelId?: string | null;
     thinkingLevel?: string | null;

@@ -1530,6 +1530,15 @@ model Run {
   routine              Routine?          @relation(fields: [routineId], references: [id], onDelete: SetNull)
   // The failed routine run this run retries. Unique, so a run is retried at most once.
   retryOfRunId         String?           @unique
+  // The run this one continues, when a tool-call fuse or a checkpoint handoff split one task
+  // across runs. Null for a run a person or a routine started. Unique, so one run continues
+  // exactly one predecessor and a chain cannot fork.
+  continuesRunId       String?           @unique
+  continuesRun         Run?              @relation("RunContinuation", fields: [continuesRunId], references: [id], onDelete: SetNull)
+  continuedByRun       Run?              @relation("RunContinuation")
+  // The first task of the chain this run belongs to: its own task id for a fresh run, the
+  // chain's root for every continuation. A view keyed on this shows one box per chain.
+  chainRootTaskId      String?
   // Durable retry schedule; null means runnable immediately when queued.
   wakeAt               DateTime?
   // Server-side first visible output, preserved across attempts and resumes.
@@ -1566,6 +1575,7 @@ model Run {
   // Partial index runs_bot_outcome_pending_idx (unreturned bot-message outcomes) is created in SQL.
   // Partial index runs_helper_outcome_pending_idx (unreturned background-helper outcomes) is created in SQL.
   @@index([routineId])
+  @@index([chainRootTaskId, createdAt])
   @@map("runs")
 }
 

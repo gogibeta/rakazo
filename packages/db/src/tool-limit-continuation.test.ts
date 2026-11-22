@@ -11,6 +11,7 @@ const RUN = {
   threadId: "thread_1",
   botId: "bot_1",
   userId: "user_1",
+  taskId: "task_stopped",
   modelProvider: "deepseek",
   modelId: "deepseek-chat",
   thinkingLevel: "medium",
@@ -128,6 +129,50 @@ describe("continuing a turn the tool-call fuse stopped", () => {
     await createToolLimitContinuation(client as never, RUN, "   \n\t ");
 
     expect(String(tasks[0]?.prompt)).toBe(TOOL_LIMIT_CONTINUATION_PROMPT);
+  });
+});
+
+describe("the chain a continuation belongs to", () => {
+  it("links the continuation to the run that stopped", async () => {
+    const { client, runs } = tx();
+
+    await createToolLimitContinuation(client as never, RUN, "x");
+
+    expect(runs[0]).toMatchObject({ continuesRunId: "run_stopped" });
+  });
+
+  it("roots a first continuation at the stopped run's own task", async () => {
+    const { client, runs } = tx();
+
+    await createToolLimitContinuation(client as never, RUN, "x");
+
+    // RUN has no chainRootTaskId yet, so this is the run that started the chain.
+    expect(runs[0]).toMatchObject({ chainRootTaskId: "task_stopped" });
+  });
+
+  it("keeps the original root when the chain is continued again", async () => {
+    const { client, runs } = tx();
+
+    // A run already inside a chain: it keeps the first task as root, not its own mid-chain task.
+    await createToolLimitContinuation(
+      client as never,
+      { ...RUN, taskId: "task_second", chainRootTaskId: "task_first" },
+      "x",
+    );
+
+    expect(runs[0]).toMatchObject({
+      chainRootTaskId: "task_first",
+      continuesRunId: "run_stopped",
+    });
+  });
+
+  it("roots at the run's own task when its root is explicitly null", async () => {
+    const { client, runs } = tx();
+
+    // Null is not "unknown": it is a run that was never continued, so it starts a chain.
+    await createToolLimitContinuation(client as never, { ...RUN, chainRootTaskId: null }, "x");
+
+    expect(runs[0]).toMatchObject({ chainRootTaskId: "task_stopped" });
   });
 });
 
