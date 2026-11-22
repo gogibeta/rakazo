@@ -413,3 +413,53 @@ it("stops a background helper from its saved running card, never a turn's live o
     messageId: "card-1",
   });
 });
+
+it("names the model that served a reply, and says nothing when the run recorded none", () => {
+  const reply = (model?: { provider: string; id: string }): ThreadMessage => ({
+    id: "message",
+    threadId: "thread",
+    seq: 1,
+    role: "bot",
+    botId: "bot-1",
+    createdAt: new Date().toISOString(),
+    blocks: [{ kind: "text", text: "Done" }],
+    ...(model ? { model } : {}),
+  });
+  const shown = () => container.querySelector('[data-testid="reply-model"]')?.textContent;
+
+  renderView("bot", [], {
+    message: reply({ provider: "openrouter", id: "deepseek-v4.1-flash-free" }),
+    speakerName: "Assistant",
+  });
+  expect(shown()).toBe("deepseek-v4.1-flash-free");
+
+  // A run that recorded no model (an older run, or one that never reached a model request)
+  // shows no name rather than guessing the thread's configured model.
+  renderView("bot", [], { message: reply(), speakerName: "Assistant" });
+  expect(shown()).toBeUndefined();
+});
+
+it("keeps the speaker name as its own text when a model is shown beside it", () => {
+  // The group-chat e2e finds a speaker with getByText(name, { exact: true }), which compares
+  // an element's whole text. The model chip sits in the same header, so the name must stay in
+  // an element of its own or the header reads "Research Writer<model>" and stops matching —
+  // which is what failed the Web E2E shard when the model was added.
+  const reply: ThreadMessage = {
+    id: "message",
+    threadId: "thread",
+    seq: 1,
+    role: "bot",
+    botId: "bot-1",
+    createdAt: new Date().toISOString(),
+    blocks: [{ kind: "text", text: "Done" }],
+    model: { provider: "openrouter", id: "deepseek-v4.1-flash-free" },
+  };
+  renderView("bot", [], { message: reply, speakerName: "Research Writer" });
+
+  expect(container.querySelector('[data-testid="speaker-name"]')?.textContent).toBe(
+    "Research Writer",
+  );
+  expect(container.querySelector('[data-testid="reply-model"]')?.textContent).toBe(
+    "deepseek-v4.1-flash-free",
+  );
+});

@@ -213,7 +213,20 @@ export const MessageView = memo(function MessageView({
             identity={message.botId}
             size={22}
           />
-          {speakerName}
+          {/* The name keeps its own element: the model sits beside it, so the header's text is
+              no longer exactly the bot's name. */}
+          <span data-testid="speaker-name">{speakerName}</span>
+          {message.model ? (
+            // Which model actually wrote this reply. A thread that failed over mid-conversation
+            // shows a different name per reply instead of one name for the whole thread.
+            <span
+              className="truncate font-normal text-muted-foreground"
+              title={`${message.model.provider} / ${message.model.id}`}
+              data-testid="reply-model"
+            >
+              {message.model.id}
+            </span>
+          ) : null}
         </div>
       ) : author ? (
         <div

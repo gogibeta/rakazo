@@ -10,6 +10,64 @@ import {
 } from "./thread-message-pages.js";
 
 describe("thread message pages", () => {
+  it("names the model that served each reply, in one lookup, and only where a run recorded one", async () => {
+    const row = (id: string, seq: number, runId: string | null) => ({
+      id,
+      threadId: "thread-1",
+      seq,
+      role: "bot",
+      blocks: [{ kind: "text", text: id }],
+      botId: "bot-1",
+      authorUserId: null,
+      replyToMessageId: null,
+      replyQuote: null,
+      runId,
+      createdAt: new Date("2026-11-21T00:00:00.000Z"),
+    });
+    const runs = vi.fn(async (_args: unknown) => [
+      { id: "run-a", modelProvider: "openrouter", modelId: "deepseek-v4.1-flash-free" },
+      { id: "run-b", modelProvider: "openrouter", modelId: "nex-n2.6" },
+    ]);
+    const prisma = {
+      message: {
+        findMany: vi.fn(async () => [
+          row("first", 1, "run-a"),
+          row("second", 2, "run-b"),
+          // A user message has no run, and an older run recorded no model.
+          { ...row("question", 3, null), role: "user" },
+          row("legacy", 4, "run-c"),
+        ]),
+      },
+      run: { findMany: runs },
+      user: { findMany: vi.fn(async () => []) },
+    } as unknown as PrismaClient;
+
+    const page = await loadMessagePage(prisma, "thread-1", undefined, 4);
+
+    // One lookup for the whole page, not one per message. (`withoutPeerRunMessages` makes
+    // its own run query for these rows, so the model read is the second and last one.)
+    expect(runs).toHaveBeenCalledTimes(2);
+    expect(runs.mock.calls[1]?.[0]).toEqual({
+      where: {
+        // Row order follows the page, so the id set is what matters here.
+        id: { in: expect.arrayContaining(["run-a", "run-b", "run-c"]) },
+        modelProvider: { not: null },
+        modelId: { not: null },
+      },
+      select: { id: true, modelProvider: true, modelId: true },
+    });
+    const byId = new Map(page.messages.map((message) => [message.id, message]));
+    // Each reply names the model that actually served it, so a thread that failed over
+    // mid-conversation shows a different name per reply.
+    expect(byId.get("first")?.model).toEqual({
+      provider: "openrouter",
+      id: "deepseek-v4.1-flash-free",
+    });
+    expect(byId.get("second")?.model).toEqual({ provider: "openrouter", id: "nex-n2.6" });
+    expect(byId.get("question")).not.toHaveProperty("model");
+    expect(byId.get("legacy")).not.toHaveProperty("model");
+  });
+
   it("names each message's author with one lookup and omits deleted accounts", async () => {
     const row = (id: string, seq: number, authorUserId: string | null, replyTo?: unknown) => ({
       id,
@@ -38,6 +96,7 @@ describe("thread message pages", () => {
     const prisma = {
       message: { findMany: vi.fn(async () => rows) },
       user: { findMany: users },
+      run: { findMany: vi.fn(async () => []) },
     } as unknown as PrismaClient;
 
     const page = await loadMessagePage(prisma, "thread-1", undefined, 3);
@@ -541,6 +600,7 @@ describe("thread message pages", () => {
     ]);
     const prisma = {
       message: { findMany, count: vi.fn(async () => 0) },
+      run: { findMany: vi.fn(async () => []) },
     } as unknown as PrismaClient;
 
     const page = await loadMessagePage(
@@ -584,6 +644,8 @@ describe("thread message pages", () => {
         findMany: vi
           .fn()
           .mockResolvedValueOnce([{ id: "run-peer" }])
+          .mockResolvedValueOnce([])
+          // The model read for the rows the page finally returns.
           .mockResolvedValueOnce([]),
       },
     } as unknown as PrismaClient;
@@ -664,6 +726,8 @@ describe("thread message pages", () => {
         findMany: vi
           .fn()
           .mockResolvedValueOnce([{ id: "run-peer" }])
+          .mockResolvedValueOnce([])
+          // The model read for the rows the page finally returns.
           .mockResolvedValueOnce([]),
       },
     } as unknown as PrismaClient;
@@ -1003,6 +1067,7 @@ describe("reply target validation", () => {
     };
     const prisma = {
       message: { findMany: vi.fn().mockResolvedValue([row]), count: vi.fn().mockResolvedValue(0) },
+      run: { findMany: vi.fn(async () => []) },
     } as unknown as PrismaClient;
     for (const around of [undefined, { seq: 100 }]) {
       const page = await loadMessagePage(prisma, "thread-1", undefined, 1, around);
