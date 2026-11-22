@@ -1,6 +1,10 @@
 import type { Prisma, PrismaClient } from "@rakazo/db";
 import { Prisma as PrismaSql } from "@rakazo/db";
-import { createPasswordVerifier, verifyPassword } from "./wallet-envelope.js";
+import {
+  createPasswordVerifier,
+  rewrapWalletKeyEnvelope,
+  verifyPassword,
+} from "./wallet-envelope.js";
 
 /**
  * The wallet-vault password state: setup and change of the dedicated wallet
@@ -431,6 +435,56 @@ export async function setupWalletVaultPassword(
 }
 
 /**
+ * Re-wrapping runs two scrypt derivations per wallet inside the change
+ * transaction, so it gets the same generous ceiling the RLS wrapper gives its
+ * own work instead of Prisma's 5s interactive-transaction default.
+ */
+const WALLET_CHANGE_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 300_000 };
+
+/**
+ * Re-wrap every migrated wallet's key envelope under the new password, inside
+ * the caller's transaction. Without this a password change rewrites only the
+ * verifier and every migrated wallet strands: its data key is still wrapped
+ * under the old password, so the new password cannot open it.
+ *
+ * Only migrated wallets are touched — a wallet still in
+ * `legacy_server_only` has no password wrap to move, and its server-sealed
+ * copy is step 3's concern, not this one. Any envelope that fails to open
+ * rolls the whole change back: the password stays working and the owner can
+ * investigate, which beats swapping the verifier and stranding that wallet
+ * for good.
+ *
+ * Returns how many envelopes were re-wrapped.
+ */
+async function rewrapUserWalletEnvelopes(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<number> {
+  const wallets = await tx.userWallet.findMany({
+    where: { userId, migrationStatus: "password_protected", passwordWrap: { not: null } },
+    select: { id: true, keyCiphertext: true, passwordWrap: true },
+  });
+  let rewrapped = 0;
+  for (const wallet of wallets) {
+    if (!wallet.keyCiphertext || !wallet.passwordWrap) continue;
+    const envelope = await rewrapWalletKeyEnvelope({
+      walletId: wallet.id,
+      envelope: { keyCiphertext: wallet.keyCiphertext, passwordWrap: wallet.passwordWrap },
+      currentPassword,
+      newPassword,
+    });
+    await tx.userWallet.update({
+      where: { id: wallet.id },
+      data: { keyCiphertext: envelope.keyCiphertext, passwordWrap: envelope.passwordWrap },
+    });
+    rewrapped += 1;
+  }
+  return rewrapped;
+}
+
+/**
  * Change the wallet password. The current password is always required — an
  * active unlock grant is not proof of knowing it.
  *
@@ -453,6 +507,11 @@ export async function setupWalletVaultPassword(
  * at most once — can be driven directly. The public {@link changeWalletVaultPassword} mints
  * a fresh token per call, so a same-token replay is unreachable through it; this unit is the
  * only way to replay one.
+ *
+ * `rewrap` carries the two passwords so every migrated wallet's key envelope can be
+ * re-wrapped under the new password inside this same transaction (W-1). It is only
+ * honoured on the revision-matched path: a change that loses to a concurrent one must
+ * not wrap envelopes under a password that never became the credential.
  */
 export async function applyWalletVaultPasswordChange(
   prisma: PrismaClient,
@@ -460,6 +519,7 @@ export async function applyWalletVaultPasswordChange(
   token: string,
   prepared: { verifier: string; credentialRevision: bigint },
   at?: Date,
+  rewrap?: { currentPassword: string; newPassword: string },
 ): Promise<Settlement> {
   return prisma.$transaction(async (tx) => {
     const locked = await lockVaultRow(tx, userId);
@@ -489,6 +549,11 @@ export async function applyWalletVaultPasswordChange(
           credentialRevision: { increment: 1 },
         },
       });
+      // Same transaction as the verifier swap: a change that moved the credential but
+      // left the envelopes under the old password would strand every migrated wallet.
+      if (rewrap) {
+        await rewrapUserWalletEnvelopes(tx, userId, rewrap.currentPassword, rewrap.newPassword);
+      }
     }
     const settled = await settleSuccessInTx(tx, userId, token, at);
     if (revisionMatches && !settled.settled) {
@@ -497,7 +562,7 @@ export async function applyWalletVaultPasswordChange(
       throw new Error("wallet vault change: credential swap did not settle its reservation");
     }
     return { ...settled, credentialsChanged: !revisionMatches };
-  });
+  }, WALLET_CHANGE_TRANSACTION_OPTIONS);
 }
 
 export async function changeWalletVaultPassword(
@@ -543,6 +608,7 @@ export async function changeWalletVaultPassword(
     reservation.token,
     { verifier, credentialRevision: reservation.credentialRevision },
     at,
+    { currentPassword: input.currentPassword, newPassword: input.newPassword },
   );
   // An unsettled reservation means the token was already consumed or retired: never report
   // success on that path, and never let the caller believe the credentials moved. (§4.3/§4.5)
