@@ -73,7 +73,7 @@ describe("wallets rpc contract", () => {
     expect(JSON.stringify(use)).not.toContain(KEY);
   });
 
-  it("exposes exactly list, add, remove, migrate, uses, the vault password calls and the proposals", () => {
+  it("exposes exactly list, add, requestRemove, remove, restore, migrate, uses, the vault password calls and the proposals", () => {
     expect(Object.keys(appContract.wallets).sort()).toEqual([
       "add",
       "cancelProposal",
@@ -83,6 +83,8 @@ describe("wallets rpc contract", () => {
       "proposal",
       "proposals",
       "remove",
+      "requestRemove",
+      "restore",
       "setVaultPassword",
       "uses",
       "vaultLock",
