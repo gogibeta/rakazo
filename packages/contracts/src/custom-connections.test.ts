@@ -5,6 +5,7 @@ import {
   customConnectionBaseUrlProblem,
   customConnectionPathProblem,
 } from "./custom-connections.js";
+import { appContract } from "./rpc.js";
 
 describe("customConnectionBaseUrlProblem", () => {
   it("accepts a public HTTPS base URL, with or without a path prefix", () => {
@@ -112,5 +113,34 @@ describe("customConnectionPathProblem and CustomConnectionCallInput", () => {
         body: { nope: true },
       }).success,
     ).toBe(false);
+  });
+
+  it("binds the add input schema to the route the server actually serves", () => {
+    // The route tests drive `add` through a stub that applies the schema itself, so on
+    // their own they would keep passing if `rpc.ts` stopped binding it. This asserts on
+    // the real contract object: if the binding is dropped, the route would accept any
+    // body and the SSRF gate below would never run.
+    const schema = (
+      appContract.customConnections.add as unknown as {
+        "~orpc": {
+          inputSchema: {
+            safeParse: (value: unknown) => {
+              success: boolean;
+              error?: { issues: Array<{ message: string }> };
+            };
+          };
+        };
+      }
+    )["~orpc"].inputSchema;
+    const rejection = (baseUrl: string) => {
+      const result = schema.safeParse({ name: "svc", baseUrl, authStyle: "bearer" });
+      return result.success ? null : result.error!.issues.map((issue) => issue.message);
+    };
+    // The reason matters, not just the refusal. `http://api.example.com` is refused by the
+    // HTTPS rule; if someone deleted that rule it would still be refused as a non-public
+    // host, so a bare `success: false` assertion would go on passing for the wrong reason.
+    expect(rejection("http://api.example.com")).toEqual(["Base URL must use HTTPS"]);
+    expect(rejection("https://169.254.169.254")).toEqual(["Base URL must be a public host"]);
+    expect(rejection("https://api.example.com")).toBeNull();
   });
 });
