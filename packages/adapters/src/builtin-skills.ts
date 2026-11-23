@@ -229,6 +229,20 @@ Failure modes worth knowing:
 Summarise with links. Name the pages you used so the owner can check them, and keep the answer shorter than the pages it came from.`,
   },
   {
+    name: "Drift Report",
+    description: "Compare docs against the real workspace and list where they diverge",
+    body: `Report where a set of documents has drifted from the thing they describe. Read both sides, change nothing, and return a list the owner can act on.
+
+The drift you are looking for is factual, not stylistic: a document that names a file, command, endpoint, tool, setting or version that no longer exists or no longer behaves as written; a documented step the code contradicts; a capability the code has that the document never mentions. Wording, tone and formatting are out of scope unless the owner asked for them.
+
+1. Establish the two sides before comparing. The documents are bot knowledge documents or a folder the owner names. The state is the workspace: the actual files, their contents, and the project's own commands. If the owner named neither side, ask. Never assume which folder holds the truth.
+2. Read the documents in full first, then collect every checkable claim they make: paths, commands, tool names, endpoints, config keys, versions, limits, described behaviour. A claim you cannot check is not a finding.
+3. Check each claim against the workspace. Use read_file and list_files for paths and contents, and run the project's own read-only commands when a document describes behaviour (the test command, a --help, a version query). Prefer the code over a document that describes it. If a check needs a write, a network call that mutates, or a credential, skip it and say the claim was not verified.
+4. Report only what you verified. For each divergence give the document and the section or line, the claim as written, what the workspace actually shows, and the smallest correct fix. Order by how much damage the stale claim does if followed — a wrong command or a wrong path first, a missing feature note last. If a document is accurate, say so; do not pad the list to look thorough.
+
+Hard limits, because this is read-only by design. Never edit, create, move or delete a document or a workspace file; never commit, push or open a PR; never run a command that writes, installs, deploys, migrates or sends. The owner gets the list and decides. A drift report that changed something is a failed drift report.`,
+  },
+  {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",
     body: `Answer questions about Rakazo itself from its docs. Fetch the matching page with web_fetch before answering, then answer briefly in your own words and link the page. If fetching fails or is unavailable, answer only what this index says and link the page. Never invent menus, buttons, or steps the page doesn't show. Account-specific facts (credit balance, plan, usage) aren't in the docs: point to the screen that shows them.

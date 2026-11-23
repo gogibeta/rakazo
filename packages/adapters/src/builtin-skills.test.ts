@@ -160,6 +160,34 @@ describe("Web Research skill", () => {
   });
 });
 
+describe("Drift Report skill", () => {
+  const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Drift Report")!;
+
+  it("is in the built-in set", () => {
+    expect(skill).toBeDefined();
+  });
+
+  it("states the read-only limit as a rule, not a suggestion", () => {
+    // The item's whole contract is "it never edits either side". A drift report
+    // that writes is worse than no report, so the prohibition must be explicit.
+    expect(skill.content).toContain("read-only by design");
+    expect(skill.content).toContain("Never edit, create, move or delete");
+    expect(skill.content).toContain("never commit, push or open a PR");
+  });
+
+  it("names only tools that exist in this build", () => {
+    for (const tool of ["read_file", "list_files"]) {
+      expect(skill.content).toContain(tool);
+    }
+  });
+
+  it("asks for the smallest correct fix, and refuses to pad the list", () => {
+    // Without this a reviewer reports every wording difference as drift.
+    expect(skill.content).toContain("smallest correct fix");
+    expect(skill.content).toContain("do not pad the list");
+  });
+});
+
 describe("Rakazo skill", () => {
   it("links only to published docs pages", () => {
     const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Rakazo")!;
