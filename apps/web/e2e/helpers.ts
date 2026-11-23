@@ -48,24 +48,24 @@ export async function rpc<T>(page: Page, procedure: string, body: unknown): Prom
 
 export async function completeOnboarding(page: Page, testInfo?: TestInfo) {
   await page.waitForURL(/\/(onboarding|app)/, { timeout: 20_000 });
-  // Optional Server integrations step (needsSetup). Skip when shown, then the
-  // first bot is created automatically — land in Chief's chat with no form.
-  const integrations = page.getByRole("heading", { name: "Server integrations", exact: true });
+  // The first bot is created automatically during onboarding — land in Chief's
+  // chat with no form. There is no "Server integrations" step in the app: the
+  // locator that used to wait for one matched nothing, so a missing first bot
+  // surfaced as a bare 20s timeout instead of a clear, diagnosable failure.
   const chief = page.getByText("Chief").first();
-  await integrations.or(chief).waitFor({ timeout: 20_000 });
-  if ((await chief.isVisible().catch(() => false)) && page.url().includes("/app")) {
-    if (testInfo) {
-      await captureScreenshot(page, testInfo, "03-create-first-bot");
-      await captureScreenshot(page, testInfo, "06-onboarding-complete");
-    }
-    return;
+  try {
+    await chief.waitFor({ timeout: 20_000 });
+  } catch (error) {
+    throw new Error(
+      `onboarding never rendered the first bot ("Chief") within 20s; still on ${page.url()}. ` +
+        "The auto-create-first-bot request most likely failed — check the API log for a database error.",
+      { cause: error },
+    );
   }
-  if (await integrations.isVisible().catch(() => false)) {
-    if (testInfo) await captureScreenshot(page, testInfo, "02-connect-apps");
-    await page.getByRole("button", { name: "Skip", exact: true }).click();
+  if (!page.url().includes("/app")) {
+    await page.waitForURL(/\/app\//, { timeout: 20_000 });
+    await expect(chief).toBeVisible();
   }
-  await page.waitForURL(/\/app\//, { timeout: 20_000 });
-  await expect(page.getByText("Chief").first()).toBeVisible();
   if (testInfo) {
     await captureScreenshot(page, testInfo, "03-create-first-bot");
     await captureScreenshot(page, testInfo, "06-onboarding-complete");
