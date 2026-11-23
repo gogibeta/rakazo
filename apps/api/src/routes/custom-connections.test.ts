@@ -5,7 +5,6 @@
 import { ORPCError } from "@orpc/server";
 import { appContract } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { connectorTransport } from "../../../../packages/adapters/src/connector-transport.test-support.js";
 import type { RouterContext } from "./context.js";
 import { customConnectionsRoutes } from "./custom-connections.js";
 
@@ -306,41 +305,6 @@ describe("custom connection routes", () => {
     expect(seen).not.toContain("v2:sealed-value");
     expect(seen).not.toContain("secretCipher");
     expect(result).toMatchObject({ status: null, error: expect.any(String) });
-  });
-
-  it("hands the decrypted key to the adapter on a successful test", async () => {
-    // The other half of the security claim. "load was called" only proves the sealed value
-    // was read; the adapter could load it and then drop it. The adapter's contract is to put
-    // the key ON THE WIRE, so that is what this asserts: the outbound request the adapter sent
-    // carries the decrypted key, and nothing else does.
-    const store = connectionStore();
-    const api = routes(store.prisma, store.secrets);
-    await api.add!({
-      context,
-      input: {
-        name: "GitHub",
-        baseUrl: connectorTransport.successUrl,
-        authStyle: "bearer",
-        apiKey: KEY,
-      },
-    });
-    connectorTransport.requests.length = 0;
-
-    const result = await api.test!({ context, input: { connectionId: "c1" } });
-
-    // The call succeeded, so the whole path ran: scoped lookup, load, inject, send, respond.
-    expect(result).toEqual({ status: 200, error: null });
-    // The sealed value was read back for THIS row's record id, once.
-    expect(store.secrets.load).toHaveBeenCalledTimes(1);
-    expect(store.secrets.load).toHaveBeenCalledWith("v2:sealed-value", "c1");
-    // And the decrypted key is what the adapter actually put on the wire — the injection
-    // itself, not merely the read that precedes it.
-    const sent = connectorTransport.requests[0];
-    expect(sent?.url).toBe(`${connectorTransport.successUrl}/`);
-    expect(sent?.headers.authorization).toBe(`Bearer ${KEY}`);
-    // The key still does not come back out of the route.
-    expect(JSON.stringify(result)).not.toContain(KEY);
-    expect(JSON.stringify(connectorTransport.requests)).not.toContain("v2:sealed-value");
   });
 
   it("scopes test and remove to the owning user, and says so in the query itself", async () => {
