@@ -246,13 +246,45 @@ function walletStore() {
     },
     userWalletUse: { findMany: vi.fn(async () => []) },
     // Proposals outlive a wallet removal: the row is archived, not deleted, so the
-    // `onDelete: Cascade` on `WalletProposal.wallet` never fires. These are plain spies
-    // rather than throwing doubles — the assertion belongs in the test, not in the fake.
-    walletProposal: {
-      delete: vi.fn(),
-      deleteMany: vi.fn(),
-      updateMany: vi.fn(),
-    },
+    // `onDelete: Cascade` on `WalletProposal.wallet` never fires. The table holds real
+    // rows so the test can show they are still there afterwards. Asserting only that no
+    // delete was called would prove the absence of a call the code has no reason to make,
+    // which is weaker than the DoD's "proposals kept".
+    walletProposal: (() => {
+      type ProposalRow = { id: string; userId: string; walletId: string; status: string };
+      let proposalRows: ProposalRow[] = [];
+      return {
+        delete: vi.fn(async ({ where }: { where: { id: string } }) => {
+          proposalRows = proposalRows.filter((row) => row.id !== where.id);
+          return { id: where.id };
+        }),
+        deleteMany: vi.fn(async ({ where }: { where: { walletId?: string } }) => {
+          const before = proposalRows.length;
+          proposalRows = proposalRows.filter(
+            (row) => where.walletId !== undefined && row.walletId !== where.walletId,
+          );
+          return { count: before - proposalRows.length };
+        }),
+        updateMany: vi.fn(
+          async ({ where, data }: { where: { walletId?: string }; data?: { status?: string } }) => {
+            // Apply the write the way Prisma does. A double that only counted matches
+            // would let a "cancel every proposal of this wallet" mutation pass unseen,
+            // which is exactly the kind of cascade this test exists to catch.
+            const hit = proposalRows.filter(
+              (row) => where.walletId === undefined || row.walletId === where.walletId,
+            );
+            for (const row of hit) {
+              if (data?.status !== undefined) row.status = data.status;
+            }
+            return { count: hit.length };
+          },
+        ),
+        seed: (rows: ProposalRow[]) => {
+          proposalRows = rows.map((row) => ({ ...row }));
+        },
+        rows: () => proposalRows.map((row) => ({ ...row })),
+      };
+    })(),
     // The removal-confirmation table: tokens are stored by digest, so the double
     // hashes the token the caller holds the same way the real code does.
     walletRemovalConfirmation: (() => {
@@ -711,16 +743,22 @@ describe("W-2: removing a wallet is a soft delete", () => {
     // The DoD for this step names "proposals kept" as part of the combined acceptance.
     // A soft delete cannot cascade, so the proposals survive by construction — but that
     // is exactly the kind of guarantee that dies silently when someone later changes the
-    // write to a real `delete`. The assertion makes that change fail here.
+    // write to a real `delete`. The assertion is on the rows themselves, not on whether a
+    // delete happened to be called: the rows are what the person would lose.
     const store = walletStore();
     const api = routes(store.prisma, store.secrets);
     await api.add!({ context, input: { name: "burner", secret: KEY } });
+    store.prisma.walletProposal.seed([
+      { id: "p1", userId: "u", walletId: "w1", status: "proposed" },
+    ]);
+
     await removeWithToken(api, context, "w1");
 
-    expect(store.prisma.walletProposal.delete).not.toHaveBeenCalled();
-    expect(store.prisma.walletProposal.deleteMany).not.toHaveBeenCalled();
-    expect(store.prisma.walletProposal.updateMany).not.toHaveBeenCalled();
-    // The row itself is still there, which is what keeps the proposals' foreign key valid.
+    // The proposal is still there, unchanged, and still points at the archived wallet.
+    expect(store.prisma.walletProposal.rows()).toEqual([
+      { id: "p1", userId: "u", walletId: "w1", status: "proposed" },
+    ]);
+    // The row itself is still there too, which is what keeps the foreign key valid.
     expect(store.rows()).toHaveLength(1);
     expect(store.rows()[0]!.removedAt).not.toBeNull();
   });
