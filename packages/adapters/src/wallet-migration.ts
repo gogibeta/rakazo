@@ -100,7 +100,7 @@ export async function migrateUserWalletToPasswordEnvelope(input: {
 }): Promise<{ migrationStatus: "password_protected"; alreadyMigrated: boolean }> {
   const { prisma, userId, walletId } = input;
   const row = (await prisma.userWallet.findFirst({
-    where: { id: walletId, userId },
+    where: { id: walletId, userId, removedAt: null },
     select: {
       id: true,
       address: true,

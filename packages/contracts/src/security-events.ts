@@ -20,6 +20,8 @@ export const SECURITY_EVENT_TYPES = [
   "credential.changed",
   "credential.deleted",
   "credential.revealed",
+  "wallet.removed",
+  "wallet.restored",
   "device.paired",
   "device.tied",
   "device.revoked",

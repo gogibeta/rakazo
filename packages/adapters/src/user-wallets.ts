@@ -35,7 +35,7 @@ export async function listUserWallets(
   userId: string,
 ): Promise<UserWalletSummary[]> {
   const rows = await prisma.userWallet.findMany({
-    where: { userId },
+    where: { userId, removedAt: null },
     orderBy: { createdAt: "asc" },
     select: { id: true, name: true, chain: true, address: true },
   });
@@ -53,7 +53,7 @@ export async function findUserWallet(
   userId: string,
   name: string,
 ): Promise<WalletRow | null> {
-  return prisma.userWallet.findFirst({ where: { userId, name } });
+  return prisma.userWallet.findFirst({ where: { userId, name, removedAt: null } });
 }
 
 /** The forms of a wallet secret a run must hide: a key with and without its 0x prefix. */

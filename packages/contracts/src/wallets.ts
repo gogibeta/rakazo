@@ -51,8 +51,23 @@ export const WalletSummarySchema = z.object({
 });
 export type WalletSummary = z.infer<typeof WalletSummarySchema>;
 
-export const WalletRemoveInput = z.object({ walletId: Id });
+export const WalletRemoveInput = z.object({
+  walletId: Id,
+  /** From `requestRemove`. Single use, five minutes, and names the wallet it covers. */
+  confirmationToken: z.string().min(1).max(128),
+});
 export type WalletRemoveInput = z.infer<typeof WalletRemoveInput>;
+
+/** Ask for a removal token, and get back the wallet's name and address to check. */
+export const WalletRequestRemoveInput = z.object({ walletId: Id });
+export type WalletRequestRemoveInput = z.infer<typeof WalletRequestRemoveInput>;
+
+export const WalletRemovalConfirmationSchema = z.object({
+  token: z.string(),
+  expiresAt: z.string(),
+  wallet: z.object({ name: z.string(), address: z.string() }),
+});
+export type WalletRemovalConfirmation = z.infer<typeof WalletRemovalConfirmationSchema>;
 
 export const WALLET_PASSWORD_MIN_LENGTH = 8;
 export const WALLET_PASSWORD_MAX_LENGTH = 1_024;

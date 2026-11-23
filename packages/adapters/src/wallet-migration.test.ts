@@ -33,6 +33,8 @@ type WalletRow = {
   keyCiphertext: string | null;
   passwordWrap: string | null;
   migrationStatus: string;
+  removedAt: Date | null;
+  removedName: string | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -72,6 +74,10 @@ function store() {
       const value = row[key as keyof WalletRow];
       if (condition && typeof condition === "object" && "in" in condition) {
         return (condition as { in: unknown[] }).in.includes(value);
+      }
+      // `{ not: null }` asks for removed rows; a bare null asks for live ones.
+      if (condition && typeof condition === "object" && "not" in condition) {
+        return value !== (condition as { not: unknown }).not;
       }
       return value === condition;
     });
@@ -177,6 +183,8 @@ async function legacyWallet(serverKey = "test-only-encryption-key") {
     keyCiphertext: null,
     passwordWrap: null,
     migrationStatus: "legacy_server_only",
+    removedAt: null,
+    removedName: null,
     createdAt: new Date("2026-09-01T00:00:00.000Z"),
     updatedAt: new Date("2026-09-01T00:00:00.000Z"),
   };

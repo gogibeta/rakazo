@@ -16,6 +16,7 @@
     "./wallet-vault-client": "./src/wallet-vault-client.ts",
     "./wallet-vault-service": "./src/wallet-vault-service.ts",
     "./wallet-vault-unlock": "./src/wallet-vault-unlock.ts",
+    "./wallet-removal-confirmation": "./src/wallet-removal-confirmation.ts",
     "./wallet-vault-fake": "./src/wallet-vault-fake.ts"
   },
   "scripts": {

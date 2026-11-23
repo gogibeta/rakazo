@@ -33,8 +33,19 @@ test("adds a wallet from its key, shows the derived address, and never returns t
   await wallet.getByRole("button", { name: "History", exact: true }).click();
   await expect(wallet.getByText("Not used yet.")).toBeVisible();
 
+  // Removal is a two-step confirmation: the row's Remove asks, the fieldset confirms.
+  // A single click must not delete anything.
   await wallet.getByRole("button", { name: "Remove", exact: true }).click();
+  const confirm = wallet.locator("fieldset");
+  await expect(confirm).toBeVisible();
+  await expect(wallet).toHaveCount(1);
+  await confirm.getByRole("button", { name: "Remove", exact: true }).click();
   await expect(settings.locator("li", { hasText: "Airdrop burner" })).toHaveCount(0);
+
+  // The removal is a soft delete: the row leaves the list, but the server kept it,
+  // so the secret is not lost and the wallet can be restored.
+  const afterRemoval = JSON.stringify(await rpc(page, "wallets/list", {}));
+  expect(afterRemoval).not.toContain("Airdrop burner");
 });
 
 test("sets and changes the wallet password, and rejects a wrong current password", async ({
