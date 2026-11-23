@@ -748,15 +748,17 @@ describe("W-2: removing a wallet is a soft delete", () => {
     const store = walletStore();
     const api = routes(store.prisma, store.secrets);
     await api.add!({ context, input: { name: "burner", secret: KEY } });
-    store.prisma.walletProposal.seed([
-      { id: "p1", userId: "u", walletId: "w1", status: "proposed" },
-    ]);
+    // Derive the id the store handed out rather than hard-coding "w1": if the fixture ever
+    // changes how it numbers rows, a hard-coded id would make this test fail as "the
+    // proposal vanished" — a misleading failure naming the wrong thing.
+    const walletId = store.rows()[0]!.id;
+    store.prisma.walletProposal.seed([{ id: "p1", userId: "u", walletId, status: "proposed" }]);
 
-    await removeWithToken(api, context, "w1");
+    await removeWithToken(api, context, walletId);
 
     // The proposal is still there, unchanged, and still points at the archived wallet.
     expect(store.prisma.walletProposal.rows()).toEqual([
-      { id: "p1", userId: "u", walletId: "w1", status: "proposed" },
+      { id: "p1", userId: "u", walletId, status: "proposed" },
     ]);
     // The row itself is still there too, which is what keeps the foreign key valid.
     expect(store.rows()).toHaveLength(1);
