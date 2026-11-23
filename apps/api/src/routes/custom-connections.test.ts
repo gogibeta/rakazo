@@ -1,19 +1,32 @@
 import { ORPCError } from "@orpc/server";
-import {
-  CustomConnectionAddInput,
-  CustomConnectionRemoveInput,
-  CustomConnectionTestInput,
-} from "@rakazo/contracts";
+import { appContract } from "@rakazo/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { RouterContext } from "./context.js";
 import { customConnectionsRoutes } from "./custom-connections.js";
 
-// The input schema each route's contract binds, in packages/contracts/src/rpc.ts.
-const INPUT_SCHEMAS = {
-  add: CustomConnectionAddInput,
-  remove: CustomConnectionRemoveInput,
-  test: CustomConnectionTestInput,
+/**
+ * The input schema the SERVED contract binds for each route, read from `appContract` itself
+ * rather than re-imported from the schema module.
+ *
+ * That distinction is the whole point. A hand-copied map keeps working after `rpc.ts` stops
+ * binding a schema to a route: the tests would go on applying their own copy while the server
+ * accepted any body. Reading through `appContract` means an unwiring comes back `undefined` here
+ * and every test that drives that route fails.
+ */
+type ServedInputSchema = {
+  safeParse: (
+    value: unknown,
+  ) =>
+    | { success: true; data: unknown }
+    | { success: false; error: { issues: Array<{ message: string }> } };
 };
+
+function servedInputSchema(name: "add" | "remove" | "test"): ServedInputSchema | undefined {
+  const procedure = appContract.customConnections[name] as unknown as {
+    "~orpc"?: { inputSchema?: ServedInputSchema };
+  };
+  return procedure?.["~orpc"]?.inputSchema;
+}
 
 const KEY = "test-only-api-key-12345";
 
@@ -38,7 +51,7 @@ type Row = {
 function routes(prisma: unknown, secrets: unknown) {
   const procedureFor = (name: string) => ({
     handler: (fn: unknown) => {
-      const schema = INPUT_SCHEMAS[name as keyof typeof INPUT_SCHEMAS];
+      const schema = servedInputSchema(name as "add" | "remove" | "test");
       if (!schema) return fn;
       return async (call: { context: unknown; input?: unknown }) => {
         const parsed = schema.safeParse(call.input ?? {});
@@ -72,8 +85,13 @@ function connectionStore() {
     }),
     load: vi.fn(async () => KEY),
   };
-  const matches = (row: Row, where: { userId: string; name?: string; id?: string }) =>
-    row.userId === where.userId &&
+  // Prisma filters only on the fields a `where` actually names. The first version of this double
+  // compared `row.userId === where.userId` unconditionally, so a route that forgot to scope its
+  // lookup passed `undefined`, matched nothing, and the cross-user test passed for exactly the
+  // wrong reason. Faithful here means an unscoped lookup FINDS the row — which is what Prisma
+  // does — so a missing `userId` fails the test instead of quietly satisfying it.
+  const matches = (row: Row, where: { userId?: string; name?: string; id?: string }) =>
+    (where.userId === undefined || row.userId === where.userId) &&
     (where.name === undefined || row.name === where.name) &&
     (where.id === undefined || row.id === where.id);
   const prisma = {
@@ -94,18 +112,18 @@ function connectionStore() {
         return row;
       }),
       findFirst: vi.fn(
-        async ({ where }: { where: { userId: string; name?: string; id?: string } }) =>
+        async ({ where }: { where: { userId?: string; name?: string; id?: string } }) =>
           rows.find((row) => matches(row, where)) ?? null,
       ),
-      findMany: vi.fn(async ({ where }: { where: { userId: string } }) =>
-        rows.filter((row) => row.userId === where.userId),
+      findMany: vi.fn(async ({ where }: { where: { userId?: string } }) =>
+        rows.filter((row) => matches(row, where)),
       ),
       delete: vi.fn(async ({ where }: { where: { id: string } }) => {
         rows = rows.filter((row) => row.id !== where.id);
       }),
-      deleteMany: vi.fn(async ({ where }: { where: { id: string; userId: string } }) => {
+      deleteMany: vi.fn(async ({ where }: { where: { id?: string; userId?: string } }) => {
         const before = rows.length;
-        rows = rows.filter((row) => !(row.id === where.id && row.userId === where.userId));
+        rows = rows.filter((row) => !matches(row, where));
         return { count: before - rows.length };
       }),
     },
@@ -186,6 +204,29 @@ describe("custom connection routes", () => {
     expect(store.rows()).toHaveLength(1);
   });
 
+  it("lets another user reuse a name, so the duplicate check is scoped too", async () => {
+    // Names are unique per user, not globally. A duplicate check that dropped `userId` would
+    // refuse this for a name the second user has never used — and against a double that ignored
+    // `where` the first user's row would be found either way, so the refusal would look correct.
+    const store = connectionStore();
+    const api = routes(store.prisma, store.secrets);
+    const input = { name: "GitHub", baseUrl: "https://api.github.com", authStyle: "bearer" };
+    await api.add!({ context, input });
+
+    store.prisma.userCustomConnection.findFirst.mockClear();
+    const other = { actor: { userId: "v", spaceId: "s" }, signal: undefined };
+    const added = await api.add!({ context: other, input });
+    expect(added).toMatchObject({ name: "GitHub" });
+    expect(store.rows()).toHaveLength(2);
+    expect(store.rows().filter((row) => row.userId === "v")).toHaveLength(1);
+
+    // The duplicate check carried this caller's id, not just the name.
+    expect(store.prisma.userCustomConnection.findFirst).toHaveBeenCalledWith({
+      where: { userId: "v", name: "GitHub" },
+      select: { id: true },
+    });
+  });
+
   it("deletes the row when sealing fails, so no connection keeps an unsealed key", async () => {
     const store = connectionStore();
     store.secrets.put.mockRejectedValueOnce(new Error("seal failed"));
@@ -262,7 +303,7 @@ describe("custom connection routes", () => {
     expect(result).toMatchObject({ status: null, error: expect.any(String) });
   });
 
-  it("scopes test and remove to the owning user", async () => {
+  it("scopes test and remove to the owning user, and says so in the query itself", async () => {
     const store = connectionStore();
     const api = routes(store.prisma, store.secrets);
     await api.add!({
@@ -275,6 +316,10 @@ describe("custom connection routes", () => {
       },
     });
     const other = { actor: { userId: "v", spaceId: "s" }, signal: undefined };
+
+    store.prisma.userCustomConnection.findFirst.mockClear();
+    store.prisma.userCustomConnection.deleteMany.mockClear();
+
     // Another user can neither reach this connection's key nor delete it.
     await expect(api.test!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
       /not found/i,
@@ -282,8 +327,74 @@ describe("custom connection routes", () => {
     await expect(api.remove!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
       /not found/i,
     );
+
+    // The refusal is not enough on its own: a route that looked the row up by id alone would
+    // also refuse, because the double now returns the row for an unscoped `where` and the
+    // route would then be answering about someone else's connection. So assert the exact
+    // arguments the route handed the database — the caller's own id, every time.
+    expect(store.prisma.userCustomConnection.findFirst).toHaveBeenCalledWith({
+      where: { id: "c1", userId: "v" },
+    });
+    expect(store.prisma.userCustomConnection.deleteMany).toHaveBeenCalledWith({
+      where: { id: "c1", userId: "v" },
+    });
+
     // The row survives the refused remove, and its key was never read.
     expect(store.rows()).toHaveLength(1);
+    expect(store.rows()[0]?.userId).toBe("u");
     expect(store.secrets.load).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to an unscoped lookup when the caller owns nothing", async () => {
+    // The failure mode this pins: a route that tries the scoped lookup, finds nothing, and then
+    // retries without `userId` "to give a better error". Against a double that ignores `where`
+    // that fallback would look identical to correct scoping; against a faithful one it returns
+    // another user's row and the key gets loaded. One lookup, scoped, and nothing after it.
+    const store = connectionStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({
+      context,
+      input: {
+        name: "GitHub",
+        baseUrl: "https://api.github.com",
+        authStyle: "bearer",
+        apiKey: KEY,
+      },
+    });
+    store.prisma.userCustomConnection.findFirst.mockClear();
+
+    const other = { actor: { userId: "v", spaceId: "s" }, signal: undefined };
+    await expect(api.test!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
+      /not found/i,
+    );
+
+    // Exactly one lookup, and the only one it made carried the caller's id.
+    expect(store.prisma.userCustomConnection.findFirst).toHaveBeenCalledTimes(1);
+    for (const call of store.prisma.userCustomConnection.findFirst.mock.calls) {
+      expect(call[0]).toEqual({ where: { id: "c1", userId: "v" } });
+    }
+    expect(store.secrets.load).not.toHaveBeenCalled();
+  });
+
+  it("serves and validates add through the schema the contract actually binds", async () => {
+    // F1: the contracts test asserts the schema's SHAPE; this asserts the SERVED route uses it.
+    // The two are different failures. If `rpc.ts` stopped binding `CustomConnectionAddInput` to
+    // `customConnections.add`, the shape test would keep passing while the endpoint accepted any
+    // body — and the SSRF gate, which lives in that schema, would never run. So: the served
+    // schema must exist, and the route must refuse through it.
+    expect(servedInputSchema("add")).toBeDefined();
+
+    const store = connectionStore();
+    const api = routes(store.prisma, store.secrets);
+    // A body the schema refuses for a reason only the real schema gives.
+    await expect(
+      api.add!({
+        context,
+        input: { name: "Metadata", baseUrl: "https://169.254.169.254", authStyle: "bearer" },
+      }),
+    ).rejects.toThrow(/public host/);
+    // Nothing was created and nothing was sealed.
+    expect(store.rows()).toEqual([]);
+    expect(store.secrets.put).not.toHaveBeenCalled();
   });
 });

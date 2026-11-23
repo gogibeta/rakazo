@@ -44,11 +44,15 @@ type Row = {
 function store(rows: Row[]) {
   return {
     userCustomConnection: {
+      // Prisma filters only on the fields a `where` names. Comparing `row.userId` unconditionally
+      // made an unscoped lookup (where.userId undefined) match nothing, which is how a route that
+      // forgot to scope could still be reported as scoped. An unscoped lookup now finds the row,
+      // as it would in the database.
       findFirst: vi.fn(
-        async ({ where }: { where: { userId: string; id?: string; name?: string } }) =>
+        async ({ where }: { where: { userId?: string; id?: string; name?: string } }) =>
           rows.find(
             (row) =>
-              row.userId === where.userId &&
+              (where.userId === undefined || row.userId === where.userId) &&
               (where.id === undefined || row.id === where.id) &&
               (where.name === undefined || row.name === where.name),
           ) ?? null,
@@ -117,7 +121,8 @@ describe("custom connection test route, success path", () => {
   it("reports another user's connection as not found and never loads it", async () => {
     // The row exists and belongs to `u`; `v` asking for the same id must be told it
     // does not exist, and the load must not happen at all.
-    const api = routes(store([row()]));
+    const prisma = store([row()]);
+    const api = routes(prisma);
     const other = { actor: { userId: "v", spaceId: "s" }, signal: undefined };
     await expect(api.test!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
       ORPCError,
@@ -125,6 +130,12 @@ describe("custom connection test route, success path", () => {
     await expect(api.test!({ context: other, input: { connectionId: "c1" } })).rejects.toThrow(
       /not found/i,
     );
+
+    // The refusal alone would also come from a route that looked up by id only, because this
+    // double now returns the row for an unscoped `where` — so assert the query it actually ran.
+    expect(prisma.userCustomConnection.findFirst).toHaveBeenCalledWith({
+      where: { id: "c1", userId: "v" },
+    });
     expect(seen).toEqual([]);
   });
 });
