@@ -7,7 +7,7 @@ const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 const ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const SAVED_AT = "2026-09-01T00:00:00.000Z";
 
-function fillStore(migrationStatus: string) {
+function fillStore(migrationStatus: string, removedAt: Date | null = null) {
   const row = {
     id: "w1",
     userId: "u1",
@@ -18,13 +18,24 @@ function fillStore(migrationStatus: string) {
     keyCiphertext: migrationStatus === "password_protected" ? "pwk-v1:sealed" : null,
     passwordWrap: migrationStatus === "password_protected" ? "pw-v1:sealed" : null,
     migrationStatus,
+    removedAt,
+    removedName: removedAt ? "removed:w1" : null,
     createdAt: new Date(SAVED_AT),
     updatedAt: new Date(SAVED_AT),
   };
   const prisma = {
     userWallet: {
-      findFirst: vi.fn(async ({ where }: { where: { userId: string; name: string } }) =>
-        where.userId === row.userId && where.name === row.name ? row : null,
+      // Honour the `removedAt: null` the real query carries, the way Prisma does.
+      // A double that ignored it would return an archived wallet and make the
+      // "a removed wallet cannot be filled" test pass for the wrong reason — or
+      // silently stop testing the filter at all if the source dropped it.
+      findFirst: vi.fn(
+        async ({ where }: { where: { userId: string; name: string; removedAt?: null } }) => {
+          if (where.userId !== row.userId || where.name !== row.name) return null;
+          // `removedAt: null` in the query means "only rows that are not archived".
+          if (where.removedAt === null && row.removedAt !== null) return null;
+          return row;
+        },
       ),
     },
   } as unknown as PrismaClient;
@@ -74,6 +85,28 @@ describe("resolveUserWalletFill and migration", () => {
       savedAt: SAVED_AT,
     });
     expect(result).toMatchObject({ text: KEY, walletId: "w1" });
+  });
+
+  it("refuses to fill a removed wallet, and never opens its seal", async () => {
+    // The DoD's "sign refused (typed)" clause, on the real fill path rather than on a
+    // migration state: a wallet the owner removed must not be typeable into a page even
+    // though its secret is still stored (soft delete keeps it so a restore works). The
+    // filter lives in `findUserWallet`'s where clause; if it is dropped the row comes
+    // back here and the secret would be typed into whatever page the run is on.
+    const { prisma, load } = fillStore("legacy_server_only", new Date("2026-09-02T00:00:00.000Z"));
+    const result = await resolveUserWalletFill({
+      prisma,
+      secretStore: { load },
+      userId: "u1",
+      name: "burner",
+      site: "https://example.test",
+      savedAt: SAVED_AT,
+    });
+    // The typed refusal: a named error, not a thrown exception and not an empty fill.
+    expect(result).toEqual({
+      error: expect.stringContaining("No wallet is saved under this name"),
+    });
+    expect(load).not.toHaveBeenCalled();
   });
 });
 
