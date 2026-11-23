@@ -245,6 +245,14 @@ function walletStore() {
       }),
     },
     userWalletUse: { findMany: vi.fn(async () => []) },
+    // Proposals outlive a wallet removal: the row is archived, not deleted, so the
+    // `onDelete: Cascade` on `WalletProposal.wallet` never fires. These are plain spies
+    // rather than throwing doubles — the assertion belongs in the test, not in the fake.
+    walletProposal: {
+      delete: vi.fn(),
+      deleteMany: vi.fn(),
+      updateMany: vi.fn(),
+    },
     // The removal-confirmation table: tokens are stored by digest, so the double
     // hashes the token the caller holds the same way the real code does.
     walletRemovalConfirmation: (() => {
@@ -675,7 +683,7 @@ describe("W-2: removing a wallet is a soft delete", () => {
     expect(JSON.stringify(recorded)).not.toContain(KEY.slice(2));
   });
 
-  it("hides a removed wallet from list, uses, migrate and get, but keeps it restorable", async () => {
+  it("hides a removed wallet from list, uses and migrate, but keeps it restorable", async () => {
     const store = walletStore();
     const api = routes(store.prisma, store.secrets);
     await api.add!({ context, input: { name: "burner", secret: KEY } });
@@ -697,6 +705,24 @@ describe("W-2: removing a wallet is a soft delete", () => {
       wallets: [expect.objectContaining({ id: "w1", name: "burner" })],
     });
     expect(recorded.map((event) => event.type)).toEqual(["wallet.removed", "wallet.restored"]);
+  });
+
+  it("archives the row without touching the owner's pending proposals", async () => {
+    // The DoD for this step names "proposals kept" as part of the combined acceptance.
+    // A soft delete cannot cascade, so the proposals survive by construction — but that
+    // is exactly the kind of guarantee that dies silently when someone later changes the
+    // write to a real `delete`. The assertion makes that change fail here.
+    const store = walletStore();
+    const api = routes(store.prisma, store.secrets);
+    await api.add!({ context, input: { name: "burner", secret: KEY } });
+    await removeWithToken(api, context, "w1");
+
+    expect(store.prisma.walletProposal.delete).not.toHaveBeenCalled();
+    expect(store.prisma.walletProposal.deleteMany).not.toHaveBeenCalled();
+    expect(store.prisma.walletProposal.updateMany).not.toHaveBeenCalled();
+    // The row itself is still there, which is what keeps the proposals' foreign key valid.
+    expect(store.rows()).toHaveLength(1);
+    expect(store.rows()[0]!.removedAt).not.toBeNull();
   });
 
   it("lets the name be reused after removal, and refuses to restore over the new wallet", async () => {
