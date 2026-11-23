@@ -38,6 +38,21 @@ import { deliverFinishedShells } from "./shell-command-stream.js";
 export const MAX_PARALLEL_SUBAGENTS = 4;
 
 /**
+ * Tools a clean-room reviewer run is never given. Each one reaches the bot's own earlier work —
+ * its past messages, its durable memory, a summary of what it already did — which is exactly the
+ * context a fresh-context run is spawned without. The files it reads through the document it was
+ * handed stay reachable: those tools read the workspace, not the bot's history.
+ */
+export const FRESH_CONTEXT_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
+  "search_history",
+  "read_history",
+  "recall_memory",
+  "save_memory",
+  "forget_memory",
+  "save_shared_memory",
+]);
+
+/**
  * A helper's result within `limit` characters. A stop text (the spent-budget message or a
  * terminating reply) stays whole when it fits and only the narration before it is shortened;
  * clipped text ends with "…" and never goes past the limit.
@@ -100,8 +115,16 @@ export async function executeSubagent(
     String(args.name ?? "helper")
       .trim()
       .slice(0, 80) || "helper";
-  const task = String(args.task ?? "").trim();
-  const extra = args.instructions ? String(args.instructions).trim() : "";
+  // A clean-room reviewer gets only the document it was handed: no task framing of its own,
+  // no parent instructions, and (below) no tools that could read the bot's earlier work.
+  const freshContext = args.fresh_context === true;
+  const document = args.document ? String(args.document) : "";
+  if (freshContext && !document.trim()) {
+    host.subagentGate.release();
+    return "A clean-room reviewer needs a document: pass the full text in document, because it has no other context to work from.";
+  }
+  const task = freshContext ? document.trim() : String(args.task ?? "").trim();
+  const extra = !freshContext && args.instructions ? String(args.instructions).trim() : "";
   host.queue.push({
     type: "subagent",
     agentId,
@@ -153,10 +176,13 @@ export async function executeSubagent(
   const subagentModel = modelForCompletion(selectedModel.model, requestModel.maxTokens);
 
   // With a computer-use model, the screen belongs to top-level computer mode only.
+  // A clean-room reviewer may not read the bot's own earlier work: history search and durable
+  // memory would hand back exactly the context it was spawned without.
   const childDefs = host.request.tools.filter(
     (tool) =>
       !DELEGATION_TOOL_NAMES.has(tool.name) &&
-      !(host.computerModeAllowed && COMPUTER_MODE_TOOLS.has(tool.name)),
+      !(host.computerModeAllowed && COMPUTER_MODE_TOOLS.has(tool.name)) &&
+      !(freshContext && FRESH_CONTEXT_EXCLUDED_TOOLS.has(tool.name)),
   );
   const nestedHost: ToolHost = {
     ...host,
@@ -298,14 +324,23 @@ export async function executeSubagent(
         ? (selectedModel.credentials?.accessToken ?? selectedModel.apiKey)
         : selectedModel.apiKey,
     initialState: {
-      systemPrompt: [
-        `You are a Rakazo subagent named "${name}".`,
-        "You run inside the parent bot's turn — you are not a separate bot chat.",
-        "Complete the task and return a concise result. Do not spawn bots or further subagents.",
-        "Your task comes from the parent bot, not from the human user, and you cannot talk to the user: report your result back to the parent bot.",
-        "Messages marked as automated come from Rakazo, not from the user.",
-        extra,
-      ]
+      systemPrompt: (freshContext
+        ? [
+            `You are a clean-room reviewer named "${name}".`,
+            "You have no earlier conversation, no memory of this bot's past work, and no summary of it. What follows is the only context you get.",
+            "Review the document you were given and report your findings concisely: what is wrong, what is missing, and what the author should change. Say plainly when something is fine.",
+            "You cannot talk to the user, and your result goes back to the bot that spawned you.",
+            extra,
+          ]
+        : [
+            `You are a Rakazo subagent named "${name}".`,
+            "You run inside the parent bot's turn — you are not a separate bot chat.",
+            "Complete the task and return a concise result. Do not spawn bots or further subagents.",
+            "Your task comes from the parent bot, not from the human user, and you cannot talk to the user: report your result back to the parent bot.",
+            "Messages marked as automated come from Rakazo, not from the user.",
+            extra,
+          ]
+      )
         .filter(Boolean)
         .join(" "),
       model: subagentModel,

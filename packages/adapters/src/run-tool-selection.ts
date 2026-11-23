@@ -152,6 +152,11 @@ export function selectBuiltinToolsForRun(options: {
   emailClaimable?: boolean;
   /** The inbox may be read and this server can send email. */
   emailSend?: boolean;
+  /**
+   * A clean-room reviewer run: it reads only the document it was handed, so anything that would
+   * hand back the bot's own earlier work — its past messages, its durable memory — is withheld.
+   */
+  freshContext?: boolean;
 }) {
   const disabled = disabledBuiltinToolSet(options.disabledBuiltinTools);
   const ownerStartedRun = isOwnerStartedRun(options.trigger, Boolean(options.followUpFromUser));
@@ -225,6 +230,15 @@ export function selectBuiltinToolsForRun(options: {
         tool.name !== "call_user") &&
       (options.historyRetrievalEnabled ||
         !["search_history", "read_history"].includes(tool.name)) &&
+      (!options.freshContext ||
+        ![
+          "search_history",
+          "read_history",
+          "recall_memory",
+          "save_memory",
+          "forget_memory",
+          "save_shared_memory",
+        ].includes(tool.name)) &&
       (!options.messagingChannelRun ||
         (!SCHEDULE_TOOL_NAMES.has(tool.name) &&
           !SKILL_TOOL_NAMES.has(tool.name) &&

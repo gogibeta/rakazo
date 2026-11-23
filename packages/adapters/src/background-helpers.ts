@@ -66,6 +66,8 @@ export async function startBackgroundHelper(
     modelId: string;
     executionId: string;
     effectKey: string;
+    /** A clean-room reviewer: it reads only its document, never the bot's memory or history. */
+    freshContext?: boolean;
   },
 ) {
   const { deps, run, runId, bot, thread } = ctx;
@@ -164,6 +166,7 @@ export async function startBackgroundHelper(
       sourceMessageId: message.id,
       clientNonce,
     };
+    if (input.freshContext) helperRunData.freshContext = true;
     // A helper with a model of its own — named per call, or the member's configured helper
     // model — is pinned to it, so it does not silently run something else.
     if (modelProvider) {

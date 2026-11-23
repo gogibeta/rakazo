@@ -1,4 +1,5 @@
 import { BotSettingsValuesSchema } from "@rakazo/contracts";
+import { redactSecrets } from "@rakazo/core";
 import {
   appendEventInTransaction,
   commitBotUpdate,
@@ -176,6 +177,19 @@ export const fleetTools: ToolHandlers = {
       }
       computerMode = value;
     }
+    // A clean-room first run reads only what it was handed, so it must be handed something.
+    // Refused here rather than run empty: with no context of its own it would have to invent one.
+    const freshContext = args.fresh_context === true;
+    // Redacted on the way in: this text becomes the new run's only context, so a secret echoed
+    // into the document would be handed to the child bot verbatim. `run_subagent`'s clean-room
+    // path redacts for the same reason.
+    const document = args.document ? redactSecrets(String(args.document), ctx.secrets) : undefined;
+    if (freshContext && !document) {
+      return call.finish({
+        error:
+          "fresh_context requires document: a clean-room run reads only the document it is given.",
+      });
+    }
     const spawned = await spawnBot(deps, {
       spawnedBy: {
         id: bot.id,
@@ -188,8 +202,11 @@ export const fleetTools: ToolHandlers = {
       name: String(args.name ?? ""),
       description: args.description ? String(args.description) : undefined,
       instructions: args.instructions ? String(args.instructions) : undefined,
-      prompt: args.prompt ? String(args.prompt) : undefined,
+      // The document IS the first run's prompt: that run's only input is what it was handed.
+      prompt:
+        document ?? (args.prompt ? redactSecrets(String(args.prompt), ctx.secrets) : undefined),
       computerMode,
+      freshContext,
     });
     if ("error" in spawned) return call.finish(spawned);
     if (!(await call.persistEffectResult(spawned))) return uncertainEffectResult(name);

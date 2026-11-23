@@ -182,6 +182,99 @@ describe("spawned bot creation", () => {
     });
     createReposSpy.mockRestore();
   });
+
+  it("puts freshContext on the first run, and only when it was asked for", async () => {
+    // fresh_context is a property of the RUN, not of the bot: the flag covers the clean-room
+    // first run only, and later runs in that bot's thread are ordinary. So the assertion has to
+    // be on what `run.create` received — asserting the argument reached `spawnBot` would pass
+    // even if it were then dropped on the floor.
+    const createBot = vi
+      .fn()
+      .mockResolvedValue({ id: "child-3", name: "Critic", threadId: "thread-3" });
+    const createReposSpy = vi.spyOn(await import("@rakazo/db"), "createRepos").mockReturnValue({
+      createBot,
+    } as unknown as ReturnType<typeof createRepos>);
+
+    const runCreate = vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+      id: "run-x",
+      ...data,
+    }));
+    const prisma = {
+      run: { findUnique: vi.fn().mockResolvedValue(null) },
+      task: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: "task-x",
+          ...data,
+        })),
+      },
+      $transaction: vi.fn(
+        async (fn: (tx: unknown) => Promise<unknown>) =>
+          await fn({
+            run: {
+              create: runCreate,
+              // `createThreadMessageInTransaction` checks the run can still take history.
+              findUnique: vi.fn(async () => ({
+                status: "queued",
+                startedAt: null,
+                firstResponseAt: null,
+                userId: "user-1",
+                leaseOwner: null,
+                leaseFence: null,
+              })),
+            },
+            task: { create: vi.fn(async () => ({ id: "task-x" })) },
+            thread: {
+              update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+                nextMessageSeq: 1,
+                ...data,
+              })),
+            },
+            message: {
+              create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+                id: "msg-x",
+                ...data,
+              })),
+            },
+          }),
+      ),
+    } as unknown as PrismaClient;
+
+    await spawnBot(
+      { prisma, jobs: { enqueue: vi.fn(async () => undefined) } as unknown as JobPublisher },
+      {
+        spawnedBy: { id: "parent-1", name: "Chief", spaceId: "workspace-1", userId: "user-1" },
+        runId: "run-1",
+        spawnKey: "tool-call-clean",
+        name: "Critic",
+        prompt: "Review the design at /design.md",
+        freshContext: true,
+      },
+    );
+
+    expect(runCreate).toHaveBeenCalledOnce();
+    expect(runCreate.mock.calls[0]?.[0]?.data).toMatchObject({
+      freshContext: true,
+      trigger: "spawn",
+    });
+
+    // And the ordinary spawn is untouched: the column must be absent, not `false`, so an existing
+    // path writes exactly the row it wrote before this option existed.
+    runCreate.mockClear();
+    createBot.mockResolvedValue({ id: "child-4", name: "Normal", threadId: "thread-4" });
+    await spawnBot(
+      { prisma, jobs: { enqueue: vi.fn(async () => undefined) } as unknown as JobPublisher },
+      {
+        spawnedBy: { id: "parent-1", name: "Chief", spaceId: "workspace-1", userId: "user-1" },
+        runId: "run-1",
+        spawnKey: "tool-call-normal",
+        name: "Normal",
+        prompt: "Do the usual",
+      },
+    );
+    expect(runCreate.mock.calls[0]?.[0]?.data).not.toHaveProperty("freshContext");
+
+    createReposSpy.mockRestore();
+  });
 });
 describe("spawned bot archival", () => {
   it("scopes management to the space without requiring a creator", () => {

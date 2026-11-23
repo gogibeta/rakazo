@@ -1883,8 +1883,18 @@ export const builtinAgentTools: ConnectorTool[] = [
           description: "Optional connected model ID. Set together with model_provider.",
         },
         background: { type: "boolean" },
+        fresh_context: {
+          type: "boolean",
+          description:
+            "Run a clean-room reviewer: it sees only the document you pass and the files that document points at — not this conversation, not the bot's memory, not a summary of earlier work. Use it to review a design or plan with no knowledge of how it was reached.",
+        },
+        document: {
+          type: "string",
+          description:
+            "Required when fresh_context is set: the complete document the reviewer reads. It is the reviewer's entire task, so include the problem, the approach and the open questions.",
+        },
       },
-      required: ["name", "task"],
+      required: ["name"],
     },
   },
   {
@@ -1933,6 +1943,17 @@ export const builtinAgentTools: ConnectorTool[] = [
           enum: ["team", "dedicated"],
           description:
             "Optional. team shares one screen with other Team bots; dedicated (Private) gets its own. Defaults to team.",
+        },
+        fresh_context: {
+          type: "boolean",
+          description:
+            "Optional. Start the new bot's first run with no thread history and no injected memory documents, reading only `document`. Use it to stand up a clean-room reviewer; the setting covers that first run only, and later runs are normal.",
+        },
+        document: {
+          type: "string",
+          maxLength: 20000,
+          description:
+            "Optional. The material the first run works from when fresh_context is true. Required with fresh_context, because a run with no context of its own would have to invent one.",
         },
       },
       required: ["name"],

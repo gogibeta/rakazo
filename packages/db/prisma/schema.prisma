@@ -1555,6 +1555,9 @@ model Run {
   modelPinned          Boolean           @default(false)
   // A group message that named nobody reached this member; it may end without a reply.
   groupReplyOptional   Boolean           @default(false)
+  // A clean-room reviewer run: it reads only the document it was handed and the files that
+  // document references — no earlier messages, no durable memory, no compacted summaries.
+  freshContext         Boolean           @default(false)
   error                String?
   leaseOwner           String?
   leaseFence           Int               @default(0)

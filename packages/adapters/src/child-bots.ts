@@ -79,6 +79,8 @@ export async function spawnBot(
     instructions?: string;
     prompt?: string;
     computerMode?: ComputerMode;
+    /** Start the first run as a clean room: no thread history, no injected memory documents. */
+    freshContext?: boolean;
   },
 ) {
   const name = input.name.trim();
@@ -138,6 +140,7 @@ export async function spawnBot(
       sourceRunId: input.runId,
       spawnKey: input.spawnKey,
       prompt,
+      freshContext: input.freshContext === true,
     });
     await deps.jobs
       .enqueue(runContinueJob(run.id))
@@ -163,6 +166,7 @@ async function ensureSpawnRun(
     sourceRunId: string;
     spawnKey: string;
     prompt: string;
+    freshContext?: boolean;
   },
 ) {
   const clientNonce = `spawn:${input.spawnKey}`;
@@ -203,6 +207,9 @@ async function ensureSpawnRun(
           status: "queued",
           trigger: "spawn",
           clientNonce,
+          // Only set when asked for: an ordinary spawn must write exactly the row it wrote before
+          // this option existed, so the column falls back to its default rather than to `false`.
+          ...(input.freshContext ? { freshContext: true } : {}),
         },
       });
     });
