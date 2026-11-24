@@ -110,7 +110,7 @@ describe("day-one referral email", () => {
       const actual = await importOriginal<typeof import("@rakazo/db")>();
       return {
         ...actual,
-        runAsSystem: <T>(reason: string, fn: () => T): T => {
+        runAsSystem: async <T>(reason: string, fn: () => Promise<T> | T): Promise<T> => {
           reasons.push(reason);
           return actual.runAsSystem(reason, fn);
         },
