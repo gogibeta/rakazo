@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { builtinAgentTools } from "./builtin-tools.js";
+import { FRESH_CONTEXT_EXCLUDED_TOOLS } from "./pi-runtime-subagent.js";
 
 /**
  * EGM-1: a clean-room reviewer run. The item's definition of done asks for two things proved
@@ -158,14 +159,16 @@ describe("a clean-room reviewer run", () => {
 
   it("cannot reach the bot's own memory or history with a tool", () => {
     expect(seen.reviewer.toolNames.length).toBeGreaterThan(0);
-    for (const name of [
-      "search_history",
-      "read_history",
-      "recall_memory",
-      "save_memory",
-      "forget_memory",
-      "save_shared_memory",
-    ]) {
+    // Iterate the deny-list itself rather than naming a few of its members: a name added there
+    // must fail here if it ever reaches a reviewer, and a name deleted there must not leave this
+    // test asserting something nobody enforces.
+    expect(FRESH_CONTEXT_EXCLUDED_TOOLS.size).toBeGreaterThan(6);
+    for (const name of FRESH_CONTEXT_EXCLUDED_TOOLS) {
+      expect(seen.reviewer.toolNames).not.toContain(name);
+    }
+    // The three that do not sound like history, pinned by name: they were the leaks.
+    for (const name of ["remember", "schedule_list", "read_email"]) {
+      expect(FRESH_CONTEXT_EXCLUDED_TOOLS.has(name)).toBe(true);
       expect(seen.reviewer.toolNames).not.toContain(name);
     }
     // The tools that read the workspace stay: the document may name files to open.

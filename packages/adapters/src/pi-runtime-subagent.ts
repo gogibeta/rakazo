@@ -42,14 +42,31 @@ export const MAX_PARALLEL_SUBAGENTS = 4;
  * its past messages, its durable memory, a summary of what it already did — which is exactly the
  * context a fresh-context run is spawned without. The files it reads through the document it was
  * handed stay reachable: those tools read the workspace, not the bot's history.
+ *
+ * The membership was found by auditing the tool roster for anything that reads the bot's own
+ * earlier work, not by listing tools that sound like history. Three of them do not sound like it:
+ * `task_catalog` and `scratchpad_list` share one description (open/parked work), `schedule_list`
+ * returns the bot's routines including each routine's `prompt` — free text the bot wrote about
+ * what it was working on — and `read_email` reads a mailbox scoped to this bot, so it returns
+ * correspondence the bot already had. Anything added to the roster that returns the bot's own
+ * words belongs here, whatever it is called. `remember` is listed beside `save_memory` on
+ * purpose: they write the same memory document, so excluding one and not the other excludes
+ * nothing.
  */
 export const FRESH_CONTEXT_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
   "search_history",
   "read_history",
   "recall_memory",
   "save_memory",
+  "remember",
   "forget_memory",
   "save_shared_memory",
+  "task_catalog",
+  "scratchpad_list",
+  "skill_list",
+  "skill_read",
+  "schedule_list",
+  "read_email",
 ]);
 
 /**

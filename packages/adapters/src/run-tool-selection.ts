@@ -7,6 +7,7 @@ import { BACKGROUND_HELPER_TRIGGER, isBackgroundRunTrigger, isOwnerStartedRun } 
 import { builtinAgentTools } from "./builtin-tools.js";
 import { selectCloudAgentTools } from "./cloud-agent-tools-select.js";
 import { selectMemoryTools } from "./memory-tools.js";
+import { FRESH_CONTEXT_EXCLUDED_TOOLS } from "./pi-runtime-subagent.js";
 import { filterImageReturningComputerTools } from "./model-vision.js";
 import { USER_COMPUTER_SCREEN_TOOLS } from "./run-tools-user-computer.js";
 import {
@@ -230,15 +231,7 @@ export function selectBuiltinToolsForRun(options: {
         tool.name !== "call_user") &&
       (options.historyRetrievalEnabled ||
         !["search_history", "read_history"].includes(tool.name)) &&
-      (!options.freshContext ||
-        ![
-          "search_history",
-          "read_history",
-          "recall_memory",
-          "save_memory",
-          "forget_memory",
-          "save_shared_memory",
-        ].includes(tool.name)) &&
+      (!options.freshContext || !FRESH_CONTEXT_EXCLUDED_TOOLS.has(tool.name)) &&
       (!options.messagingChannelRun ||
         (!SCHEDULE_TOOL_NAMES.has(tool.name) &&
           !SKILL_TOOL_NAMES.has(tool.name) &&
