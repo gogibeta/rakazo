@@ -7,8 +7,8 @@ import { BACKGROUND_HELPER_TRIGGER, isBackgroundRunTrigger, isOwnerStartedRun } 
 import { builtinAgentTools } from "./builtin-tools.js";
 import { selectCloudAgentTools } from "./cloud-agent-tools-select.js";
 import { selectMemoryTools } from "./memory-tools.js";
-import { FRESH_CONTEXT_EXCLUDED_TOOLS } from "./pi-runtime-subagent.js";
 import { filterImageReturningComputerTools } from "./model-vision.js";
+import { FRESH_CONTEXT_EXCLUDED_TOOLS } from "./pi-runtime-subagent.js";
 import { USER_COMPUTER_SCREEN_TOOLS } from "./run-tools-user-computer.js";
 import {
   filterBuiltinToolsForRun,
