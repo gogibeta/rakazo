@@ -880,6 +880,9 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         // reached every member, and each may end its turn without a reply.
         const groupReplyOptional =
           Boolean(thread.groupId) && run.trigger === "user" && run.groupReplyOptional;
+        // A clean-room reviewer reads only the document it was handed: no durable memory, no
+        // scratchpad, no ticket board, and no semantic recall of earlier work.
+        const freshContext = run.freshContext === true;
         const allowSilentPeerMessage = botMessageAllowsSilence(
           peerMessage?.intent,
           peerMessage?.repliesToRequest,
@@ -895,6 +898,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
             : DELEGATED_EMPTY_NOTICE
           : undefined;
         const recallPromise =
+          !freshContext &&
           threadContext.includeSemanticRecall &&
           semanticMemory &&
           memoryScope &&
@@ -920,16 +924,16 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         ] = await Promise.all([
           discoveredPromise,
           loadCurrentTurnImages(deps, turnBlocks, context),
-          nonOwnerChatRun
+          nonOwnerChatRun || freshContext
             ? Promise.resolve({ text: "", tainted: false })
             : loadAgentMemoryContextWithTaint(deps.memory, bot.id, context),
-          nonOwnerChatRun
+          nonOwnerChatRun || freshContext
             ? Promise.resolve("")
             : loadAgentScratchpadContext(deps, {
                 spaceId: run.spaceId,
                 botId: bot.id,
               }),
-          nonOwnerChatRun || !deps.ticketBoardEnabled
+          nonOwnerChatRun || freshContext || !deps.ticketBoardEnabled
             ? Promise.resolve(undefined)
             : loadAgentTicketContext(deps, {
                 spaceId: run.spaceId,
@@ -1360,6 +1364,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
             emailClaimable:
               Boolean(deps.inboundEmailDomain) && !emailName && run.userId === bot.userId,
             emailSend: Boolean(deps.email),
+            freshContext,
           }),
           // Cross-owner agent connections only exist for chat-linked bots. The chat link is its
           // creator's, and a connected agent's messages run as them, so only their runs may

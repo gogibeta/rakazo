@@ -63,8 +63,9 @@ describe("built-in tool bridge", () => {
     // list_wallets and call_connection are named among find_tool's deferred areas.
     // send_to_chat_apps is listed so a bot asked to message its owner finds it.
     // Budget covers the pinned set's serialized size after the app-model tools' descriptions
-    // landed (33,438 bytes at the time of writing).
-    expect(definitionBytes(listed)).toBeLessThanOrEqual(33_600);
+    // landed (33,438 bytes at the time of writing), and again after run_subagent gained the
+    // fresh_context and document fields that spawn a clean-room reviewer (33,978 bytes).
+    expect(definitionBytes(listed)).toBeLessThanOrEqual(34_100);
     expect(deferred.map((tool) => tool.name)).toEqual(
       expect.arrayContaining(["render_plot", "create_space", "generate_secret", "scratchpad_add"]),
     );

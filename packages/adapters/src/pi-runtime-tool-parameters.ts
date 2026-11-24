@@ -93,6 +93,8 @@ function builtinParameters(tool: ConnectorTool) {
       model_provider: Type.Optional(Type.String()),
       model_id: Type.Optional(Type.String()),
       background: Type.Optional(Type.Boolean()),
+      fresh_context: Type.Optional(Type.Boolean()),
+      document: Type.Optional(Type.String()),
     });
   }
   if (tool.name === "spawn_bot") {
@@ -102,6 +104,8 @@ function builtinParameters(tool: ConnectorTool) {
       instructions: Type.Optional(Type.String()),
       prompt: Type.Optional(Type.String()),
       computer_mode: Type.Optional(stringEnum(["team", "dedicated"], {})),
+      fresh_context: Type.Optional(Type.Boolean()),
+      document: Type.Optional(Type.String({ maxLength: 20_000 })),
     });
   }
   if (tool.name === "update_bot") {

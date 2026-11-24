@@ -244,12 +244,18 @@ export const messagingTools: ToolHandlers = {
             String(args.name ?? "helper")
               .trim()
               .slice(0, 80) || "helper",
-          task: redactSecrets(String(args.task ?? "").trim(), ctx.secrets),
+          // A clean-room reviewer's document IS its task: the ordinary helper framing would
+          // tell it to work for the bot, which is the framing it was spawned to be free of.
+          task:
+            args.fresh_context === true
+              ? redactSecrets(String(args.document ?? "").trim(), ctx.secrets)
+              : redactSecrets(String(args.task ?? "").trim(), ctx.secrets),
           instructions: redactSecrets(String(args.instructions ?? "").trim(), ctx.secrets),
           modelProvider: String(args.model_provider ?? "").trim(),
           modelId: String(args.model_id ?? "").trim(),
           executionId: call.executionId,
           effectKey: call.effectKey,
+          freshContext: args.fresh_context === true,
         }),
       );
     }
