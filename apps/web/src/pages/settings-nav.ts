@@ -11,6 +11,7 @@ import {
   KeyRound,
   MessageCircle,
   Monitor,
+  Plug,
   Settings,
   ShieldCheck,
   Volume2,
@@ -64,6 +65,12 @@ export function useSettingsNavItems(available: {
       label: t`Crypto wallets`,
       icon: Coins,
       description: t`Burner wallets for testnet work.`,
+    },
+    {
+      id: "connections",
+      label: t`Custom connections`,
+      icon: Plug,
+      description: t`API services your bots can call.`,
     },
     ...(available.wallet
       ? [
