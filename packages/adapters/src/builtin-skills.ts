@@ -1,4 +1,5 @@
 import { buildSkillMd } from "@rakazo/core";
+import { DESIGN_REVIEW_SKILL } from "./design-review-skill.js";
 
 const RAKAZO_DOCS: ReadonlyArray<readonly [topics: string, url: string]> = [
   ["Getting started, first bot, what Rakazo does", "https://rakazo.com/docs.md"],
@@ -242,6 +243,7 @@ The drift you are looking for is factual, not stylistic: a document that names a
 
 Hard limits, because this is read-only by design. Never edit, create, move or delete a document or a workspace file; never commit, push or open a PR; never run a command that writes, installs, deploys, migrates or sends. The owner gets the list and decides. A drift report that changed something is a failed drift report.`,
   },
+  DESIGN_REVIEW_SKILL,
   {
     name: "Rakazo",
     description: "How to use or set up Rakazo: chat apps, your computer, billing, hosting",

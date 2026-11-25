@@ -188,6 +188,46 @@ describe("Drift Report skill", () => {
   });
 });
 
+describe("Design Review skill", () => {
+  const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Design Review")!;
+
+  it("is in the built-in set", () => {
+    expect(skill).toBeDefined();
+  });
+
+  it("spawns reviewers in a clean room, which is the point of the skill", () => {
+    // A reviewer that inherits the drafting thread already watched the author
+    // decide, and agrees. The empty context is the feature, not a detail.
+    expect(skill.content).toContain("fresh_context: true");
+    expect(skill.content).toContain("document");
+    expect(skill.content).toContain("clean room");
+    expect(skill.content).toContain("will agree with you");
+  });
+
+  it("names only tools that exist in this build", () => {
+    for (const tool of ["run_subagent", "write_file", "ask_user"]) {
+      expect(skill.content).toContain(tool);
+    }
+  });
+
+  it("gates building on explicit owner approval, not on silence", () => {
+    // The failure mode is a bot that reads a quiet thread as a yes.
+    expect(skill.content).toContain("Build only after approval");
+    expect(skill.content).toContain("Never treat silence");
+    expect(skill.content).toContain("the edit wins");
+  });
+
+  it("keeps the reviewer lenses attributed", () => {
+    expect(skill.content).toContain("Every Gate Matters");
+    expect(skill.content).toContain("Apache 2.0");
+  });
+
+  it("does not send small mechanical work through a review", () => {
+    // Reviewing everything is its own failure mode.
+    expect(skill.content).toContain("Small mechanical work does not need this");
+  });
+});
+
 describe("Rakazo skill", () => {
   it("links only to published docs pages", () => {
     const skill = BUILTIN_AGENT_SKILLS.find((s) => s.name === "Rakazo")!;
