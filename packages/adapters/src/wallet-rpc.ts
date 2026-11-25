@@ -29,6 +29,7 @@ const READ_METHODS = [
   "eth_gasPrice",
   "eth_maxPriorityFeePerGas",
   "eth_getBlockByNumber",
+  "eth_call",
 ] as const;
 export type WalletRpcMethod = (typeof READ_METHODS)[number];
 
@@ -70,6 +71,13 @@ export type WalletRpcClient = {
     from: string;
     to: string | null;
     value: string;
+    data: string | null;
+  }): Promise<string>;
+  /** Read-only `eth_call` simulation result, as a hex string. */
+  ethCall(input: {
+    from: string;
+    to: string | null;
+    value: string | null;
     data: string | null;
   }): Promise<string>;
   fees(): Promise<WalletFeeSuggestion>;
@@ -345,6 +353,20 @@ export function createWalletRpcClient(options: {
         throw new WalletRpcError("rpc_error", "The chain returned no gas estimate.");
       }
       return gas;
+    },
+    async ethCall(input) {
+      await verifyChain();
+      const tx: Record<string, string> = {
+        from: input.from,
+      };
+      if (input.to !== null) tx.to = input.to;
+      if (input.data !== null) tx.data = input.data;
+      if (input.value !== null) tx.value = decimalToQuantity(input.value);
+      const result = await call("eth_call", [tx, "latest"]);
+      if (typeof result !== "string") {
+        throw new WalletRpcError("rpc_error", "The chain returned no call result.");
+      }
+      return result;
     },
     async fees() {
       await verifyChain();
