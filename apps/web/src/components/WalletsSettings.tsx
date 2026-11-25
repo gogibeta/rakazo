@@ -1,5 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { WalletChain, WalletSummary, WalletUseSummary, WalletVaultStatus } from "@rakazo/contracts";
+import type {
+  WalletChain,
+  WalletSummary,
+  WalletUseSummary,
+  WalletVaultStatus,
+} from "@rakazo/contracts";
 import { Button, Field, FieldLabel, Input, Spinner } from "@rakazo/ui-web";
 import type { FormEvent } from "react";
 import { useEffect, useId, useState } from "react";
