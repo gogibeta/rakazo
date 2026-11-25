@@ -1,5 +1,5 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { WalletSummary, WalletUseSummary, WalletVaultStatus } from "@rakazo/contracts";
+import type { WalletChain, WalletSummary, WalletUseSummary, WalletVaultStatus } from "@rakazo/contracts";
 import { Button, Field, FieldLabel, Input, Spinner } from "@rakazo/ui-web";
 import type { FormEvent } from "react";
 import { useEffect, useId, useState } from "react";
@@ -291,6 +291,7 @@ export function WalletsSettings() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [secret, setSecret] = useState("");
+  const [chain, setChain] = useState<WalletChain>("evm");
   const [pending, setPending] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
   /** The token plus the wallet it names, waiting for the owner to confirm. */
@@ -334,10 +335,11 @@ export function WalletsSettings() {
     setSaved(false);
     setError(null);
     try {
-      const added = await rpc.wallets.add({ name: name.trim(), secret });
+      const added = await rpc.wallets.add({ name: name.trim(), secret, chain });
       setWallets((current) => [...(current ?? []), added]);
       setName("");
       setSecret("");
+      setChain("evm");
       setSaved(true);
     } catch (caught) {
       setError(errorText(caught, t`Could not add the wallet`));
@@ -430,6 +432,20 @@ export function WalletsSettings() {
       </p>
       <WalletPasswordSettings onStatusChange={setVaultConfigured} />
       <form onSubmit={add} className="space-y-3 rounded-xl border border-border px-4 py-4">
+        <Field>
+          <FieldLabel htmlFor={`${formId}-chain`}>
+            <Trans>Chain system</Trans>
+          </FieldLabel>
+          <select
+            id={`${formId}-chain`}
+            value={chain}
+            onChange={(event) => setChain(event.target.value as WalletChain)}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            required
+          >
+            <option value="evm">EVM</option>
+          </select>
+        </Field>
         <Field>
           <FieldLabel htmlFor={`${formId}-name`}>
             <Trans>Name</Trans>
