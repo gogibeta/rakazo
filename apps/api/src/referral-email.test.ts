@@ -100,6 +100,30 @@ describe("day-one referral email", () => {
     expect(f.createMany).not.toHaveBeenCalled();
   });
 
+  it("runs under the system scope, because the claim write is refused without it", async () => {
+    // The hourly sweep has no request, so nothing supplies a tenant. email_sends has a
+    // single policy that only admits the system bypass: unscoped, every claim insert is
+    // rejected by RLS and every referral email is dropped. Plain object mocks cannot see
+    // that, so this pins the scope the real client depends on.
+    const reasons: string[] = [];
+    vi.doMock("@rakazo/db", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@rakazo/db")>();
+      return {
+        ...actual,
+        runAsSystem: async <T>(reason: string, fn: () => Promise<T> | T): Promise<T> => {
+          reasons.push(reason);
+          return actual.runAsSystem(reason, fn);
+        },
+      };
+    });
+    vi.resetModules();
+    const { sendReferralEmails: scoped } = await import("./referral-email.js");
+    const f = fixture();
+    await scoped(f.deps)();
+    vi.doUnmock("@rakazo/db");
+    expect(reasons).toContain("the referral email sweep runs without a request");
+  });
+
   it("runs at startup and hourly without overlapping sweeps, aborting the running one on stop", async () => {
     vi.useFakeTimers();
     let finish: () => void = () => {};
