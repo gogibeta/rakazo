@@ -44,7 +44,8 @@ export function WalletProposals() {
 
   if (loading) return <Spinner />;
   if (error) return <p className="text-body-sm text-red-600">{error}</p>;
-  if (proposals.length === 0) return <p className="text-body-sm text-muted-foreground">No proposals.</p>;
+  if (proposals.length === 0)
+    return <p className="text-body-sm text-muted-foreground">No proposals.</p>;
 
   return (
     <ul className="space-y-2">
