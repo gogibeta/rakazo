@@ -445,7 +445,7 @@ export function WalletsSettings() {
             id={`${formId}-chain`}
             value={chain}
             onChange={(event) => setChain(event.target.value as WalletChain)}
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-body-sm"
             required
           >
             <option value="evm">EVM</option>
