@@ -239,6 +239,7 @@ export * from "./wakeup.js";
 export * from "./wallet-chains.js";
 export * from "./wallet-proposals.js";
 export * from "./wallet-rpc.js";
+export * from "./wallet-tx-decoder.js";
 export * from "./web-limits.js";
 export * from "./web-provider-factory.js";
 export * from "./web-ssrf.js";

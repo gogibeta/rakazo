@@ -18,6 +18,7 @@ const rpcMock = vi.hoisted(() => ({
     requestRemove: vi.fn(),
     migrate: vi.fn(),
     uses: vi.fn(),
+    proposals: vi.fn().mockResolvedValue({ proposals: [] }),
   },
 }));
 vi.mock("../lib/rpc", () => ({ rpc: rpcMock }));

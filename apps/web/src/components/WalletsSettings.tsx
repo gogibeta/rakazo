@@ -11,6 +11,7 @@ import { useEffect, useId, useState } from "react";
 import { rpc } from "../lib/rpc";
 import { errorText } from "../lib/user-error";
 import { SuccessPop } from "./ai/primitives";
+import { WalletProposals } from "./WalletProposals";
 
 /**
  * The signed-in person's named crypto wallets. The form takes a name and the
@@ -666,6 +667,12 @@ export function WalletsSettings() {
           ))}
         </ul>
       ) : null}
+      <div className="space-y-2">
+        <h3 className="text-body font-medium">
+          <Trans>Proposals</Trans>
+        </h3>
+        <WalletProposals />
+      </div>
     </div>
   );
 }
