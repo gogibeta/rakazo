@@ -175,6 +175,7 @@ import {
 } from "./run-model.js";
 import { runModelBackups, startRunModel } from "./run-model-start.js";
 import { createReplyState } from "./run-progress.js";
+import { trackRunPromptVersion } from "./run-prompt-version.js";
 import {
   DELEGATED_EMPTY_NOTICE,
   GROUP_UNADDRESSED_REPLY_GUIDANCE,
@@ -1881,7 +1882,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
         try {
           if (checkpointLoadError) throw checkpointLoadError;
           const runtimeEvents = deps.runtime.run(
-            {
+            trackRunPromptVersion(deps.prisma, runId, {
               botId: bot.id,
               verbatimMcpServers,
               threadId: thread.id,
@@ -2191,7 +2192,7 @@ export function createRunExecutor(executorDeps: ExecutorDeps) {
                     hasImages: Boolean(currentTurnImages?.length),
                   },
                 ),
-            },
+            }),
             {
               ...context,
               signal: AbortSignal.any([context.signal, ctx.runtimeAbortController.signal]),
