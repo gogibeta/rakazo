@@ -315,6 +315,7 @@ describe("the proposal RPC client", () => {
       "balanceWei",
       "chainId",
       "estimateGas",
+      "ethCall",
       "fees",
       "nonce",
     ]);
