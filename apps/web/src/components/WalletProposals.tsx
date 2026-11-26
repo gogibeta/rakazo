@@ -43,18 +43,18 @@ export function WalletProposals() {
   }, []);
 
   if (loading) return <Spinner />;
-  if (error) return <p className="text-sm text-red-600">{error}</p>;
-  if (proposals.length === 0) return <p className="text-sm text-muted-foreground">No proposals.</p>;
+  if (error) return <p className="text-body-sm text-red-600">{error}</p>;
+  if (proposals.length === 0) return <p className="text-body-sm text-muted-foreground">No proposals.</p>;
 
   return (
     <ul className="space-y-2">
       {proposals.map((p) => {
         return (
-          <li key={p.id} className="rounded border p-2 text-sm">
+          <li key={p.id} className="rounded border p-2 text-body-sm">
             <div className="font-medium">
               {p.walletName} — {p.to ?? "(deploy)"} · {p.amountWei} {p.nativeSymbol}
             </div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-caption text-muted-foreground">
               {p.chainName} · {p.status} · expires {p.expiresAt}
             </div>
           </li>
